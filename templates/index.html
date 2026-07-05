@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Real-time OVH ECO server flash sale stock monitoring with instant rush-order checkout.">
+    <meta name="theme-color" content="#111827">
+    <title>OVH Flash Sale Monitor</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23111827'/%3E%3Ctext x='8' y='12' font-size='12' text-anchor='middle' fill='%2360a5fa'%3EO%3C/text%3E%3C/svg%3E">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @media (prefers-reduced-motion: reduce) {
+            .animate-pulse, .animate-spin { animation: none !important; }
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <div id="app" class="container mx-auto p-4">
+        <header class="mb-6 flex justify-between items-center">
+            <div>
+                <h1 class="text-3xl font-bold text-blue-400">OVH Flash Sale Monitor</h1>
+                <p class="text-gray-400 text-sm">Real-time stock alerts &amp; fast checkout</p>
+            </div>
+            <div class="flex items-center gap-4">
+                <div id="connection-status" class="flex items-center gap-2">
+                    <span id="connection-dot" class="w-3 h-3 rounded-full bg-gray-500" aria-hidden="true"></span>
+                    <span id="connection-text" class="text-sm text-gray-400">Disconnected</span>
+                </div>
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" id="sound-toggle" class="w-5 h-5" checked>
+                    <span>Sound</span>
+                </label>
+            </div>
+        </header>
+
+        <div id="loading-view" class="hidden text-center py-8">
+            <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent"></div>
+            <p class="mt-2 text-gray-400">Loading...</p>
+        </div>
+
+        <div id="error-view" class="hidden bg-red-900/50 border border-red-700 rounded-lg p-4 mb-4" role="alert">
+            <h3 class="text-red-400 font-bold mb-2">Error</h3>
+            <p id="error-message" class="text-red-300"></p>
+        </div>
+
+        <div id="credentials-view" class="hidden">
+            <div class="bg-gray-800 rounded-lg p-6 max-w-2xl mx-auto">
+                <h2 class="text-2xl font-bold mb-4 text-yellow-400">Setup Required</h2>
+                <p class="text-gray-300 mb-6">Configure your OVH API credentials to use the flash sale monitor.</p>
+
+                <div class="mb-4">
+                    <label class="block text-sm text-gray-400 mb-2" for="ovh-region-select">Select Your OVH Region</label>
+                    <select id="ovh-region-select" class="w-full bg-gray-700 px-3 py-2 rounded">
+                        <option value="ovh-eu">Europe (IE, FR, DE, GB, ES, PL...)</option>
+                        <option value="ovh-us">United States (US)</option>
+                        <option value="ovh-ca">Canada (CA)</option>
+                    </select>
+                </div>
+
+                <div class="space-y-4">
+                    <div class="bg-gray-700 rounded p-4">
+                        <h3 class="font-bold text-blue-400 mb-2">Step 1: Create OVH Application</h3>
+                        <a id="create-app-link" href="https://eu.api.ovh.com/createApp/" target="_blank" rel="noopener"
+                           class="text-blue-400 hover:underline">https://eu.api.ovh.com/createApp/</a>
+                    </div>
+
+                    <div class="bg-gray-700 rounded p-4">
+                        <h3 class="font-bold text-blue-400 mb-2">Step 2: Create API Token</h3>
+                        <a id="create-token-link" href="https://eu.api.ovh.com/createToken/" target="_blank" rel="noopener"
+                           class="text-blue-400 hover:underline">https://eu.api.ovh.com/createToken/</a>
+                        <p class="text-sm text-yellow-400 mt-2">Required: GET/PUT/POST/DELETE on /order/* and GET on /me</p>
+                    </div>
+
+                    <div class="bg-gray-700 rounded p-4">
+                        <h3 class="font-bold text-blue-400 mb-2">Step 3: Set Environment Variables</h3>
+                        <pre class="bg-gray-900 p-4 rounded text-sm overflow-x-auto mt-2" id="env-vars-template">export OVH_APPLICATION_KEY="your_key"
+export OVH_APPLICATION_SECRET="your_secret"
+export OVH_CONSUMER_KEY="your_consumer_key"
+export OVH_ENDPOINT="ovh-eu"</pre>
+                    </div>
+                </div>
+
+                <button id="check-credentials-btn"
+                        class="mt-6 bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg">
+                    Check Credentials
+                </button>
+            </div>
+        </div>
+
+        <div id="monitor-view" class="hidden">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div class="lg:col-span-2 space-y-4">
+                    <div class="bg-gray-800 rounded-lg p-4">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-xl font-bold">Stock Monitor</h2>
+                            <div class="flex items-center gap-4">
+                                <label class="flex items-center gap-2 text-sm" for="poll-interval">
+                                    <span>Poll:</span>
+                                    <select id="poll-interval" class="bg-gray-700 px-2 py-1 rounded">
+                                        <option value="1">1s</option>
+                                        <option value="3" selected>3s</option>
+                                        <option value="5">5s</option>
+                                        <option value="10">10s</option>
+                                    </select>
+                                </label>
+                                <button id="toggle-monitor-btn"
+                                        class="bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg">
+                                    Start Monitor
+                                </button>
+                            </div>
+                        </div>
+
+                        <div id="alerts-list" class="space-y-2 mb-4" aria-live="polite">
+                            <p class="text-gray-500 text-sm">No servers being monitored. Add servers below.</p>
+                        </div>
+
+                        <div class="border-t border-gray-700 pt-4">
+                            <h3 class="font-bold mb-2">Add Server to Monitor</h3>
+                            <form id="add-alert-form" class="flex flex-col sm:flex-row gap-2">
+                                <select id="plan-select" class="flex-1 bg-gray-700 px-3 py-2 rounded">
+                                    <option value="">Select a plan...</option>
+                                </select>
+                                <input type="text" id="fqn-pattern"
+                                       placeholder="Config pattern (e.g., *480ssd*)"
+                                       class="flex-1 bg-gray-700 px-3 py-2 rounded">
+                                <button type="submit" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded">
+                                    Watch
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+
+                    <div id="stock-alerts-panel" class="bg-red-900/30 border border-red-700 rounded-lg p-4 hidden" role="alert" aria-live="assertive">
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <h2 class="text-xl font-bold text-red-400">Stock Alert!</h2>
+                                <p id="alert-details" class="text-gray-300"></p>
+                            </div>
+                            <button id="rush-order-btn"
+                                    class="bg-red-600 hover:bg-red-700 px-6 py-3 rounded-lg font-bold animate-pulse">
+                                RUSH ORDER
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="bg-gray-800 rounded-lg p-4">
+                        <h2 class="text-xl font-bold mb-4">Rush Mode Checkout</h2>
+                        <form id="rush-order-form" class="space-y-4">
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1" for="rush-plan-code">Plan Code</label>
+                                    <input type="text" id="rush-plan-code" required
+                                           class="w-full bg-gray-700 px-3 py-2 rounded" placeholder="24sk10">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1" for="rush-fqn">FQN Config</label>
+                                    <input type="text" id="rush-fqn" required
+                                           class="w-full bg-gray-700 px-3 py-2 rounded"
+                                           placeholder="24sk10.ram-32g-ecc-2133.softraid-2x480ssd">
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1" for="rush-ram">RAM</label>
+                                    <select id="rush-ram" class="w-full bg-gray-700 px-3 py-2 rounded">
+                                        <option value="">Default</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1" for="rush-storage">Storage</label>
+                                    <select id="rush-storage" class="w-full bg-gray-700 px-3 py-2 rounded">
+                                        <option value="">Default</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1" for="rush-bandwidth">Bandwidth</label>
+                                    <select id="rush-bandwidth" class="w-full bg-gray-700 px-3 py-2 rounded">
+                                        <option value="">Default</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 sm:grid-cols-4 gap-4">
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1" for="rush-datacenter">Datacenter</label>
+                                    <select id="rush-datacenter" class="w-full bg-gray-700 px-3 py-2 rounded">
+                                        <option value="gra">GRA (Gravelines)</option>
+                                        <option value="sbg">SBG (Strasbourg)</option>
+                                        <option value="rbx">RBX (Roubaix)</option>
+                                        <option value="bhs">BHS (Beauharnois)</option>
+                                        <option value="fra">FRA (Frankfurt)</option>
+                                        <option value="waw">WAW (Warsaw)</option>
+                                        <option value="lon">LON (London)</option>
+                                        <option value="sgp">SGP (Singapore)</option>
+                                        <option value="syd">SYD (Sydney)</option>
+                                        <option value="eri">ERI (Érije)</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1" for="rush-region">Region</label>
+                                    <select id="rush-region" class="w-full bg-gray-700 px-3 py-2 rounded">
+                                        <option value="europe">Europe</option>
+                                        <option value="canada">Canada</option>
+                                        <option value="us">US</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1" for="rush-os">Operating System</label>
+                                    <select id="rush-os" class="w-full bg-gray-700 px-3 py-2 rounded">
+                                        <option value="none_64.en">No OS</option>
+                                        <option value="debian_64">Debian (64-bit)</option>
+                                        <option value="ubuntuserver_64">Ubuntu Server (64-bit)</option>
+                                        <option value="proxmox_64">Proxmox VE (64-bit)</option>
+                                        <option value="freebsd_64">FreeBSD (64-bit)</option>
+                                        <option value="windows_2022_64">Windows Server 2022</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1" for="rush-duration">Duration</label>
+                                    <select id="rush-duration" class="w-full bg-gray-700 px-3 py-2 rounded">
+                                        <option value="P1M" selected>1 month</option>
+                                        <option value="P3M">3 months</option>
+                                        <option value="P6M">6 months</option>
+                                        <option value="P12M">12 months</option>
+                                        <option value="P24M">24 months</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="flex flex-wrap items-center gap-4">
+                                <label class="flex items-center gap-2">
+                                    <input type="checkbox" id="rush-auto-pay" class="w-5 h-5">
+                                    <span>Auto-pay</span>
+                                </label>
+                                <label class="flex items-center gap-2">
+                                    <input type="checkbox" id="rush-waive" class="w-5 h-5">
+                                    <span>Waive retraction</span>
+                                </label>
+                            </div>
+                            <button type="submit" id="rush-submit-btn"
+                                    class="w-full bg-green-600 hover:bg-green-700 py-3 rounded-lg font-bold">
+                                Quick Order
+                            </button>
+                        </form>
+                    </div>
+                </div>
+
+                <div class="space-y-4">
+                    <div class="bg-gray-800 rounded-lg p-4">
+                        <h2 class="text-xl font-bold mb-4">Catalog Browser</h2>
+                        <div class="flex gap-2 mb-4">
+                            <select id="catalog-country" class="flex-1 bg-gray-700 px-3 py-2 rounded">
+                                <option value="IE">IE - Ireland</option>
+                                <option value="FR">FR - France</option>
+                                <option value="DE">DE - Germany</option>
+                                <option value="GB">GB - United Kingdom</option>
+                                <option value="ES">ES - Spain</option>
+                                <option value="PL">PL - Poland</option>
+                                <option value="IT">IT - Italy</option>
+                                <option value="PT">PT - Portugal</option>
+                                <option value="CZ">CZ - Czechia</option>
+                                <option value="FI">FI - Finland</option>
+                            </select>
+                            <button id="load-catalog-btn" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded">
+                                Load
+                            </button>
+                        </div>
+                        <div id="catalog-plans" class="space-y-2 max-h-64 overflow-y-auto">
+                            <p class="text-gray-500 text-sm">Load catalog to see available plans</p>
+                        </div>
+                    </div>
+
+                    <div class="bg-gray-800 rounded-lg p-4">
+                        <h2 class="text-xl font-bold mb-4">Monitored Servers</h2>
+                        <div id="monitored-list" class="space-y-2">
+                            <p class="text-gray-500 text-sm">No servers being monitored</p>
+                        </div>
+                    </div>
+
+                    <div class="bg-gray-800 rounded-lg p-4">
+                        <h2 class="text-xl font-bold mb-4">Recent Alerts</h2>
+                        <div id="recent-alerts" class="space-y-2 text-sm">
+                            <p class="text-gray-500">No recent alerts</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="order-complete-view" class="hidden text-center py-8">
+            <div class="bg-green-900/50 border border-green-700 rounded-lg p-8 max-w-lg mx-auto">
+                <h2 class="text-3xl font-bold text-green-400 mb-4">Order Placed!</h2>
+                <p id="order-id" class="text-xl mb-2"></p>
+                <p class="text-gray-300 mb-4">Your order has been submitted successfully.</p>
+                <a id="order-url" href="#" target="_blank" rel="noopener" class="text-blue-400 hover:underline">
+                    View in OVH Manager
+                </a>
+            </div>
+            <button id="back-to-monitor-btn" class="mt-6 bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg">
+                Back to Monitor
+            </button>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
