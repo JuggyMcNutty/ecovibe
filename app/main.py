@@ -95,7 +95,7 @@ def create_app():
         </body></html>
         """
 
-    @app.get("/health")
+    @app.get("/api/health")
     async def health() -> dict:
         """Lightweight liveness check.
 
