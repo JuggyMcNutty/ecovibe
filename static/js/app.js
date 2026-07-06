@@ -423,6 +423,7 @@ function humanizeAddon(code) {
     if (lower.startsWith('ram-')) return humanizeRam(code);
     if (lower.startsWith('softraid-') || lower.startsWith('noraid-')) return humanizeStorage(code);
     if (lower.startsWith('bandwidth-')) return humanizeBandwidth(code);
+    if (lower.startsWith('vrack-')) return humanizeVrack(code);
     return code;
 }
 
@@ -466,16 +467,43 @@ function humanizeStorage(code) {
 }
 
 function humanizeBandwidth(code) {
-    // bandwidth-{speed}-{optional: unguaranteed}-{product}-{region}
+    // bandwidth-{speed}[-upto-{max}][-unguaranteed]-{product}-{region}
     // e.g. bandwidth-500-25sk-eu → "500 Mbps"
-    //      bandwidth-1000-rise-game-eu → "1 Gbps"
+    //      bandwidth-1000-upto-2000-24sys3p-eu → "1–2 Gbps (burstable)"
     //      bandwidth-300-unguaranteed-25skle-us → "300 Mbps (unguaranteed)"
-    const m = code.match(/^bandwidth-(\d+)(?:-(unguaranteed))?-/i);
+    //      bandwidth-6000-upto-12000-24sys3p-eu → "6–12 Gbps (burstable)"
+    const m = code.match(/^bandwidth-(\d+)(?:-upto-(\d+))?(?:-(unguaranteed))?-/i);
     if (m) {
-        const speed = parseInt(m[1], 10);
-        const speedLabel = speed >= 1000 ? `${speed / 1000} Gbps` : `${speed} Mbps`;
-        const unguaranteed = m[2] ? ' (unguaranteed)' : '';
-        return `${speedLabel}${unguaranteed}`;
+        const min = parseInt(m[1], 10);
+        const fmt = (v) => v >= 1000 ? `${v / 1000} Gbps` : `${v} Mbps`;
+        let label;
+        if (m[2]) {
+            const max = parseInt(m[2], 10);
+            label = `${fmt(min)}–${fmt(max)} (burstable)`;
+        } else {
+            label = fmt(min);
+        }
+        if (m[3]) label += ' (unguaranteed)';
+        return label;
+    }
+    return code;
+}
+
+function humanizeVrack(code) {
+    // vrack-bandwidth-{min}[-upto-{max}]-{product}-{region}
+    // e.g. vrack-bandwidth-1000-24sys-eu → "vRack 1 Gbps"
+    //      vrack-bandwidth-1000-upto-2000-24rise-eu → "vRack 1–2 Gbps (burstable)"
+    //      vrack-bandwidth-50000-upto-100000-24sys3p-eu → "vRack 50–100 Gbps (burstable)"
+    //      vrack-bandwidth-500-25sk-eu → "vRack 500 Mbps"
+    const m = code.match(/^vrack-bandwidth-(\d+)(?:-upto-(\d+))?/i);
+    if (m) {
+        const min = parseInt(m[1], 10);
+        const fmt = (v) => v >= 1000 ? `${v / 1000} Gbps` : `${v} Mbps`;
+        if (m[2]) {
+            const max = parseInt(m[2], 10);
+            return `vRack ${fmt(min)}–${fmt(max)} (burstable)`;
+        }
+        return `vRack ${fmt(min)}`;
     }
     return code;
 }
@@ -580,12 +608,12 @@ function renderCatalogDetail(plan) {
     }
 
     // Build the FQN string from the plan base + selected addon short codes.
-    // OVH FQN format: {planBase}.{memory}.{storage}.{bandwidth} — order matters!
+    // OVH FQN format: {planBase}.{memory}.{storage}.{bandwidth}.{vrack} — order matters!
     function buildFqn() {
         const planBase = plan.planCode.split('-').slice(0, -1).join('-') || plan.planCode;
         const parts = [planBase];
-        // Canonical order: memory → storage → bandwidth
-        for (const famName of ['memory', 'storage', 'bandwidth']) {
+        // Canonical order: memory → storage → bandwidth → vrack
+        for (const famName of ['memory', 'storage', 'bandwidth', 'vrack']) {
             const addon = selectedAddons[famName];
             if (!addon) continue;
             // Strip the last 2 segments (product code + region) from the addon code
