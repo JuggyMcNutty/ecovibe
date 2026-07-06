@@ -297,10 +297,13 @@ function stopCatalogAutoRefresh() {
 }
 
 // Fetch stock for all plans in the catalog and store a boolean
-// (true = at least one config in stock somewhere) on each plan as
-// `_inStock`. Called after catalog load + on auto-refresh so the list
-// can show "Out of stock" badges. Requests are batched with limited
-// concurrency to avoid hammering the OVH API.
+// (true = the default/included config is in stock somewhere) on each
+// plan as `_inStock`. Only checks the included (free) memory+storage
+// combo — the ones that ship with the server at no extra cost — so
+// users see whether the base server is orderable, not whether any
+// paid upgrade happens to be in stock.
+// Called after catalog load + on auto-refresh so the list can show
+// "Out of stock" badges. Requests are batched with limited concurrency.
 async function refreshStockForAllPlans() {
     if (!state.plans.length) return;
     const planCodes = state.plans.map(p => p.planCode).filter(Boolean);
@@ -311,11 +314,21 @@ async function refreshStockForAllPlans() {
         while (i < planCodes.length) {
             const idx = i++;
             const pc = planCodes[idx];
+            const plan = state.plans.find(p => p.planCode === pc);
             try {
                 const data = await apiRequest('GET', `/catalog/stock?plan_code=${encodeURIComponent(pc)}`);
-                stockByPlan[pc] = (data || []).some(entry =>
-                    (entry.datacenters || []).some(dc => dc.availability !== 'unavailable')
-                );
+                // Find the default (included) memory and storage addons
+                const families = plan?.addonFamilies || [];
+                const defaultMem = families.find(f => f.name === 'memory')?.default || '';
+                const defaultStor = families.find(f => f.name === 'storage')?.default || '';
+                const memShort = addonShortCode(defaultMem);
+                const storShort = addonShortCode(defaultStor);
+                // Only consider the default combo as "in stock"
+                stockByPlan[pc] = (data || []).some(entry => {
+                    if (memShort && !codesMatch(memShort, entry.memory)) return false;
+                    if (storShort && !codesMatch(storShort, entry.storage)) return false;
+                    return (entry.datacenters || []).some(dc => dc.availability !== 'unavailable');
+                });
             } catch {
                 stockByPlan[pc] = true;
             }
@@ -722,6 +735,32 @@ function humanizeOs(code) {
     return OS_NAMES[code?.toLowerCase()] || (code ? code : 'Unknown');
 }
 
+// Map addon full code -> short code (strip region suffix) for matching
+// against stock data. e.g. 'ram-32g-ecc-2666-24sys-us' -> 'ram-32g-ecc-2666'
+function addonShortCode(code) {
+    if (!code) return '';
+    const segs = code.split('-');
+    return segs.length > 2 ? segs.slice(0, -2).join('-') : code;
+}
+
+// Normalize storage/memory codes for matching against stock data.
+// OVH's catalog and stock API use inconsistent capacity naming:
+// catalog says '2x512nvme' (physical), stock says '2x500nvme' (usable).
+// Also handles 1920↔1900, 3840↔3800, etc.
+function normalizeAddonCode(code) {
+    if (!code) return '';
+    return code.replace(/(\d+)(nvme|sa|sas|hdd)/gi, (m, num, unit) => {
+        const n = parseInt(num, 10);
+        if (n >= 100) return Math.round(n / 100) * 100 + unit;
+        return m;
+    });
+}
+
+function addonCodesMatch(a, b) {
+    if (!a || !b) return true;
+    return normalizeAddonCode(a) === normalizeAddonCode(b);
+}
+
 function renderCatalogDetail(plan) {
     state.selectedPlanCode = plan.planCode;
     const container = document.getElementById('catalog-detail');
@@ -1038,31 +1077,6 @@ function renderCatalogDetail(plan) {
 
     // Store stock data for lookups when addons change
     let stockData = [];
-    // Map addon full code -> short code (strip region suffix) for matching
-    // e.g. 'ram-32g-ecc-2666-24sys-us' -> 'ram-32g-ecc-2666'
-    function addonShort(code) {
-        if (!code) return '';
-        const segs = code.split('-');
-        return segs.length > 2 ? segs.slice(0, -2).join('-') : code;
-    }
-
-    // Normalize storage/memory codes for matching against stock data.
-    // OVH's catalog and stock API use inconsistent capacity naming:
-    // catalog says '2x512nvme' (physical), stock says '2x500nvme' (usable).
-    // Also handles 1920↔2000, 3840↔4000, etc.
-    function normalizeCode(code) {
-        if (!code) return '';
-        return code.replace(/(\d+)(nvme|sa|sas|hdd)/gi, (m, num, unit) => {
-            const n = parseInt(num, 10);
-            if (n >= 100) return Math.round(n / 100) * 100 + unit;
-            return m;
-        });
-    }
-
-    function codesMatch(a, b) {
-        if (!a || !b) return true;
-        return normalizeCode(a) === normalizeCode(b);
-    }
 
     function updateStockDisplay() {
         const sec = document.getElementById('stock-section');
@@ -1073,12 +1087,12 @@ function renderCatalogDetail(plan) {
             sec.appendChild(el('p', { class: 'text-gray-500 text-xs', text: 'Stock data unavailable.' }));
             return;
         }
-        const memShort = addonShort(selectedAddons.memory);
-        const storShort = addonShort(selectedAddons.storage);
+        const memShort = addonShortCode(selectedAddons.memory);
+        const storShort = addonShortCode(selectedAddons.storage);
         // Find the matching entry in stock data (with capacity normalization)
         const match = stockData.find(e =>
-            codesMatch(memShort, e.memory) &&
-            codesMatch(storShort, e.storage)
+            addonCodesMatch(memShort, e.memory) &&
+            addonCodesMatch(storShort, e.storage)
         );
         sec.innerHTML = '';
         sec.appendChild(el('p', { class: 'text-gray-400 text-sm font-bold mb-1', text: 'Live Stock' }));
