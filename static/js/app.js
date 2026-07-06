@@ -604,17 +604,80 @@ function renderCatalogDetail(plan) {
     // Parse server name + CPU from invoiceName (format: "MODEL | CPU")
     const parts = (plan.invoiceName || plan.planCode).split('|');
     const serverModel = parts[0].trim();
-    const cpu = parts.length > 1 ? parts[1].trim() : null;
+    const cpuFromInvoice = parts.length > 1 ? parts[1].trim() : null;
 
     // Commercial info from blobs
     const blobs = plan.blobs || {};
     const commercial = blobs.commercial || {};
     const useCase = (commercial.features || []).find(f => f.name === 'baremetal-server-usecases')?.value;
 
+    // Extract CPU/hardware specs from blobs.commercial.features.
+    // OVH lists CPU model, cores, frequency, RAM, storage as separate
+    // feature entries. LE/flash-sale plans don't include CPU in
+    // invoiceName, so we pull it from here instead.
+    const features = commercial.features || [];
+    const featureMap = {};
+    for (const f of features) {
+        if (f.name && f.value) featureMap[f.name] = f.value;
+    }
+
+    // Build a CPU description from the blobs features, falling back to
+    // the invoiceName's "| CPU" suffix, and finally to a generic label.
+    function buildCpuDescription() {
+        const cpuModel = featureMap['cpuModel'] || featureMap['cpu_model'] || featureMap['processor'];
+        const cpuCores = featureMap['cpuCores'] || featureMap['cpu_cores'] || featureMap['cores'];
+        const cpuFreq = featureMap['cpuFrequency'] || featureMap['cpu_frequency'] || featureMap['frequency'];
+        const cpuArch = featureMap['cpuArchitecture'] || featureMap['cpu_architecture'];
+
+        if (cpuModel) {
+            let desc = cpuModel;
+            if (cpuCores) desc += ` · ${cpuCores} cores`;
+            if (cpuFreq) desc += ` · ${cpuFreq}`;
+            if (cpuArch && cpuArch !== 'x86_64') desc += ` · ${cpuArch}`;
+            return desc;
+        }
+        if (cpuCores || cpuFreq) {
+            let desc = [];
+            if (cpuCores) desc.push(`${cpuCores} cores`);
+            if (cpuFreq) desc.push(cpuFreq);
+            return desc.join(' · ');
+        }
+        // Fall back to the invoiceName's CPU suffix (regular plans)
+        if (cpuFromInvoice) return cpuFromInvoice;
+        return null;
+    }
+
+    // Extract other hardware specs (RAM, storage, etc.) from features
+    function buildHardwareSpecs() {
+        const specs = [];
+        const ram = featureMap['memory'] || featureMap['ram'] || featureMap['memorySize'];
+        const storage = featureMap['storage'] || featureMap['disk'] || featureMap['storageSize'];
+        const raid = featureMap['raid'] || featureMap['raidController'];
+        const network = featureMap['network'] || featureMap['bandwidth'];
+        if (ram) specs.push(['RAM', ram]);
+        if (storage) specs.push(['Storage', storage]);
+        if (raid) specs.push(['RAID', raid]);
+        if (network) specs.push(['Network', network]);
+        return specs;
+    }
+
+    const cpuDesc = buildCpuDescription();
+    const hardwareSpecs = buildHardwareSpecs();
+
     // Header
     container.appendChild(el('h2', { class: 'text-2xl font-bold text-blue-400 mb-1', text: serverModel }));
-    if (cpu) {
-        container.appendChild(el('p', { class: 'text-gray-300 mb-1', text: cpu }));
+    if (cpuDesc) {
+        container.appendChild(el('p', { class: 'text-gray-300 mb-1', text: cpuDesc }));
+    }
+    if (hardwareSpecs.length) {
+        const specsRow = el('div', { class: 'flex flex-wrap gap-2 mb-2' });
+        for (const [label, value] of hardwareSpecs) {
+            specsRow.appendChild(el('span', {
+                class: 'inline-block bg-gray-700 text-gray-300 text-xs px-2 py-1 rounded',
+                text: `${label}: ${value}`,
+            }));
+        }
+        container.appendChild(specsRow);
     }
     if (region) {
         container.appendChild(el('span', { class: 'inline-block bg-yellow-600/30 text-yellow-400 text-xs px-2 py-1 rounded mb-2', text: region }));
