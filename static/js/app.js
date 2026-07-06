@@ -308,7 +308,7 @@ function getFilteredPlans() {
 function renderCatalogList() {
     const container = document.getElementById('catalog-plans');
     container.innerHTML = '';
-    const plans = getFilteredPlans().slice(0, 50);
+    const plans = getFilteredPlans().slice(0, 100);
     if (plans.length === 0) {
         container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No plans match your search.' }));
         return;
@@ -320,9 +320,9 @@ function renderCatalogList() {
         const name = el('span', { class: 'font-bold text-blue-400', text: plan.invoiceName || plan.planCode });
         const region = planRegion(plan.planCode);
         const regionSpan = region ? el('span', { class: 'text-yellow-400 ml-1 text-xs', text: `[${region}]` }) : null;
-        const code = el('span', { class: 'text-gray-400 ml-2', text: plan.planCode });
+        const code = el('span', { class: 'text-gray-400 ml-2 text-xs', text: plan.planCode });
         const left = el('div', {}, [name, regionSpan, code]);
-        const price = el('span', { class: 'text-green-400', text: priceText });
+        const price = el('span', { class: 'text-green-400 text-sm', text: priceText });
 
         const div = el('div', {
             class: 'bg-gray-700 rounded p-2 text-sm flex justify-between items-center cursor-pointer hover:bg-gray-600',
@@ -332,6 +332,7 @@ function renderCatalogList() {
 
         const selectPlan = () => {
             document.getElementById('plan-select').value = plan.planCode;
+            renderCatalogDetail(plan);
         };
         div.addEventListener('click', selectPlan);
         div.addEventListener('keydown', (e) => {
@@ -342,6 +343,146 @@ function renderCatalogList() {
         });
         container.appendChild(div);
     });
+}
+
+function renderCatalogDetail(plan) {
+    const container = document.getElementById('catalog-detail');
+    container.innerHTML = '';
+
+    const monthly = getPlanMonthlyPrice(plan);
+    const priceText = monthly?.formattedPrice || (monthly?.price != null ? formatPrice(monthly.price) : 'On request');
+    const region = planRegion(plan.planCode);
+
+    // Parse server name + CPU from invoiceName (format: "MODEL | CPU")
+    const parts = (plan.invoiceName || plan.planCode).split('|');
+    const serverModel = parts[0].trim();
+    const cpu = parts.length > 1 ? parts[1].trim() : null;
+
+    // Commercial info from blobs
+    const blobs = plan.blobs || {};
+    const commercial = blobs.commercial || {};
+    const useCase = (commercial.features || []).find(f => f.name === 'baremetal-server-usecases')?.value;
+
+    // Header
+    container.appendChild(el('h2', { class: 'text-2xl font-bold text-blue-400 mb-1', text: serverModel }));
+    if (cpu) {
+        container.appendChild(el('p', { class: 'text-gray-300 mb-1', text: cpu }));
+    }
+    if (region) {
+        container.appendChild(el('span', { class: 'inline-block bg-yellow-600/30 text-yellow-400 text-xs px-2 py-1 rounded mb-2', text: region }));
+    }
+    container.appendChild(el('p', { class: 'text-gray-500 text-xs font-mono mb-4', text: plan.planCode }));
+
+    // Price
+    const priceSection = el('div', { class: 'bg-gray-700 rounded p-3 mb-4' }, [
+        el('div', { class: 'flex justify-between items-center' }, [
+            el('span', { class: 'text-gray-400 text-sm', text: 'Monthly price' }),
+            el('span', { class: 'text-green-400 font-bold text-lg', text: priceText }),
+        ]),
+    ]);
+    if (monthly?.promotions?.length) {
+        const promo = monthly.promotions[0];
+        priceSection.appendChild(el('p', { class: 'text-yellow-400 text-xs mt-1', text: `Promo: ${promo.name} (${promo.formattedValue || promo.value + '%'} off)` }));
+    }
+    container.appendChild(priceSection);
+
+    // Hardware specs from addonFamilies
+    const families = plan.addonFamilies || [];
+    const specsSection = el('div', { class: 'space-y-3 mb-4' });
+    specsSection.appendChild(el('h3', { class: 'font-bold text-gray-400 text-sm uppercase', text: 'Configuration Options' }));
+
+    for (const fam of families) {
+        const famName = fam.name.charAt(0).toUpperCase() + fam.name.slice(1);
+        const items = (fam.addons || []).map(addon => {
+            const isDefault = addon === fam.default;
+            return el('li', { class: 'flex items-center gap-2' }, [
+                el('span', { class: isDefault ? 'text-green-400' : 'text-gray-300', text: addon }),
+                isDefault ? el('span', { class: 'text-green-500 text-xs', text: '(default)' }) : null,
+            ]);
+        });
+        specsSection.appendChild(el('div', {}, [
+            el('p', { class: 'text-gray-400 text-sm font-bold', text: `${famName}${fam.mandatory ? ' *' : ''}` }),
+            el('ul', { class: 'text-xs space-y-1 ml-2' }, items),
+        ]));
+    }
+    if (!families.length) {
+        specsSection.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No addon configurations listed.' }));
+    }
+    container.appendChild(specsSection);
+
+    // Available datacenters
+    const configs = plan.configurations || [];
+    const dcConfig = configs.find(c => c.name === 'dedicated_datacenter');
+    if (dcConfig && dcConfig.values && dcConfig.values.length) {
+        const dcList = dcConfig.values.map(dc => el('span', { class: 'inline-block bg-gray-700 text-gray-300 text-xs px-2 py-1 rounded mr-1 mb-1', text: dc }));
+        container.appendChild(el('div', { class: 'mb-4' }, [
+            el('p', { class: 'text-gray-400 text-sm font-bold mb-1', text: 'Available Datacenters' }),
+            el('div', {}, dcList),
+        ]));
+    }
+
+    // OS options
+    const osConfig = configs.find(c => c.name === 'dedicated_os');
+    if (osConfig && osConfig.values && osConfig.values.length) {
+        const osList = osConfig.values.map(os => el('span', { class: 'inline-block bg-gray-700 text-gray-300 text-xs px-2 py-1 rounded mr-1 mb-1', text: os }));
+        container.appendChild(el('div', { class: 'mb-4' }, [
+            el('p', { class: 'text-gray-400 text-sm font-bold mb-1', text: 'OS Options' }),
+            el('div', {}, osList),
+        ]));
+    }
+
+    // Use case
+    if (useCase) {
+        container.appendChild(el('div', { class: 'mb-4' }, [
+            el('span', { class: 'inline-block bg-blue-600/30 text-blue-400 text-xs px-2 py-1 rounded', text: `Use case: ${useCase}` }),
+        ]));
+    }
+
+    // Actions
+    const actions = el('div', { class: 'flex gap-2 mt-4 pt-4 border-t border-gray-700' }, [
+        el('button', {
+            class: 'bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded font-bold',
+            text: 'Watch This Plan',
+            onclick: () => {
+                document.getElementById('plan-select').value = plan.planCode;
+                switchTab('monitor-tab');
+                document.getElementById('fqn-pattern').focus();
+            }
+        }),
+        el('button', {
+            class: 'bg-green-600 hover:bg-green-700 px-4 py-2 rounded',
+            text: 'Pre-fill Rush Order',
+            onclick: () => {
+                document.getElementById('rush-plan-code').value = plan.planCode;
+                // Build a default FQN from the plan's default addons
+                const fams = plan.addonFamilies || [];
+                const fqnParts = [plan.planCode.split('-')[0]];
+                for (const fam of fams) {
+                    if (fam.default) {
+                        const defaultAddon = fam.default.replace(`-${plan.planCode}`, '').replace(`-${plan.planCode.split('-')[0]}`, '');
+                        fqnParts.push(defaultAddon);
+                    }
+                }
+                document.getElementById('rush-fqn').value = fqnParts.join('.');
+                switchTab('monitor-tab');
+                document.getElementById('rush-order-form').scrollIntoView({ behavior: 'smooth' });
+            }
+        }),
+    ]);
+    container.appendChild(actions);
+}
+
+function switchTab(tabId) {
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        const target = btn.dataset.tab;
+        if (target === tabId) {
+            btn.className = 'tab-btn px-4 py-2 rounded-t-lg bg-gray-800 text-blue-400 font-bold';
+        } else {
+            btn.className = 'tab-btn px-4 py-2 rounded-t-lg bg-gray-700 text-gray-400 hover:text-gray-200';
+        }
+    });
+    document.getElementById('monitor-tab').classList.toggle('hidden', tabId !== 'monitor-tab');
+    document.getElementById('catalog-tab').classList.toggle('hidden', tabId !== 'catalog-tab');
 }
 
 // --- 5. Alerts (CRUD, render lists) ----------------------------------------
@@ -1063,6 +1204,13 @@ async function init() {
     document.getElementById('settings-btn').addEventListener('click', () => {
         showView('credentials');
         loadExistingCredentials();
+    });
+
+    // Tab switching
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            switchTab(btn.dataset.tab);
+        });
     });
 
     document.getElementById('toggle-monitor-btn').addEventListener('click', () => {

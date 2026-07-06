@@ -113,7 +113,14 @@
         </div>
 
         <div id="monitor-view" class="hidden">
-            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- Tab bar -->
+            <div class="flex gap-2 mb-4 border-b border-gray-700">
+                <button data-tab="monitor-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-800 text-blue-400 font-bold">Monitor</button>
+                <button data-tab="catalog-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-700 text-gray-400 hover:text-gray-200">Catalog</button>
+            </div>
+
+            <!-- Monitor tab -->
+            <div id="monitor-tab" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div class="lg:col-span-2 space-y-4">
                     <div class="bg-gray-800 rounded-lg p-4">
                         <div class="flex justify-between items-center mb-4">
@@ -239,6 +246,8 @@
                                         <option value="windows_2022_64">Windows Server 2022</option>
                                     </select>
                                 </div>
+                            </div>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                 <div>
                                     <label class="block text-sm text-gray-400 mb-1" for="rush-duration">Duration</label>
                                     <select id="rush-duration" class="w-full bg-gray-700 px-3 py-2 rounded">
@@ -249,16 +258,16 @@
                                         <option value="P24M">24 months</option>
                                     </select>
                                 </div>
-                            </div>
-                            <div class="flex flex-wrap items-center gap-4">
-                                <label class="flex items-center gap-2">
-                                    <input type="checkbox" id="rush-auto-pay" class="w-5 h-5">
-                                    <span>Auto-pay</span>
-                                </label>
-                                <label class="flex items-center gap-2">
-                                    <input type="checkbox" id="rush-waive" class="w-5 h-5">
-                                    <span>Waive retraction</span>
-                                </label>
+                                <div class="flex items-end gap-4">
+                                    <label class="flex items-center gap-2">
+                                        <input type="checkbox" id="rush-auto-pay" class="w-5 h-5">
+                                        <span>Auto-pay</span>
+                                    </label>
+                                    <label class="flex items-center gap-2">
+                                        <input type="checkbox" id="rush-waive" class="w-5 h-5">
+                                        <span>Waive retraction</span>
+                                    </label>
+                                </div>
                             </div>
                             <button type="submit" id="rush-submit-btn"
                                     class="w-full bg-green-600 hover:bg-green-700 py-3 rounded-lg font-bold">
@@ -301,30 +310,6 @@
 
                 <div class="space-y-4">
                     <div class="bg-gray-800 rounded-lg p-4">
-                        <h2 class="text-xl font-bold mb-4">Catalog Browser</h2>
-                        <div class="flex gap-2 mb-2">
-                            <select id="catalog-country" class="flex-1 bg-gray-700 px-3 py-2 rounded">
-                            </select>
-                            <button id="load-catalog-btn" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded">
-                                Load
-                            </button>
-                        </div>
-                        <div class="flex gap-2 mb-3">
-                            <input type="text" id="catalog-search" placeholder="Search plan name or code..."
-                                   class="flex-1 bg-gray-700 px-3 py-1 rounded text-sm">
-                            <select id="catalog-sort" class="bg-gray-700 px-2 py-1 rounded text-sm">
-                                <option value="default">Default</option>
-                                <option value="price-asc">Price: low to high</option>
-                                <option value="price-desc">Price: high to low</option>
-                                <option value="name">Name</option>
-                            </select>
-                        </div>
-                        <div id="catalog-plans" class="space-y-2 max-h-64 overflow-y-auto">
-                            <p class="text-gray-500 text-sm">Load catalog to see available plans</p>
-                        </div>
-                    </div>
-
-                    <div class="bg-gray-800 rounded-lg p-4">
                         <h2 class="text-xl font-bold mb-4">Monitored Servers</h2>
                         <div id="monitored-list" class="space-y-2">
                             <p class="text-gray-500 text-sm">No servers being monitored</p>
@@ -346,6 +331,38 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Catalog tab -->
+            <div id="catalog-tab" class="hidden">
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div class="bg-gray-800 rounded-lg p-4">
+                        <div class="flex gap-2 mb-2">
+                            <select id="catalog-country" class="flex-1 bg-gray-700 px-3 py-2 rounded">
+                            </select>
+                            <button id="load-catalog-btn" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded">
+                                Load
+                            </button>
+                        </div>
+                        <div class="flex gap-2 mb-3">
+                            <input type="text" id="catalog-search" placeholder="Search plan name or code..."
+                                   class="flex-1 bg-gray-700 px-3 py-1 rounded text-sm">
+                            <select id="catalog-sort" class="bg-gray-700 px-2 py-1 rounded text-sm">
+                                <option value="default">Default</option>
+                                <option value="price-asc">Price: low to high</option>
+                                <option value="price-desc">Price: high to low</option>
+                                <option value="name">Name</option>
+                            </select>
+                        </div>
+                        <div id="catalog-plans" class="space-y-2 max-h-[70vh] overflow-y-auto">
+                            <p class="text-gray-500 text-sm">Load catalog to see available plans</p>
+                        </div>
+                    </div>
+
+                    <div id="catalog-detail" class="bg-gray-800 rounded-lg p-4">
+                        <p class="text-gray-500 text-sm">Select a plan to see details.</p>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <div id="order-complete-view" class="hidden text-center py-8">
@@ -363,6 +380,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=5"></script>
+    <script src="/static/js/app.js?v=6"></script>
 </body>
 </html>
