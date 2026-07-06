@@ -254,6 +254,32 @@ class OVHService:
         """
         return self.get("/order/eco/availableConfiguration", planCode=plan_code)
 
+    def check_config_availability(
+        self, plan_code: str, memory: str | None = None, storage: str | None = None
+    ) -> list[str]:
+        """Return the list of datacenters where a specific config is in stock.
+
+        Queries ``/dedicated/server/datacenter/availabilities`` and filters
+        by memory/storage addon codes. Returns DC codes (e.g. ``['vin']``)
+        where ``availability`` is not ``'unavailable'``. Empty list means
+        the config is out of stock everywhere.
+        """
+        avail = self.get(
+            "/dedicated/server/datacenter/availabilities", planCode=plan_code
+        )
+        for entry in avail:
+            if (
+                entry.get("planCode") == plan_code
+                and (not memory or entry.get("memory") == memory)
+                and (not storage or entry.get("storage") == storage)
+            ):
+                return [
+                    dc.get("datacenter")
+                    for dc in entry.get("datacenters", [])
+                    if dc.get("availability") != "unavailable"
+                ]
+        return []
+
     def get_plan_price(self, plan_code: str, subsidiary: str | None = None) -> int | None:
         """Look up the default monthly price (raw integer, in microcents) for a plan.
 

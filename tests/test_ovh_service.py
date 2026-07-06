@@ -395,3 +395,50 @@ def test_get_plan_datacenters_returns_empty_for_unknown_plan():
     svc = _make_service()
     svc.fetch_catalog = MagicMock(return_value={"plans": []})
     assert svc.get_plan_datacenters("nope") == []
+
+
+def test_check_config_availability_returns_available_dcs():
+    """check_config_availability should return only DCs where the config
+    is in stock (availability != 'unavailable')."""
+    svc = _make_service()
+    fake_avail = [
+        {
+            "fqn": "24sys012-v1-us.ram-32g-ecc-2666.softraid-2x4000sa",
+            "planCode": "24sys012-v1-us",
+            "memory": "ram-32g-ecc-2666",
+            "storage": "softraid-2x4000sa",
+            "datacenters": [
+                {"availability": "unavailable", "datacenter": "hil"},
+                {"availability": "unavailable", "datacenter": "vin"},
+            ],
+        },
+        {
+            "fqn": "24sys012-v1-us.ram-32g-ecc-2666.softraid-2x1920nvme",
+            "planCode": "24sys012-v1-us",
+            "memory": "ram-32g-ecc-2666",
+            "storage": "softraid-2x1920nvme",
+            "datacenters": [
+                {"availability": "unavailable", "datacenter": "hil"},
+                {"availability": "1H-low", "datacenter": "vin"},
+            ],
+        },
+    ]
+    svc._client.get = MagicMock(return_value=fake_avail)
+
+    # Out-of-stock config
+    dcs = svc.check_config_availability(
+        "24sys012-v1-us", "ram-32g-ecc-2666", "softraid-2x4000sa"
+    )
+    assert dcs == []
+
+    # In-stock config
+    dcs = svc.check_config_availability(
+        "24sys012-v1-us", "ram-32g-ecc-2666", "softraid-2x1920nvme"
+    )
+    assert dcs == ["vin"]
+
+
+def test_check_config_availability_returns_empty_for_unknown_config():
+    svc = _make_service()
+    svc._client.get = MagicMock(return_value=[])
+    assert svc.check_config_availability("nope", "ram", "storage") == []

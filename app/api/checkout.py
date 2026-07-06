@@ -110,6 +110,45 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
                 duration=req.duration,
             )
 
+        # Pre-checkout availability check: verify the selected RAM+storage
+        # combo is actually in stock before trying to configure a DC. OVH
+        # returns a confusing 500 "Internal server error" (or 400 "not
+        # available in DC") at checkout if the config is out of stock,
+        # rather than a clear "out of stock" message.
+        try:
+            available_dcs = await asyncio.to_thread(
+                service.check_config_availability,
+                req.plan_code,
+                req.ram,
+                req.storage,
+            )
+            if not available_dcs:
+                raise OVHServiceError(
+                    f"Configuration {req.plan_code} with ram={req.ram or 'default'}, "
+                    f"storage={req.storage or 'default'} is out of stock in all datacenters. "
+                    "Try a different RAM/storage combination."
+                )
+            _trace(f"config available in DCs: {available_dcs}")
+            # If the user selected specific DCs, filter to those.
+            # If none of the user's DCs have stock, auto-use any available DC.
+            selected_dcs = [d for d in datacenters if d]
+            if selected_dcs:
+                user_available = [d for d in selected_dcs if d in available_dcs]
+                if user_available:
+                    datacenters = user_available
+                else:
+                    _trace(
+                        f"selected DCs {selected_dcs} have no stock - "
+                        f"falling back to available: {available_dcs}"
+                    )
+                    datacenters = available_dcs
+            else:
+                datacenters = available_dcs
+        except OVHServiceError:
+            if not any(d for d in datacenters):
+                raise
+            # If availability check fails but user selected DCs, proceed anyway.
+
         # Multi-DC fallback: try each datacenter until one is accepted.
         dc_set = False
         last_dc_error: OVHServiceError | None = None
