@@ -44,7 +44,18 @@ def create_app():
     from fastapi.responses import HTMLResponse
     from fastapi.staticfiles import StaticFiles
 
-    from app.api import alert, cart, catalog, checkout, insights, monitor, profiles, setup, sniper
+    from app.api import (
+        account,
+        alert,
+        cart,
+        catalog,
+        checkout,
+        insights,
+        monitor,
+        profiles,
+        setup,
+        sniper,
+    )
     from app.config import get_settings
 
     app = FastAPI(
@@ -80,6 +91,7 @@ def create_app():
     app.include_router(profiles.router)
     app.include_router(sniper.router)
     app.include_router(setup.router)
+    app.include_router(account.router)
 
     @app.get("/", response_class=HTMLResponse)
     async def root() -> str:

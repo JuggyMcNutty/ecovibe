@@ -200,6 +200,12 @@ POST   /api/setup/credentials                    - Save OVH credentials to datab
 POST   /api/setup/test                           - Test credentials via GET /me on OVH
 DELETE /api/setup/credentials                    - Delete stored credentials
 
+# Account & Billing
+GET  /api/account/me                             - OVH account info (name, nichandle, email)
+GET  /api/account/payment-methods                - Available payment methods on the account
+GET  /api/account/checkout-defaults              - Default checkout preferences (auto-pay, duration, etc.)
+PUT  /api/account/checkout-defaults              - Save default checkout preferences
+
 # Health
 GET  /api/health                                - Service health + config status
 ```

@@ -66,7 +66,9 @@ let state = {
     currentStock: {},
     cart: null,
     cartCreatedAt: null,
-    orderResult: null
+    orderResult: null,
+    billingLoaded: false,
+    checkoutDefaults: null
 };
 
 let audioContext = null;
@@ -574,8 +576,11 @@ function renderCatalogDetail(plan) {
         ]));
     }
 
-    // Actions
-    const actions = el('div', { class: 'flex gap-2 mt-4 pt-4 border-t border-gray-700' }, [
+    // Order form + actions
+    const orderSection = el('div', { class: 'mt-4 pt-4 border-t border-gray-700' });
+
+    // Quick actions row
+    orderSection.appendChild(el('div', { class: 'flex gap-2 mb-4' }, [
         el('button', {
             class: 'bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded font-bold',
             text: 'Watch This Plan',
@@ -586,26 +591,165 @@ function renderCatalogDetail(plan) {
             }
         }),
         el('button', {
-            class: 'bg-green-600 hover:bg-green-700 px-4 py-2 rounded',
-            text: 'Pre-fill Rush Order',
+            class: 'bg-green-600 hover:bg-green-700 px-4 py-2 rounded font-bold',
+            text: 'Order Now',
             onclick: () => {
-                document.getElementById('rush-plan-code').value = plan.planCode;
-                // Build a default FQN from the plan's default addons
-                const fams = plan.addonFamilies || [];
-                const fqnParts = [plan.planCode.split('-')[0]];
-                for (const fam of fams) {
-                    if (fam.default) {
-                        const defaultAddon = fam.default.replace(`-${plan.planCode}`, '').replace(`-${plan.planCode.split('-')[0]}`, '');
-                        fqnParts.push(defaultAddon);
-                    }
-                }
-                document.getElementById('rush-fqn').value = fqnParts.join('.');
-                switchTab('monitor-tab');
-                document.getElementById('rush-order-form').scrollIntoView({ behavior: 'smooth' });
+                const form = document.getElementById('catalog-order-form');
+                if (form) form.classList.toggle('hidden');
             }
         }),
+    ]));
+
+    // Inline order form (hidden until "Order Now" is clicked)
+    const orderForm = el('div', { id: 'catalog-order-form', class: 'hidden bg-gray-700 rounded p-4 space-y-3' });
+
+    // Build addon dropdowns from the plan's addonFamilies
+    const famMap = {};
+    for (const fam of families) {
+        famMap[fam.name] = fam;
+    }
+
+    // RAM dropdown
+    if (famMap.memory) {
+        const select = el('select', { id: 'order-ram', class: 'w-full bg-gray-900 px-3 py-2 rounded text-sm' });
+        for (const addon of (famMap.memory.addons || [])) {
+            const isDefault = addon === famMap.memory.default;
+            select.appendChild(el('option', { value: addon, text: `${humanizeAddon(addon)}${isDefault ? ' (default)' : ''}` }));
+        }
+        orderForm.appendChild(el('div', {}, [
+            el('label', { class: 'block text-gray-400 text-xs mb-1', text: 'Memory' }),
+            select,
+        ]));
+    }
+
+    // Storage dropdown
+    if (famMap.storage) {
+        const select = el('select', { id: 'order-storage', class: 'w-full bg-gray-900 px-3 py-2 rounded text-sm' });
+        for (const addon of (famMap.storage.addons || [])) {
+            const isDefault = addon === famMap.storage.default;
+            select.appendChild(el('option', { value: addon, text: `${humanizeAddon(addon)}${isDefault ? ' (default)' : ''}` }));
+        }
+        orderForm.appendChild(el('div', {}, [
+            el('label', { class: 'block text-gray-400 text-xs mb-1', text: 'Storage' }),
+            select,
+        ]));
+    }
+
+    // Bandwidth dropdown
+    if (famMap.bandwidth) {
+        const select = el('select', { id: 'order-bandwidth', class: 'w-full bg-gray-900 px-3 py-2 rounded text-sm' });
+        for (const addon of (famMap.bandwidth.addons || [])) {
+            const isDefault = addon === famMap.bandwidth.default;
+            select.appendChild(el('option', { value: addon, text: `${humanizeAddon(addon)}${isDefault ? ' (default)' : ''}` }));
+        }
+        orderForm.appendChild(el('div', {}, [
+            el('label', { class: 'block text-gray-400 text-xs mb-1', text: 'Bandwidth' }),
+            select,
+        ]));
+    }
+
+    // Datacenter dropdown from configurations
+    const dcConfig = configs.find(c => c.name === 'dedicated_datacenter');
+    if (dcConfig && dcConfig.values && dcConfig.values.length) {
+        const select = el('select', { id: 'order-datacenter', class: 'w-full bg-gray-900 px-3 py-2 rounded text-sm' });
+        for (const dc of dcConfig.values) {
+            select.appendChild(el('option', { value: dc, text: dc.toUpperCase() }));
+        }
+        orderForm.appendChild(el('div', {}, [
+            el('label', { class: 'block text-gray-400 text-xs mb-1', text: 'Datacenter' }),
+            select,
+        ]));
+    }
+
+    // Duration + OS in a row
+    const durOsRow = el('div', { class: 'grid grid-cols-2 gap-2' });
+    const durSelect = el('select', { id: 'order-duration', class: 'w-full bg-gray-900 px-3 py-2 rounded text-sm' });
+    for (const [val, label] of [['P1M','1 month'],['P3M','3 months'],['P6M','6 months'],['P12M','12 months'],['P24M','24 months']]) {
+        durSelect.appendChild(el('option', { value: val, text: label, selected: val === (state.checkoutDefaults?.duration || 'P1M') }));
+    }
+    durOsRow.appendChild(el('div', {}, [
+        el('label', { class: 'block text-gray-400 text-xs mb-1', text: 'Duration' }),
+        durSelect,
+    ]));
+
+    const osConfig = configs.find(c => c.name === 'dedicated_os');
+    const osSelect = el('select', { id: 'order-os', class: 'w-full bg-gray-900 px-3 py-2 rounded text-sm' });
+    if (osConfig && osConfig.values) {
+        for (const os of osConfig.values) {
+            osSelect.appendChild(el('option', { value: os, text: os }));
+        }
+    } else {
+        osSelect.appendChild(el('option', { value: 'none_64.en', text: 'No OS' }));
+    }
+    durOsRow.appendChild(el('div', {}, [
+        el('label', { class: 'block text-gray-400 text-xs mb-1', text: 'OS' }),
+        osSelect,
+    ]));
+    orderForm.appendChild(durOsRow);
+
+    // Checkboxes (pre-filled from billing defaults)
+    const checkboxRow = el('div', { class: 'flex flex-wrap gap-4' }, [
+        el('label', { class: 'flex items-center gap-2 text-sm' }, [
+            el('input', { type: 'checkbox', id: 'order-auto-pay', class: 'w-4 h-4', checked: state.checkoutDefaults?.auto_pay || false }),
+            el('span', { text: 'Auto-pay' }),
+        ]),
+        el('label', { class: 'flex items-center gap-2 text-sm' }, [
+            el('input', { type: 'checkbox', id: 'order-waive', class: 'w-4 h-4', checked: state.checkoutDefaults?.waive_retractation !== false }),
+            el('span', { text: 'Waive retraction' }),
+        ]),
     ]);
-    container.appendChild(actions);
+    orderForm.appendChild(checkboxRow);
+
+    // Place Order button
+    orderForm.appendChild(el('button', {
+        class: 'w-full bg-green-600 hover:bg-green-700 py-2 rounded font-bold',
+        text: 'Place Order',
+        onclick: async () => {
+            const ram = document.getElementById('order-ram')?.value || null;
+            const storage = document.getElementById('order-storage')?.value || null;
+            const bandwidth = document.getElementById('order-bandwidth')?.value || null;
+            const dc = document.getElementById('order-datacenter')?.value;
+            const duration = document.getElementById('order-duration')?.value || 'P1M';
+            const osVal = document.getElementById('order-os')?.value || 'none_64.en';
+            const autoPay = document.getElementById('order-auto-pay')?.checked || false;
+            const waive = document.getElementById('order-waive')?.checked || false;
+            const regionInfo = OVH_REGIONS[state.endpoint] || OVH_REGIONS['ovh-eu'];
+            const maxPrice = state.checkoutDefaults?.max_price || null;
+
+            if (!confirm(`Place order for ${serverModel}?\n${monthly?.formattedPrice || priceText}/mo\nDC: ${(dc||'default').toUpperCase()}\nDuration: ${duration}`)) {
+                return;
+            }
+
+            try {
+                showLoading();
+                const result = await apiRequest('POST', '/checkout/rush', {
+                    plan_code: plan.planCode,
+                    fqn: plan.planCode,
+                    ram, storage, bandwidth,
+                    datacenters: dc ? [dc] : [],
+                    region: regionInfo.rushRegion,
+                    os: osVal,
+                    duration,
+                    auto_pay: autoPay,
+                    waive_retractation: waive,
+                    max_price: maxPrice,
+                });
+                state.orderResult = result;
+                state.cart = null;
+                document.getElementById('order-id').textContent = `Order ID: ${result.orderId || 'N/A'}`;
+                document.getElementById('order-url').href = result.url || '#';
+                showView('order-complete');
+                await loadOrders();
+            } catch (e) {
+                showError(e.message);
+            } finally {
+                hideLoading();
+            }
+        }
+    }));
+
+    orderSection.appendChild(orderForm);
+    container.appendChild(orderSection);
 }
 
 function switchTab(tabId) {
@@ -619,6 +763,118 @@ function switchTab(tabId) {
     });
     document.getElementById('monitor-tab').classList.toggle('hidden', tabId !== 'monitor-tab');
     document.getElementById('catalog-tab').classList.toggle('hidden', tabId !== 'catalog-tab');
+    const billingTab = document.getElementById('billing-tab');
+    if (billingTab) billingTab.classList.toggle('hidden', tabId !== 'billing-tab');
+    // Lazy-load billing data when switching to that tab
+    if (tabId === 'billing-tab' && !state.billingLoaded) {
+        loadBillingInfo();
+    }
+}
+
+// --- 4b. Billing & account info -------------------------------------------
+
+async function loadBillingInfo() {
+    await Promise.all([loadAccountInfo(), loadPaymentMethods(), loadCheckoutDefaults()]);
+    state.billingLoaded = true;
+}
+
+async function loadAccountInfo() {
+    const container = document.getElementById('account-info');
+    if (!container) return;
+    container.innerHTML = '';
+    try {
+        const me = await apiRequest('GET', '/account/me');
+        if (!me) {
+            container.appendChild(el('p', { class: 'text-red-400 text-sm', text: 'Could not load account info.' }));
+            return;
+        }
+        const fields = [
+            ['Name', `${me.firstname || ''} ${me.name || ''}`.trim()],
+            ['Nichandle', me.nichandle],
+            ['Email', me.email],
+            ['Country', me.country],
+            ['Currency', me.currency?.code || me.currency],
+            ['State', me.state],
+            ['Legal form', me.legalform],
+        ].filter(([, v]) => v);
+        const grid = el('div', { class: 'grid grid-cols-1 sm:grid-cols-2 gap-2' });
+        for (const [label, value] of fields) {
+            grid.appendChild(el('div', { class: 'bg-gray-700 rounded p-2' }, [
+                el('p', { class: 'text-gray-500 text-xs', text: label }),
+                el('p', { class: 'text-gray-200 text-sm', text: String(value) }),
+            ]));
+        }
+        container.appendChild(grid);
+    } catch (e) {
+        container.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
+    }
+}
+
+async function loadPaymentMethods() {
+    const container = document.getElementById('payment-methods');
+    if (!container) return;
+    container.innerHTML = '';
+    try {
+        const data = await apiRequest('GET', '/account/payment-methods');
+        const methods = data?.payment_methods || [];
+        if (methods.length === 0) {
+            container.appendChild(el('p', { class: 'text-yellow-400 text-sm', text: 'No payment methods found. Add one in the OVH Manager.' }));
+            return;
+        }
+        for (const m of methods) {
+            const isDefault = m.default;
+            const label = m.description || m.label || m.paymentMethodType || 'Unknown';
+            const status = m.status || 'unknown';
+            const card = el('div', {
+                class: `rounded p-3 ${isDefault ? 'bg-green-900/30 border border-green-700' : 'bg-gray-700'}`
+            }, [
+                el('div', { class: 'flex justify-between items-center' }, [
+                    el('span', { class: 'text-gray-200 font-bold', text: label }),
+                    isDefault ? el('span', { class: 'text-green-500 text-xs font-bold', text: 'DEFAULT' }) : null,
+                ]),
+                el('p', { class: 'text-gray-400 text-xs mt-1', text: `Status: ${status}` }),
+            ]);
+            container.appendChild(card);
+        }
+    } catch (e) {
+        container.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
+    }
+}
+
+async function loadCheckoutDefaults() {
+    try {
+        const defaults = await apiRequest('GET', '/account/checkout-defaults');
+        if (!defaults) return;
+        state.checkoutDefaults = defaults;
+        document.getElementById('default-duration').value = defaults.duration || 'P1M';
+        document.getElementById('default-auto-pay').checked = defaults.auto_pay || false;
+        document.getElementById('default-waive').checked = defaults.waive_retractation !== false;
+        if (defaults.max_price) {
+            document.getElementById('default-max-price').value = (defaults.max_price / 100000000).toFixed(2);
+        }
+    } catch (e) {
+        console.error('Failed to load checkout defaults:', e);
+    }
+}
+
+async function saveCheckoutDefaults(e) {
+    e.preventDefault();
+    const maxPriceRaw = document.getElementById('default-max-price').value.trim();
+    const maxPrice = maxPriceRaw ? Math.round(parseFloat(maxPriceRaw) * 100000000) : null;
+    const body = {
+        auto_pay: document.getElementById('default-auto-pay').checked,
+        waive_retractation: document.getElementById('default-waive').checked,
+        duration: document.getElementById('default-duration').value,
+        max_price: maxPrice,
+    };
+    try {
+        await apiRequest('PUT', '/account/checkout-defaults', body);
+        state.checkoutDefaults = body;
+        showError('Checkout defaults saved.');
+        setTimeout(() => hideError(), 2000);
+    } catch (e) {
+        showError(e.message);
+    }
 }
 
 // --- 5. Alerts (CRUD, render lists) ----------------------------------------
@@ -1402,6 +1658,9 @@ async function init() {
             startCatalogAutoRefresh(interval);
         }
     });
+
+    // Checkout defaults form
+    document.getElementById('checkout-defaults-form')?.addEventListener('submit', saveCheckoutDefaults);
 
     document.getElementById('rush-order-btn').addEventListener('click', () => {
         document.getElementById('rush-submit-btn').click();
