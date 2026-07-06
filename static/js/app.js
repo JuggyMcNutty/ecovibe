@@ -50,7 +50,8 @@ let state = {
     orderResult: null,
     billingLoaded: false,
     checkoutDefaults: null,
-    addonPrices: {}
+    addonPrices: {},
+    productSpecs: {},
 };
 
 let audioContext = null;
@@ -219,9 +220,11 @@ async function loadCatalog(country) {
             // Backwards compat: old API returned just the plans array
             state.plans = resp;
             state.addonPrices = {};
+            state.productSpecs = {};
         } else {
             state.plans = resp.plans || [];
             state.addonPrices = resp.addonPrices || {};
+            state.productSpecs = resp.productSpecs || {};
         }
         renderPlanSelect();
         renderCatalogList();
@@ -245,9 +248,11 @@ async function refreshCatalogSilent() {
         if (Array.isArray(resp)) {
             state.plans = resp;
             state.addonPrices = {};
+            state.productSpecs = {};
         } else {
             state.plans = resp.plans || [];
             state.addonPrices = resp.addonPrices || {};
+            state.productSpecs = resp.productSpecs || {};
         }
         renderPlanSelect();
         renderCatalogList();
@@ -606,78 +611,69 @@ function renderCatalogDetail(plan) {
     const serverModel = parts[0].trim();
     const cpuFromInvoice = parts.length > 1 ? parts[1].trim() : null;
 
-    // Commercial info from blobs
+    // Commercial info from blobs (use cases, etc.)
     const blobs = plan.blobs || {};
     const commercial = blobs.commercial || {};
     const useCase = (commercial.features || []).find(f => f.name === 'baremetal-server-usecases')?.value;
 
-    // Extract CPU/hardware specs from blobs.commercial.features.
-    // OVH lists CPU model, cores, frequency, RAM, storage as separate
-    // feature entries. LE/flash-sale plans don't include CPU in
-    // invoiceName, so we pull it from here instead.
-    const features = commercial.features || [];
-    const featureMap = {};
-    for (const f of features) {
-        if (f.name && f.value) featureMap[f.name] = f.value;
-    }
+    // Product specs (CPU, chassis, services) come from the catalog's
+    // top-level products array, linked via plan.product. These contain
+    // the real CPU model/cores/frequency even for LE/flash-sale plans
+    // whose invoiceName is just "SYS-LE-1" with no CPU info.
+    const productSpec = state.productSpecs[plan.product] || {};
+    const cpu = productSpec.cpu;
+    const frame = productSpec.frame;
+    const services = productSpec.services;
+    const productDesc = productSpec.description;
 
-    // Build a CPU description from the blobs features, falling back to
-    // the invoiceName's "| CPU" suffix, and finally to a generic label.
+    // Build a CPU description from product specs, falling back to
+    // the invoiceName's "| CPU" suffix for older catalog responses.
     function buildCpuDescription() {
-        const cpuModel = featureMap['cpuModel'] || featureMap['cpu_model'] || featureMap['processor'];
-        const cpuCores = featureMap['cpuCores'] || featureMap['cpu_cores'] || featureMap['cores'];
-        const cpuFreq = featureMap['cpuFrequency'] || featureMap['cpu_frequency'] || featureMap['frequency'];
-        const cpuArch = featureMap['cpuArchitecture'] || featureMap['cpu_architecture'];
-
-        if (cpuModel) {
-            let desc = cpuModel;
-            if (cpuCores) desc += ` · ${cpuCores} cores`;
-            if (cpuFreq) desc += ` · ${cpuFreq}`;
-            if (cpuArch && cpuArch !== 'x86_64') desc += ` · ${cpuArch}`;
+        if (cpu && cpu.model) {
+            let desc = `${cpu.brand} ${cpu.model}`.trim();
+            const coreInfo = cpu.cores ? `${cpu.cores}c/${cpu.threads || cpu.cores}t` : '';
+            const freqInfo = cpu.frequency ? `${cpu.frequency}GHz` : '';
+            const boostInfo = cpu.boost ? `(${cpu.boost}GHz boost)` : '';
+            const parts2 = [coreInfo, freqInfo, boostInfo].filter(Boolean);
+            if (parts2.length) desc += ` · ${parts2.join(' ')}`;
+            if (cpu.number && cpu.number > 1) desc += ` · ${cpu.number} CPU`;
             return desc;
         }
-        if (cpuCores || cpuFreq) {
-            let desc = [];
-            if (cpuCores) desc.push(`${cpuCores} cores`);
-            if (cpuFreq) desc.push(cpuFreq);
-            return desc.join(' · ');
+        if (cpu && cpu.cores) {
+            let desc = `${cpu.cores} cores`;
+            if (cpu.threads) desc += ` / ${cpu.threads} threads`;
+            if (cpu.frequency) desc += ` · ${cpu.frequency}GHz`;
+            return desc;
         }
         // Fall back to the invoiceName's CPU suffix (regular plans)
         if (cpuFromInvoice) return cpuFromInvoice;
+        // Fall back to the product description (usually the CPU model)
+        if (productDesc) return productDesc;
         return null;
     }
 
-    // Extract other hardware specs (RAM, storage, etc.) from features
-    function buildHardwareSpecs() {
-        const specs = [];
-        const ram = featureMap['memory'] || featureMap['ram'] || featureMap['memorySize'];
-        const storage = featureMap['storage'] || featureMap['disk'] || featureMap['storageSize'];
-        const raid = featureMap['raid'] || featureMap['raidController'];
-        const network = featureMap['network'] || featureMap['bandwidth'];
-        if (ram) specs.push(['RAM', ram]);
-        if (storage) specs.push(['Storage', storage]);
-        if (raid) specs.push(['RAID', raid]);
-        if (network) specs.push(['Network', network]);
-        return specs;
-    }
-
     const cpuDesc = buildCpuDescription();
-    const hardwareSpecs = buildHardwareSpecs();
 
     // Header
     container.appendChild(el('h2', { class: 'text-2xl font-bold text-blue-400 mb-1', text: serverModel }));
     if (cpuDesc) {
         container.appendChild(el('p', { class: 'text-gray-300 mb-1', text: cpuDesc }));
     }
-    if (hardwareSpecs.length) {
-        const specsRow = el('div', { class: 'flex flex-wrap gap-2 mb-2' });
-        for (const [label, value] of hardwareSpecs) {
-            specsRow.appendChild(el('span', {
+    // Hardware spec badges: chassis, SLA, anti-DDoS
+    const specBadges = [];
+    if (frame && frame.size) specBadges.push(`${frame.size} chassis`);
+    if (services && services.sla) specBadges.push(`${services.sla}% SLA`);
+    if (services && services.antiddos) specBadges.push(`Anti-DDoS ${services.antiddos}`);
+    if (productSpec.range) specBadges.push(`${productSpec.range.toUpperCase()} range`);
+    if (specBadges.length) {
+        const badgesRow = el('div', { class: 'flex flex-wrap gap-1 mb-2' });
+        for (const badge of specBadges) {
+            badgesRow.appendChild(el('span', {
                 class: 'inline-block bg-gray-700 text-gray-300 text-xs px-2 py-1 rounded',
-                text: `${label}: ${value}`,
+                text: badge,
             }));
         }
-        container.appendChild(specsRow);
+        container.appendChild(badgesRow);
     }
     if (region) {
         container.appendChild(el('span', { class: 'inline-block bg-yellow-600/30 text-yellow-400 text-xs px-2 py-1 rounded mb-2', text: region }));

@@ -23,6 +23,50 @@ def _default_subsidiary() -> str:
     return service._default_subsidiary()
 
 
+def _build_product_specs(catalog: dict[str, Any]) -> dict[str, Any]:
+    """Extract CPU and hardware specs from the catalog's top-level
+    ``products`` array, keyed by product name.
+
+    Each plan has a ``product`` field (e.g. ``"25sysle01"``) that maps
+    to a product entry. The product's ``blobs.technical.server`` section
+    contains CPU, chassis, and service details that are NOT available on
+    the plan itself.
+    """
+    specs: dict[str, Any] = {}
+    for product in catalog.get("products", []):
+        name = product.get("name", "")
+        if not name:
+            continue
+        tech = (product.get("blobs") or {}).get("technical", {})
+        server = tech.get("server", {})
+        cpu = server.get("cpu", {})
+        frame = server.get("frame", {})
+        services = server.get("services", {})
+        specs[name] = {
+            "description": product.get("description", ""),
+            "cpu": {
+                "brand": cpu.get("brand", ""),
+                "model": cpu.get("model", ""),
+                "cores": cpu.get("cores"),
+                "threads": cpu.get("threads"),
+                "frequency": cpu.get("frequency"),
+                "boost": cpu.get("boost"),
+                "number": cpu.get("number", 1),
+            } if cpu else None,
+            "frame": {
+                "size": frame.get("size", ""),
+                "model": frame.get("model", ""),
+                "dualPowerSupply": frame.get("dualPowerSupply", False),
+            } if frame else None,
+            "range": server.get("range", ""),
+            "services": {
+                "sla": services.get("sla"),
+                "antiddos": services.get("antiddos", ""),
+            } if services else None,
+        }
+    return specs
+
+
 @router.get("")
 async def get_catalog(
     country: str | None = Query(default=None, description="OVH subsidiary country code"),
@@ -107,7 +151,10 @@ async def get_plans(
                     found = True
             if found:
                 addon_prices[code] = entry
-        return {"plans": plans, "addonPrices": addon_prices}
-        return {"plans": plans, "addonPrices": addon_prices}
+        return {
+            "plans": plans,
+            "addonPrices": addon_prices,
+            "productSpecs": _build_product_specs(catalog),
+        }
     except OVHServiceError as e:
         raise_ovh_http_error(e)
