@@ -221,14 +221,31 @@ async function loadCatalog(country) {
     }
 }
 
-function formatPrice(priceInUcents) {
-    if (typeof priceInUcents !== 'number' || !isFinite(priceInUcents)) {
+// Extract the monthly renewal price (as a raw integer) from a catalog plan.
+// OVH stores prices in `plan.pricings[]` where each entry has:
+//   mode: 'default' | 'upfront12' | 'upfront24' (we want 'default' = monthly)
+//   interval: 0 (setup) | 1 (monthly) | 12 | 24 (we want 1)
+//   intervalUnit: 'month' | 'none'
+//   capacities: ['installation'] | ['renew'] (we want 'renew')
+//   price: integer in microcents (divide by 10^8 to get currency units)
+//   formattedPrice: "$90.00 USD" (pre-formatted by OVH — use for display)
+function getPlanMonthlyPrice(plan) {
+    const pricings = plan.pricings || [];
+    const monthly = pricings.find(p => p.mode === 'default' && p.interval === 1 && p.intervalUnit === 'month');
+    if (monthly) return monthly;
+    // Fallback: any default-mode pricing with a renew capacity
+    return pricings.find(p => p.mode === 'default' && (p.capacities || []).includes('renew'));
+}
+
+function formatPrice(priceValue) {
+    if (typeof priceValue !== 'number' || !isFinite(priceValue)) {
         return 'On request';
     }
-    if (priceInUcents === 0) {
-        return '\u20AC0.00';
+    if (priceValue === 0) {
+        return '$0.00';
     }
-    return `\u20AC${(priceInUcents / 1000000).toFixed(2)}`;
+    // OVH stores prices in microcents: divide by 10^8 to get currency units.
+    return `$${(priceValue / 100000000).toFixed(2)}`;
 }
 
 function renderPlanSelect() {
@@ -252,8 +269,8 @@ function getFilteredPlans() {
         );
     }
     const priceOf = (p) => {
-        const mp = p.prices?.find(x => x.label === 'default')?.price;
-        return mp?.priceInUcents ?? Infinity;
+        const mp = getPlanMonthlyPrice(p);
+        return mp?.price ?? Infinity;
     };
     if (sort === 'price-asc') plans.sort((a, b) => priceOf(a) - priceOf(b));
     else if (sort === 'price-desc') plans.sort((a, b) => priceOf(b) - priceOf(a));
@@ -270,8 +287,8 @@ function renderCatalogList() {
         return;
     }
     plans.forEach(plan => {
-        const mainPrice = plan.prices?.find(p => p.label === 'default')?.price;
-        const priceText = mainPrice ? formatPrice(mainPrice.priceInUcents) : 'On request';
+        const monthly = getPlanMonthlyPrice(plan);
+        const priceText = monthly?.formattedPrice || (monthly?.price != null ? formatPrice(monthly.price) : 'On request');
 
         const name = el('span', { class: 'font-bold text-blue-400', text: plan.invoiceName || plan.planCode });
         const code = el('span', { class: 'text-gray-400 ml-2', text: plan.planCode });

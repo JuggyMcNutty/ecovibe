@@ -187,22 +187,28 @@ class OVHService:
         return self.get("/order/eco/availableConfiguration", planCode=plan_code)
 
     def get_plan_price(self, plan_code: str, subsidiary: str | None = None) -> int | None:
-        """Look up the default price (in microcents of euro) for a plan.
+        """Look up the default monthly price (raw integer, in microcents) for a plan.
 
-        Walks the catalog to find the matching planCode, then its `default`
-        price entry. Returns None if the plan is not in the catalog or has
-        no usable price field. Used by the price-tracking + max-price cap.
+        OVH stores prices in `plan.pricings[]` where each entry has:
+          - mode: 'default' | 'upfront12' | 'upfront24' (we want 'default')
+          - interval: 0 (setup) | 1 (monthly) | 12 | 24 (we want 1)
+          - intervalUnit: 'month' | 'none'
+          - price: integer (divide by 10^8 for currency units)
+
+        Returns None if the plan is not in the catalog or has no monthly
+        pricing. Used by the price-tracking + max-price cap.
         """
         catalog = self.fetch_catalog(subsidiary=subsidiary)
         for plan in catalog.get("plans", []):
             if plan.get("planCode") == plan_code:
-                prices = plan.get("prices", [])
-                for p in prices:
-                    if p.get("label") == "default":
-                        price = p.get("price", {})
-                        ucents = price.get("priceInUcents")
-                        if isinstance(ucents, int):
-                            return ucents
+                for pr in plan.get("pricings", []):
+                    if (
+                        pr.get("mode") == "default"
+                        and pr.get("interval") == 1
+                        and pr.get("intervalUnit") == "month"
+                        and isinstance(pr.get("price"), int)
+                    ):
+                        return pr["price"]
         return None
 
     # ---- Cart lifecycle ----
