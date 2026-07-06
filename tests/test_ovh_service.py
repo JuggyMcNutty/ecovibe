@@ -73,7 +73,28 @@ def test_create_cart_passes_description():
     svc._client.post = MagicMock(return_value={"cartId": "C123"})
     result = svc.create_cart(description="my cart")
     assert result == {"cartId": "C123"}
-    svc._client.post.assert_called_once_with("/order/cart", description="my cart")
+    svc._client.post.assert_called_once_with(
+        "/order/cart", description="my cart", ovhSubsidiary="IE"
+    )
+
+
+def test_create_cart_us_endpoint_passes_us_subsidiary():
+    """OVH US requires ovhSubsidiary=US at cart creation or all
+    subsequent cart calls return 404 'Invalid Cart ID'."""
+    fake_creds = {
+        "endpoint": "ovh-us",
+        "application_key": "ak",
+        "application_secret": "as",
+        "consumer_key": "ck",
+    }
+    with patch("app.services.ovh_service.ovh.Client") as MockClient, \
+         patch.object(OVHService, "_load_credentials", staticmethod(lambda: fake_creds)):
+        MockClient.return_value = MagicMock()
+        svc = OVHService(use_cache=False)
+    svc._client.post = MagicMock(return_value={"cartId": "C-US"})
+    svc.create_cart(description="rush")
+    args, kwargs = svc._client.post.call_args
+    assert kwargs["ovhSubsidiary"] == "US"
 
 
 def test_add_server_to_cart_body():

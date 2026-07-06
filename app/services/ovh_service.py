@@ -222,9 +222,18 @@ class OVHService:
     # The frontend uses the one-shot `/api/checkout/rush` endpoint rather
     # than calling these granular methods directly.
 
-    def create_cart(self, description: str = "") -> dict[str, Any]:
-        """Create a new shopping cart. Returns the cart payload including `cartId`."""
-        return self.post("/order/cart", description=description)
+    def create_cart(
+        self, description: str = "", ovh_subsidiary: str | None = None
+    ) -> dict[str, Any]:
+        """Create a new shopping cart. Returns the cart payload including `cartId`.
+
+        `ovh_subsidiary` must match the configured endpoint (US/CA/EU).
+        Defaults to `_default_subsidiary()` so callers don't need to know.
+        OVH US/CA reject all subsequent cart calls with 404 "Invalid Cart ID"
+        if the cart is created without the right subsidiary.
+        """
+        sub = ovh_subsidiary or self._default_subsidiary()
+        return self.post("/order/cart", description=description, ovhSubsidiary=sub)
 
     def assign_cart(self, cart_id: str) -> None:
         """Bind a cart to the authenticated account. Required before adding items."""
