@@ -52,6 +52,7 @@ let state = {
     checkoutDefaults: null,
     addonPrices: {},
     productSpecs: {},
+    stockByPlan: {},
 };
 
 let audioContext = null;
@@ -232,6 +233,9 @@ async function loadCatalog(country) {
             const p = state.plans.find(x => x.planCode === state.selectedPlanCode);
             if (p) renderCatalogDetail(p);
         }
+        // Fetch stock levels for all plans (non-blocking) and re-render
+        // the list with in-stock/out-of-stock badges when done.
+        refreshStockForAllPlans().then(() => renderCatalogList()).catch(() => {});
     } catch (e) {
         showError(e.message);
     } finally {
@@ -254,6 +258,10 @@ async function refreshCatalogSilent() {
             state.addonPrices = resp.addonPrices || {};
             state.productSpecs = resp.productSpecs || {};
         }
+        // Carry over stock flags until the fresh fetch completes.
+        for (const p of state.plans) {
+            p._inStock = state.stockByPlan[p.planCode] ?? true;
+        }
         renderPlanSelect();
         renderCatalogList();
         if (state.selectedPlanCode) {
@@ -265,6 +273,7 @@ async function refreshCatalogSilent() {
         } else {
             updateCatalogRefreshBadge(`${state.plans.length} plans`, false);
         }
+        refreshStockForAllPlans().then(() => renderCatalogList()).catch(() => {});
     } catch (e) {
         // Silent fail - don't disrupt the user with error banners on background polls
         console.error('Catalog auto-refresh failed:', e);
@@ -285,6 +294,36 @@ function stopCatalogAutoRefresh() {
         state.catalogRefreshTimer = null;
     }
     updateCatalogRefreshBadge(null, false);
+}
+
+// Fetch stock for all plans in the catalog and store a boolean
+// (true = at least one config in stock somewhere) on each plan as
+// `_inStock`. Called after catalog load + on auto-refresh so the list
+// can show "Out of stock" badges. Requests are batched with limited
+// concurrency to avoid hammering the OVH API.
+async function refreshStockForAllPlans() {
+    if (!state.plans.length) return;
+    const planCodes = state.plans.map(p => p.planCode).filter(Boolean);
+    const stockByPlan = {};
+    const CONCURRENCY = 5;
+    let i = 0;
+    async function fetchOne() {
+        while (i < planCodes.length) {
+            const idx = i++;
+            const pc = planCodes[idx];
+            try {
+                const data = await apiRequest('GET', `/catalog/stock?plan_code=${encodeURIComponent(pc)}`);
+                stockByPlan[pc] = (data || []).some(entry =>
+                    (entry.datacenters || []).some(dc => dc.availability !== 'unavailable')
+                );
+            } catch {
+                stockByPlan[pc] = true;
+            }
+        }
+    }
+    await Promise.all(Array.from({ length: CONCURRENCY }, fetchOne));
+    state.stockByPlan = stockByPlan;
+    state.plans.forEach(p => { p._inStock = stockByPlan[p.planCode] ?? true; });
 }
 
 function updateCatalogRefreshBadge(text, changed) {
@@ -435,15 +474,28 @@ function renderCatalogList() {
         const monthly = getPlanMonthlyPrice(plan);
         const priceText = monthly?.formattedPrice || (monthly?.price != null ? formatPrice(monthly.price) : 'On request');
 
-        const name = el('span', { class: 'font-bold text-blue-400', text: plan.invoiceName || plan.planCode });
+        const inStock = plan._inStock !== false;
+        const name = el('span', {
+            class: inStock ? 'font-bold text-blue-400' : 'font-bold text-gray-500',
+            text: plan.invoiceName || plan.planCode,
+        });
+        const stockBadge = inStock ? null : el('span', {
+            class: 'ml-1 bg-red-600/30 text-red-400 text-xs px-1.5 py-0.5 rounded font-bold',
+            text: 'OUT OF STOCK',
+        });
         const region = planRegion(plan.planCode);
         const regionSpan = region ? el('span', { class: 'text-yellow-400 ml-1 text-xs', text: `[${region}]` }) : null;
         const code = el('span', { class: 'text-gray-400 ml-2 text-xs', text: plan.planCode });
-        const left = el('div', {}, [name, regionSpan, code]);
-        const price = el('span', { class: 'text-green-400 text-sm', text: priceText });
+        const left = el('div', {}, [name, stockBadge, regionSpan, code].filter(Boolean));
+        const price = el('span', {
+            class: inStock ? 'text-green-400 text-sm' : 'text-gray-600 text-sm line-through',
+            text: priceText,
+        });
 
         const div = el('div', {
-            class: 'bg-gray-700 rounded p-2 text-sm flex justify-between items-center cursor-pointer hover:bg-gray-600',
+            class: inStock
+                ? 'bg-gray-700 rounded p-2 text-sm flex justify-between items-center cursor-pointer hover:bg-gray-600'
+                : 'bg-gray-700/50 rounded p-2 text-sm flex justify-between items-center cursor-pointer hover:bg-gray-600 opacity-60',
             role: 'button',
             tabindex: '0'
         }, [left, price]);
