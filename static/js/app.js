@@ -522,34 +522,108 @@ function renderCatalogDetail(plan) {
     }
     container.appendChild(priceSection);
 
-    // Hardware specs from addonFamilies
+    // Hardware specs from addonFamilies — selectable cards
     const families = plan.addonFamilies || [];
     const specsSection = el('div', { class: 'space-y-3 mb-4' });
     specsSection.appendChild(el('h3', { class: 'font-bold text-gray-400 text-sm uppercase mb-2', text: 'Configuration Options' }));
 
-    const famIcons = { memory: 'M', storage: 'S', bandwidth: 'B' };
+    // Track selected addon per family (defaults to the plan's default)
+    const selectedAddons = {};
+    for (const fam of families) {
+        selectedAddons[fam.name] = fam.default || (fam.addons || [])[0] || null;
+    }
+
+    // Build the FQN string from the plan base + selected addon short codes
+    function buildFqn() {
+        const planBase = plan.planCode.split('-').slice(0, -1).join('-') || plan.planCode;
+        const parts = [planBase];
+        for (const fam of families) {
+            const addon = selectedAddons[fam.name];
+            if (!addon) continue;
+            // Strip the last 2 segments (product code + region) from the addon code
+            // e.g. ram-32g-ecc-2400-24risegame01-eu → ram-32g-ecc-2400
+            const segs = addon.split('-');
+            const short = segs.length > 2 ? segs.slice(0, -2).join('-') : addon;
+            parts.push(short);
+        }
+        return parts.join('.');
+    }
+
+    // FQN preview line
+    const fqnPreview = el('div', { class: 'bg-gray-700 rounded p-2 mb-3' }, [
+        el('span', { class: 'text-gray-500 text-xs', text: 'FQN: ' }),
+        el('code', { id: 'fqn-preview', class: 'text-blue-300 text-xs font-mono', text: buildFqn() }),
+    ]);
+
+    function updateFqnPreview() {
+        const el2 = document.getElementById('fqn-preview');
+        if (el2) el2.textContent = buildFqn();
+    }
+
+    function syncOrderForm(famName, addon) {
+        const selectId = `order-${famName}`;
+        const sel = document.getElementById(selectId);
+        if (sel) sel.value = addon;
+    }
 
     for (const fam of families) {
         const famName = fam.name.charAt(0).toUpperCase() + fam.name.slice(1);
-        const items = (fam.addons || []).map(addon => {
+        const itemsContainer = el('div', { class: 'space-y-1' });
+
+        for (const addon of (fam.addons || [])) {
             const isDefault = addon === fam.default;
-            const label = humanizeAddon(addon);
-            return el('div', {
-                class: `flex items-center justify-between rounded px-3 py-2 ${isDefault ? 'bg-green-900/30 border border-green-700' : 'bg-gray-700'}`
-            }, [
-                el('span', { class: isDefault ? 'text-green-300' : 'text-gray-300', text: label }),
-                isDefault ? el('span', { class: 'text-green-500 text-xs font-bold', text: 'DEFAULT' }) : null,
-            ]);
-        });
+            const isSelected = addon === selectedAddons[fam.name];
+            const card = el('div', {
+                class: `flex items-center justify-between rounded px-3 py-2 cursor-pointer transition-colors ${isSelected ? 'bg-blue-600/30 border border-blue-500' : 'bg-gray-700 border border-gray-600 hover:bg-gray-600'}`,
+                role: 'button',
+                tabindex: '0',
+                onclick: () => {
+                    selectedAddons[fam.name] = addon;
+                    // Re-render just the cards for this family
+                    itemsContainer.querySelectorAll('[data-addon]').forEach(c => {
+                        const cAddon = c.dataset.addon;
+                        const selected = cAddon === addon;
+                        c.className = `flex items-center justify-between rounded px-3 py-2 cursor-pointer transition-colors ${selected ? 'bg-blue-600/30 border border-blue-500' : 'bg-gray-700 border border-gray-600 hover:bg-gray-600'}`;
+                        const label = c.querySelector('[data-label]');
+                        if (label) label.className = selected ? 'text-blue-300' : 'text-gray-300';
+                        const badge = c.querySelector('[data-badge]');
+                        if (badge) badge.textContent = selected ? 'SELECTED' : (isDefault ? 'DEFAULT' : '');
+                    });
+                    updateFqnPreview();
+                    syncOrderForm(fam.name, addon);
+                },
+            });
+            card.dataset.addon = addon;
+
+            const labelSpan = el('span', { class: isSelected ? 'text-blue-300' : 'text-gray-300', text: humanizeAddon(addon) });
+            labelSpan.dataset.label = '1';
+            const badgeSpan = el('span', {
+                class: isSelected ? 'text-blue-400 text-xs font-bold' : (isDefault ? 'text-green-500 text-xs' : 'text-gray-600 text-xs'),
+                text: isSelected ? 'SELECTED' : (isDefault ? 'DEFAULT' : ''),
+            });
+            badgeSpan.dataset.badge = '1';
+            card.appendChild(labelSpan);
+            card.appendChild(badgeSpan);
+
+            card.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    card.click();
+                }
+            });
+            itemsContainer.appendChild(card);
+        }
+
         specsSection.appendChild(el('div', {}, [
             el('p', { class: 'text-gray-400 text-sm font-bold mb-1', text: `${famName}${fam.mandatory ? ' *' : ''}` }),
-            el('div', { class: 'space-y-1' }, items),
+            itemsContainer,
         ]));
     }
     if (!families.length) {
         specsSection.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No addon configurations listed.' }));
     }
     container.appendChild(specsSection);
+    container.appendChild(fqnPreview);
 
     // Available datacenters
     const configs = plan.configurations || [];
@@ -588,7 +662,55 @@ function renderCatalogDetail(plan) {
             class: 'bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded font-bold',
             text: 'Watch This Plan',
             onclick: () => {
+                // Auto-populate the monitor tab's add-server form
                 document.getElementById('plan-select').value = plan.planCode;
+                // Build the FQN from selected addons and pre-fill the pattern
+                const fqn = buildFqn();
+                document.getElementById('fqn-pattern').value = fqn;
+
+                // Also pre-fill the rush order form
+                document.getElementById('rush-plan-code').value = plan.planCode;
+                document.getElementById('rush-fqn').value = fqn;
+                if (selectedAddons.memory) {
+                    const ramSelect = document.getElementById('rush-ram');
+                    if (ramSelect) {
+                        // Add an option for this addon if not already present
+                        if (![...ramSelect.options].some(o => o.value === selectedAddons.memory)) {
+                            ramSelect.appendChild(el('option', { value: selectedAddons.memory, text: humanizeAddon(selectedAddons.memory) }));
+                        }
+                        ramSelect.value = selectedAddons.memory;
+                    }
+                }
+                if (selectedAddons.storage) {
+                    const storageSelect = document.getElementById('rush-storage');
+                    if (storageSelect) {
+                        if (![...storageSelect.options].some(o => o.value === selectedAddons.storage)) {
+                            storageSelect.appendChild(el('option', { value: selectedAddons.storage, text: humanizeAddon(selectedAddons.storage) }));
+                        }
+                        storageSelect.value = selectedAddons.storage;
+                    }
+                }
+                if (selectedAddons.bandwidth) {
+                    const bwSelect = document.getElementById('rush-bandwidth');
+                    if (bwSelect) {
+                        if (![].some.call(bwSelect.options, o => o.value === selectedAddons.bandwidth)) {
+                            bwSelect.appendChild(el('option', { value: selectedAddons.bandwidth, text: humanizeAddon(selectedAddons.bandwidth) }));
+                        }
+                        bwSelect.value = selectedAddons.bandwidth;
+                    }
+                }
+                // Pre-fill datacenter from the plan's configurations
+                const dcForWatch = configs.find(c => c.name === 'dedicated_datacenter');
+                if (dcForWatch?.values?.length) {
+                    document.querySelectorAll('.rush-dc').forEach(cb => {
+                        cb.checked = dcForWatch.values.includes(cb.value);
+                    });
+                }
+                // Pre-fill region from endpoint
+                const regionInfo = OVH_REGIONS[state.endpoint] || OVH_REGIONS['ovh-eu'];
+                const rushRegion = document.getElementById('rush-region');
+                if (rushRegion) rushRegion.value = regionInfo.rushRegion;
+
                 switchTab('monitor-tab');
                 document.getElementById('fqn-pattern').focus();
             }
@@ -615,9 +737,10 @@ function renderCatalogDetail(plan) {
     // RAM dropdown
     if (famMap.memory) {
         const select = el('select', { id: 'order-ram', class: 'w-full bg-gray-900 px-3 py-2 rounded text-sm' });
+        select.addEventListener('change', () => { selectedAddons.memory = select.value; updateFqnPreview(); });
         for (const addon of (famMap.memory.addons || [])) {
             const isDefault = addon === famMap.memory.default;
-            select.appendChild(el('option', { value: addon, text: `${humanizeAddon(addon)}${isDefault ? ' (default)' : ''}` }));
+            select.appendChild(el('option', { value: addon, text: `${humanizeAddon(addon)}${isDefault ? ' (default)' : ''}`, selected: addon === selectedAddons.memory }));
         }
         orderForm.appendChild(el('div', {}, [
             el('label', { class: 'block text-gray-400 text-xs mb-1', text: 'Memory' }),
@@ -628,9 +751,10 @@ function renderCatalogDetail(plan) {
     // Storage dropdown
     if (famMap.storage) {
         const select = el('select', { id: 'order-storage', class: 'w-full bg-gray-900 px-3 py-2 rounded text-sm' });
+        select.addEventListener('change', () => { selectedAddons.storage = select.value; updateFqnPreview(); });
         for (const addon of (famMap.storage.addons || [])) {
             const isDefault = addon === famMap.storage.default;
-            select.appendChild(el('option', { value: addon, text: `${humanizeAddon(addon)}${isDefault ? ' (default)' : ''}` }));
+            select.appendChild(el('option', { value: addon, text: `${humanizeAddon(addon)}${isDefault ? ' (default)' : ''}`, selected: addon === selectedAddons.storage }));
         }
         orderForm.appendChild(el('div', {}, [
             el('label', { class: 'block text-gray-400 text-xs mb-1', text: 'Storage' }),
@@ -641,9 +765,10 @@ function renderCatalogDetail(plan) {
     // Bandwidth dropdown
     if (famMap.bandwidth) {
         const select = el('select', { id: 'order-bandwidth', class: 'w-full bg-gray-900 px-3 py-2 rounded text-sm' });
+        select.addEventListener('change', () => { selectedAddons.bandwidth = select.value; updateFqnPreview(); });
         for (const addon of (famMap.bandwidth.addons || [])) {
             const isDefault = addon === famMap.bandwidth.default;
-            select.appendChild(el('option', { value: addon, text: `${humanizeAddon(addon)}${isDefault ? ' (default)' : ''}` }));
+            select.appendChild(el('option', { value: addon, text: `${humanizeAddon(addon)}${isDefault ? ' (default)' : ''}`, selected: addon === selectedAddons.bandwidth }));
         }
         orderForm.appendChild(el('div', {}, [
             el('label', { class: 'block text-gray-400 text-xs mb-1', text: 'Bandwidth' }),
