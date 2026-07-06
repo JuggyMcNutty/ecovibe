@@ -86,11 +86,14 @@ function el(tag, attrs = {}, children = []) {
             node.textContent = value;
         } else if (key.startsWith('data-')) {
             node.dataset[key.slice(5)] = value;
-        } else if (key === 'role') {
-            node.setAttribute('role', value);
-        } else if (key === 'tabindex') {
-            node.setAttribute('tabindex', value);
-        } else {
+        } else if (key.startsWith('on') && typeof value === 'function') {
+            node[key.toLowerCase()] = value;
+        } else if (key === 'checked' || key === 'selected' || key === 'disabled') {
+            if (value) node.setAttribute(key, key);
+            // Don't set the attribute if false — presence/absence is what matters
+        } else if (key === 'value' && (tag === 'input' || tag === 'option' || tag === 'select' || tag === 'textarea')) {
+            node.value = value;
+        } else if (typeof value === 'string' || typeof value === 'number') {
             node.setAttribute(key, value);
         }
     }
