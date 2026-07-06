@@ -365,15 +365,36 @@ function renderPlanSelect() {
     select.innerHTML = '';
     select.appendChild(el('option', { value: '', text: 'Select a plan...' }));
     state.plans.forEach(plan => {
+        if (!planMatchesEndpoint(plan.planCode, state.endpoint)) return;
         const opt = el('option', { value: plan.planCode, text: planLabel(plan) });
         select.appendChild(opt);
     });
 }
 
+// Map OVH endpoint -> region suffixes that can be ordered on that endpoint.
+// Plans with no region suffix are orderable on any endpoint.
+const ENDPOINT_REGION_SUFFIXES = {
+    'ovh-eu': ['eu', 'fr', 'de', 'gb', 'es', 'pl', 'it', 'pt', 'cz', 'fi', 'ie'],
+    'ovh-us': ['us'],
+    'ovh-ca': ['ca'],
+};
+
+function planMatchesEndpoint(planCode, endpoint) {
+    const suffixes = ENDPOINT_REGION_SUFFIXES[endpoint] || ENDPOINT_REGION_SUFFIXES['ovh-eu'];
+    const parts = (planCode || '').split('-');
+    if (parts.length <= 1) return true;
+    const suffix = parts[parts.length - 1].toLowerCase();
+    return suffixes.includes(suffix);
+}
+
 function getFilteredPlans() {
     const q = (document.getElementById('catalog-search')?.value || '').trim().toLowerCase();
     const sort = document.getElementById('catalog-sort')?.value || 'default';
+    const regionFilter = document.getElementById('catalog-region-filter')?.checked;
     let plans = state.plans.slice();
+    if (regionFilter) {
+        plans = plans.filter(p => planMatchesEndpoint(p.planCode, state.endpoint));
+    }
     if (q) {
         plans = plans.filter(p =>
             (p.invoiceName || '').toLowerCase().includes(q) ||
@@ -2166,6 +2187,7 @@ async function init() {
 
     document.getElementById('catalog-search')?.addEventListener('input', renderCatalogList);
     document.getElementById('catalog-sort')?.addEventListener('change', renderCatalogList);
+    document.getElementById('catalog-region-filter')?.addEventListener('change', renderCatalogList);
 
     document.getElementById('catalog-autorefresh')?.addEventListener('change', (e) => {
         if (e.target.checked) {
