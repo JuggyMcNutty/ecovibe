@@ -150,33 +150,6 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
         raise
 
 
-@router.post("/{cart_id}")
-async def checkout(cart_id: str, request: CheckoutRequest) -> dict[str, Any]:
-    """Legacy single-cart checkout (for pre-built carts)."""
-    service = get_ovh_service()
-    if not service.is_configured():
-        raise HTTPException(status_code=503, detail="OVH API not configured")
-    try:
-        result = await asyncio.to_thread(
-            service.checkout_cart,
-            cart_id=cart_id,
-            auto_pay=request.auto_pay,
-            waive_retractation=request.waive_retractation,
-        )
-    except OVHServiceError as e:
-        raise_ovh_http_error(e)
-    storage = get_storage()
-    storage.log_order(
-        order_id=result.get("orderId"),
-        cart_id=cart_id,
-        plan_code="",
-        status=None,
-        url=result.get("url"),
-        placed_at=datetime.now(timezone.utc),
-    )
-    return result
-
-
 @router.post("/rush")
 async def rush_checkout(request: RushOrderRequest) -> dict[str, Any]:
     """One-shot rush order: build cart, add server/options/configs, checkout.
@@ -211,6 +184,33 @@ async def rush_checkout(request: RushOrderRequest) -> dict[str, Any]:
         order_id=result.get("orderId"),
         cart_id="",
         plan_code=request.plan_code,
+        status=None,
+        url=result.get("url"),
+        placed_at=datetime.now(timezone.utc),
+    )
+    return result
+
+
+@router.post("/{cart_id}")
+async def checkout(cart_id: str, request: CheckoutRequest) -> dict[str, Any]:
+    """Legacy single-cart checkout (for pre-built carts)."""
+    service = get_ovh_service()
+    if not service.is_configured():
+        raise HTTPException(status_code=503, detail="OVH API not configured")
+    try:
+        result = await asyncio.to_thread(
+            service.checkout_cart,
+            cart_id=cart_id,
+            auto_pay=request.auto_pay,
+            waive_retractation=request.waive_retractation,
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    storage = get_storage()
+    storage.log_order(
+        order_id=result.get("orderId"),
+        cart_id=cart_id,
+        plan_code="",
         status=None,
         url=result.get("url"),
         placed_at=datetime.now(timezone.utc),
