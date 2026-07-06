@@ -652,10 +652,10 @@ function renderCatalogDetail(plan) {
     }
 
     // Datacenter dropdown from configurations
-    const dcConfig = configs.find(c => c.name === 'dedicated_datacenter');
-    if (dcConfig && dcConfig.values && dcConfig.values.length) {
+    const dcConfigForOrder = configs.find(c => c.name === 'dedicated_datacenter');
+    if (dcConfigForOrder && dcConfigForOrder.values && dcConfigForOrder.values.length) {
         const select = el('select', { id: 'order-datacenter', class: 'w-full bg-gray-900 px-3 py-2 rounded text-sm' });
-        for (const dc of dcConfig.values) {
+        for (const dc of dcConfigForOrder.values) {
             select.appendChild(el('option', { value: dc, text: dc.toUpperCase() }));
         }
         orderForm.appendChild(el('div', {}, [
@@ -675,10 +675,10 @@ function renderCatalogDetail(plan) {
         durSelect,
     ]));
 
-    const osConfig = configs.find(c => c.name === 'dedicated_os');
+    const osConfigForOrder = configs.find(c => c.name === 'dedicated_os');
     const osSelect = el('select', { id: 'order-os', class: 'w-full bg-gray-900 px-3 py-2 rounded text-sm' });
-    if (osConfig && osConfig.values) {
-        for (const os of osConfig.values) {
+    if (osConfigForOrder && osConfigForOrder.values) {
+        for (const os of osConfigForOrder.values) {
             osSelect.appendChild(el('option', { value: os, text: os }));
         }
     } else {
