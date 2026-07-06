@@ -312,6 +312,16 @@ function getPlanMonthlyPrice(plan) {
     return pricings.find(p => p.mode === 'default' && (p.capacities || []).includes('renew'));
 }
 
+// One-time setup/installation fee (interval=0, intervalUnit='none').
+// OVH charges this at checkout on top of the first month's price.
+function getPlanSetupFee(plan) {
+    const pricings = plan.pricings || [];
+    const setup = pricings.find(p => p.mode === 'default' && p.interval === 0 && p.intervalUnit === 'none');
+    if (setup) return setup;
+    // Fallback: any default-mode pricing with an installation capacity
+    return pricings.find(p => p.mode === 'default' && (p.capacities || []).includes('installation'));
+}
+
 function formatPrice(priceValue) {
     if (typeof priceValue !== 'number' || !isFinite(priceValue)) {
         return 'On request';
@@ -565,7 +575,9 @@ function renderCatalogDetail(plan) {
     container.innerHTML = '';
 
     const monthly = getPlanMonthlyPrice(plan);
+    const setup = getPlanSetupFee(plan);
     const priceText = monthly?.formattedPrice || (monthly?.price != null ? formatPrice(monthly.price) : 'On request');
+    const setupText = setup?.formattedPrice || (setup?.price != null ? formatPrice(setup.price) : '');
     const region = planRegion(plan.planCode);
 
     // Parse server name + CPU from invoiceName (format: "MODEL | CPU")
@@ -589,12 +601,17 @@ function renderCatalogDetail(plan) {
     container.appendChild(el('p', { class: 'text-gray-500 text-xs font-mono mb-4', text: plan.planCode }));
 
     // Price section (updates live as you change options)
-    const priceSection = el('div', { class: 'bg-gray-700 rounded p-3 mb-4' }, [
-        el('div', { class: 'flex justify-between items-center' }, [
-            el('span', { class: 'text-gray-400 text-sm', text: 'Monthly price' }),
-            el('span', { id: 'detail-total-price', class: 'text-green-400 font-bold text-lg', text: priceText }),
-        ]),
+    const priceSection = el('div', { class: 'bg-gray-700 rounded p-3 mb-4' });
+    priceSection.appendChild(el('div', { class: 'flex justify-between items-center' }, [
+        el('span', { class: 'text-gray-400 text-sm', text: 'Monthly price' }),
+        el('span', { id: 'detail-total-price', class: 'text-green-400 font-bold text-lg', text: priceText }),
+    ]));
+    // One-time setup/installation fee row (shown only if OVH lists one)
+    const setupRow = el('div', { id: 'detail-setup-row', class: 'flex justify-between items-center mt-1 hidden' }, [
+        el('span', { class: 'text-gray-400 text-sm', text: 'Setup fee (one-time)' }),
+        el('span', { id: 'detail-setup-price', class: 'text-yellow-400 font-bold text-sm' }),
     ]);
+    priceSection.appendChild(setupRow);
     if (monthly?.promotions?.length) {
         const promo = monthly.promotions[0];
         priceSection.appendChild(el('p', { class: 'text-yellow-400 text-xs mt-1', text: `Promo: ${promo.name} (${promo.formattedValue || promo.value + '%'} off)` }));
@@ -618,6 +635,17 @@ function renderCatalogDetail(plan) {
         return total;
     }
 
+    function calcSetupTotal() {
+        let total = (setup?.price || 0);
+        for (const famName of ['memory', 'storage', 'bandwidth', 'vrack']) {
+            const addon = selectedAddons[famName];
+            if (!addon) continue;
+            const info = getAddonPrice(addon);
+            if (info && info.setup_price) total += info.setup_price;
+        }
+        return total;
+    }
+
     function updateTotalPrice() {
         const total = calcTotal();
         const el2 = document.getElementById('detail-total-price');
@@ -626,6 +654,18 @@ function renderCatalogDetail(plan) {
                 el2.textContent = `$${(total / 100000000).toFixed(2)}`;
             } else {
                 el2.textContent = priceText;
+            }
+        }
+        // Setup fee row: plan setup + sum of selected addon setup fees
+        const setupTotal = calcSetupTotal();
+        const setupRowEl = document.getElementById('detail-setup-row');
+        const setupPriceEl = document.getElementById('detail-setup-price');
+        if (setupRowEl && setupPriceEl) {
+            if (setupTotal > 0) {
+                setupPriceEl.textContent = `+$${(setupTotal / 100000000).toFixed(2)}`;
+                setupRowEl.classList.remove('hidden');
+            } else {
+                setupRowEl.classList.add('hidden');
             }
         }
     }
@@ -986,7 +1026,11 @@ function renderCatalogDetail(plan) {
             const regionInfo = OVH_REGIONS[state.endpoint] || OVH_REGIONS['ovh-eu'];
             const maxPrice = state.checkoutDefaults?.max_price || null;
 
-            if (!confirm(`Place order for ${serverModel}?\n${monthly?.formattedPrice || priceText}/mo\nDC: ${(dc||'default').toUpperCase()}\nDuration: ${duration}`)) {
+            const setupFeeText = setup?.price
+                ? ` + $${(setup.price / 100000000).toFixed(2)} setup`
+                : '';
+
+            if (!confirm(`Place order for ${serverModel}?\n${monthly?.formattedPrice || priceText}/mo${setupFeeText}\nDC: ${(dc||'default').toUpperCase()}\nDuration: ${duration}`)) {
                 return;
             }
 

@@ -67,20 +67,47 @@ async def get_plans(
     try:
         catalog = await asyncio.to_thread(service.fetch_catalog, subsidiary=subsidiary)
         plans = catalog.get("plans", [])
-        # Build addon price lookup from the catalog's top-level addons array
+        # Build addon price lookup from the catalog's top-level addons array.
+        # Each addon may have both a monthly price (interval=1) and a one-time
+        # setup/installation fee (interval=0, intervalUnit='none'). We surface
+        # both so the frontend can show the true cost of a purchase.
         addon_prices = {}
         for addon in catalog.get("addons", []):
             code = addon.get("planCode", "")
             if not code:
                 continue
+            entry = {
+                "price": 0,
+                "formattedPrice": "",
+                "setup_price": 0,
+                "setup_formattedPrice": "",
+                "invoiceName": addon.get("invoiceName", ""),
+            }
+            found = False
             for pr in addon.get("pricings", []):
-                if pr.get("mode") == "default" and pr.get("interval") == 1 and pr.get("intervalUnit") == "month":
-                    addon_prices[code] = {
-                        "price": pr.get("price", 0),
-                        "formattedPrice": pr.get("formattedPrice", ""),
-                        "invoiceName": addon.get("invoiceName", ""),
-                    }
-                    break
+                if pr.get("mode") != "default":
+                    continue
+                # Monthly recurring price (interval=1, intervalUnit='month')
+                if (
+                    pr.get("interval") == 1
+                    and pr.get("intervalUnit") == "month"
+                    and isinstance(pr.get("price"), int)
+                ):
+                    entry["price"] = pr.get("price", 0)
+                    entry["formattedPrice"] = pr.get("formattedPrice", "")
+                    found = True
+                # One-time setup/installation fee (interval=0, intervalUnit='none')
+                elif (
+                    pr.get("interval") == 0
+                    and pr.get("intervalUnit") == "none"
+                    and isinstance(pr.get("price"), int)
+                ):
+                    entry["setup_price"] = pr.get("price", 0)
+                    entry["setup_formattedPrice"] = pr.get("formattedPrice", "")
+                    found = True
+            if found:
+                addon_prices[code] = entry
+        return {"plans": plans, "addonPrices": addon_prices}
         return {"plans": plans, "addonPrices": addon_prices}
     except OVHServiceError as e:
         raise_ovh_http_error(e)
