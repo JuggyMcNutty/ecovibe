@@ -164,3 +164,128 @@ def test_reconfigure_rebuilds_client():
     with patch.object(OVHService, "_load_credentials", staticmethod(lambda: None)):
         svc.reconfigure()
     assert not svc.is_configured()
+
+
+def test_403_invalid_key_refreshes_time_delta_and_retries():
+    """A 403 'This application key is invalid' should reset the cached
+    server-time delta and retry once - OVH reports a signature mismatch
+    (caused by a stale timestamp) as an invalid application key."""
+    from ovh.exceptions import APIError
+
+    svc = _make_service()
+    fake_response = MagicMock()
+    fake_response.status_code = 403
+    fake_response.headers = {}
+
+    calls = []
+
+    def side_effect(path, **kwargs):
+        calls.append(path)
+        if len(calls) == 1:
+            raise APIError("This application key is invalid", response=fake_response)
+        return {"ok": True}
+
+    svc._client.get = side_effect
+    svc._client._time_delta = 1234
+
+    result = svc.get("/me")
+    assert result == {"ok": True}
+    assert len(calls) == 2
+    # The cached time delta must have been cleared so the SDK recomputes it.
+    assert svc._client._time_delta is None
+
+
+def test_403_invalid_key_does_not_retry_indefinitely():
+    """If the retry also fails with the same error, surface it - no loop."""
+    from ovh.exceptions import APIError
+
+    svc = _make_service()
+    fake_response = MagicMock()
+    fake_response.status_code = 403
+    fake_response.headers = {}
+
+    calls = []
+
+    def side_effect(path, **kwargs):
+        calls.append(path)
+        raise APIError("This application key is invalid", response=fake_response)
+
+    svc._client.get = side_effect
+    with pytest.raises(OVHServiceError) as exc_info:
+        svc.get("/me")
+    assert exc_info.value.status_code == 403
+    # Exactly two attempts: original + one retry.
+    assert len(calls) == 2
+
+
+def test_403_other_error_does_not_retry():
+    """A 403 that isn't the stale-signature message should not trigger a retry."""
+    from ovh.exceptions import APIError
+
+    svc = _make_service()
+    fake_response = MagicMock()
+    fake_response.status_code = 403
+    fake_response.headers = {}
+
+    calls = []
+
+    def side_effect(path, **kwargs):
+        calls.append(path)
+        raise APIError("This call is not granted", response=fake_response)
+
+    svc._client.get = side_effect
+    with pytest.raises(OVHServiceError) as exc_info:
+        svc.get("/me")
+    assert exc_info.value.status_code == 403
+    assert len(calls) == 1
+
+
+def test_calls_are_serialised_by_lock():
+    """Concurrent _call invocations must not overlap: the lock serialises
+    access to the shared ovh.Client so the SDK's requests.Session and
+    cached time_delta are never used from two threads at once."""
+    import threading
+
+    svc = _make_service()
+    svc._client.get = MagicMock(return_value={"ok": True})
+
+    in_call = []
+    max_concurrent = [0]
+    current = [0]
+    lock = threading.Lock()
+    barrier = threading.Event()
+
+    def counting_get(path, **kwargs):
+        with lock:
+            current[0] += 1
+            max_concurrent[0] = max(max_concurrent[0], current[0])
+            in_call.append(threading.current_thread().name)
+        # Hold long enough that a second thread would overlap if unserialised.
+        barrier.wait(timeout=2)
+        with lock:
+            current[0] -= 1
+        return {"ok": True}
+
+    svc._client.get = counting_get
+
+    results = []
+    threads = []
+    for i in range(5):
+
+        def worker(idx=i):
+            results.append(svc.get(f"/p{idx}"))
+
+        t = threading.Thread(target=worker, name=f"worker-{i}")
+        threads.append(t)
+        t.start()
+
+    # Let all threads start, then release them together.
+    import time
+
+    time.sleep(0.1)
+    barrier.set()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert len(results) == 5
+    assert max_concurrent[0] == 1

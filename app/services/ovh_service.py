@@ -5,6 +5,7 @@ know about camelCase kwargs, error mapping, or caching. Methods are sync
 (ovh SDK uses requests) - wrap with asyncio.to_thread in async handlers.
 """
 import logging
+import threading
 from typing import Any
 
 import ovh
@@ -43,6 +44,14 @@ class OVHService:
         self._use_cache = settings.use_cache if use_cache is None else use_cache
         self._client: ovh.Client | None = None
         self._endpoint: str = settings.endpoint
+        # Serialises all ovh.Client calls. The shared ovh.Client bundles a
+        # requests.Session and a lazily-cached server-time delta that are
+        # NOT safe under concurrent access (the monitor poller, rush orders
+        # and account endpoints all call in via asyncio.to_thread). Without
+        # the lock, concurrent requests.Session.prepare_request/send can
+        # race on the shared cookie jar, and a stale time_delta makes every
+        # signature wrong so OVH replies "This application key is invalid".
+        self._lock = threading.Lock()
         self._setup_client()
 
     def _setup_client(self) -> None:
@@ -90,8 +99,9 @@ class OVHService:
 
         Called by the setup wizard after POST /api/setup/credentials.
         """
-        self._client = None
-        self._setup_client()
+        with self._lock:
+            self._client = None
+            self._setup_client()
 
     @property
     def endpoint(self) -> str:
@@ -106,9 +116,34 @@ class OVHService:
 
         The verb wrappers handle kwargs properly: GET/DELETE -> query string,
         POST/PUT -> JSON body. call() would TypeError on kwargs.
+
+        All calls are serialised with ``self._lock`` because the shared
+        ``ovh.Client`` (and its ``requests.Session`` + cached server-time
+        delta) is not safe under concurrent access from the background
+        poller, rush orders and account endpoints.
+
+        On a 403 "This application key is invalid" we refresh the client's
+        cached time delta and retry once: OVH reports a signature mismatch
+        (which a stale timestamp causes) as an invalid application key, and
+        the SDK caches the delta forever so it never self-corrects.
         """
         if not self._client:
             raise OVHServiceError("OVH API not configured. Please set credentials.")
+        with self._lock:
+            try:
+                return self._do_call(method, path, **kwargs)
+            except OVHServiceError as e:
+                if e.status_code == 403 and self._is_stale_signature(e):
+                    logger.warning(
+                        "OVH 403 'application key is invalid' - refreshing time_delta and retrying (query_id=%s)",
+                        e.query_id,
+                    )
+                    self._reset_time_delta()
+                    return self._do_call(method, path, **kwargs)
+                raise
+
+    def _do_call(self, method: str, path: str, **kwargs) -> Any:
+        """Single OVH API call. Caller must hold self._lock."""
         try:
             verb = method.upper()
             if verb == "GET":
@@ -126,6 +161,21 @@ class OVHService:
             if e.response is not None:
                 status = getattr(e.response, "status_code", None)
             raise OVHServiceError(str(e), status_code=status, query_id=e.query_id) from e
+
+    @staticmethod
+    def _is_stale_signature(e: OVHServiceError) -> bool:
+        """OVH returns 'This application key is invalid' for a bad signature,
+        which is what a stale time_delta produces. Match it (case-insensitive)
+        so we know when a time_delta refresh is worth trying."""
+        msg = (e.message or "").lower()
+        return "application key is invalid" in msg or "invalid application key" in msg
+
+    def _reset_time_delta(self) -> None:
+        """Force the ovh.Client to recompute its server-time delta on the next
+        call. The SDK computes it lazily once and caches it forever, so any
+        clock drift (NTP step, suspend/resume) permanently breaks signatures."""
+        if self._client is not None:
+            self._client._time_delta = None
 
     # ---- HTTP verb convenience wrappers ----
 
