@@ -353,6 +353,18 @@
                                 <option value="name">Name</option>
                             </select>
                         </div>
+                        <div class="flex items-center gap-3 mb-3">
+                            <label class="flex items-center gap-2 text-sm cursor-pointer">
+                                <input type="checkbox" id="catalog-autorefresh" class="w-4 h-4">
+                                <span>Auto-refresh</span>
+                            </label>
+                            <select id="catalog-refresh-interval" class="bg-gray-700 px-2 py-1 rounded text-sm">
+                                <option value="30">30s</option>
+                                <option value="60" selected>60s</option>
+                                <option value="300">5m</option>
+                            </select>
+                            <span id="catalog-refresh-badge" class="text-xs text-gray-500"></span>
+                        </div>
                         <div id="catalog-plans" class="space-y-2 max-h-[70vh] overflow-y-auto">
                             <p class="text-gray-500 text-sm">Load catalog to see available plans</p>
                         </div>
@@ -380,6 +392,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=6"></script>
+    <script src="/static/js/app.js?v=7"></script>
 </body>
 </html>

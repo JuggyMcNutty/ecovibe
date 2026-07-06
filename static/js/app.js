@@ -56,6 +56,10 @@ let state = {
     reconnectTimer: null,
     catalog: null,
     plans: [],
+    catalogCountry: null,
+    catalogAutoRefresh: false,
+    catalogRefreshTimer: null,
+    selectedPlanCode: null,
     alerts: [],
     profiles: [],
     recentAlerts: [],
@@ -204,8 +208,9 @@ function populateCatalogCountries() {
 
 async function loadCatalog(country) {
     showLoading();
+    const subsidiary = country || defaultSubsidiaryForEndpoint(state.endpoint);
+    state.catalogCountry = subsidiary;
     try {
-        const subsidiary = country || defaultSubsidiaryForEndpoint(state.endpoint);
         const url = subsidiary
             ? `/catalog/plans?country=${encodeURIComponent(subsidiary)}`
             : '/catalog/plans';
@@ -214,11 +219,71 @@ async function loadCatalog(country) {
         state.plans = plans || [];
         renderPlanSelect();
         renderCatalogList();
+        // Re-render detail if a plan was selected
+        if (state.selectedPlanCode) {
+            const p = state.plans.find(x => x.planCode === state.selectedPlanCode);
+            if (p) renderCatalogDetail(p);
+        }
     } catch (e) {
         showError(e.message);
     } finally {
         hideLoading();
     }
+}
+
+async function refreshCatalogSilent() {
+    if (!state.configured || !state.catalogCountry) return;
+    try {
+        const url = `/catalog/plans?country=${encodeURIComponent(state.catalogCountry)}`;
+        const plans = await apiRequest('GET', url);
+        const oldCount = state.plans.length;
+        state.catalog = { plans };
+        state.plans = plans || [];
+        renderPlanSelect();
+        renderCatalogList();
+        if (state.selectedPlanCode) {
+            const p = state.plans.find(x => x.planCode === state.selectedPlanCode);
+            if (p) renderCatalogDetail(p);
+        }
+        if (state.plans.length !== oldCount) {
+            updateCatalogRefreshBadge(`${state.plans.length} plans`, true);
+        } else {
+            updateCatalogRefreshBadge(`${state.plans.length} plans`, false);
+        }
+    } catch (e) {
+        // Silent fail — don't disrupt the user with error banners on background polls
+        console.error('Catalog auto-refresh failed:', e);
+    }
+}
+
+function startCatalogAutoRefresh(intervalSec) {
+    stopCatalogAutoRefresh();
+    state.catalogAutoRefresh = true;
+    state.catalogRefreshTimer = setInterval(refreshCatalogSilent, intervalSec * 1000);
+    updateCatalogRefreshBadge(`${state.plans.length} plans`, false);
+}
+
+function stopCatalogAutoRefresh() {
+    state.catalogAutoRefresh = false;
+    if (state.catalogRefreshTimer) {
+        clearInterval(state.catalogRefreshTimer);
+        state.catalogRefreshTimer = null;
+    }
+    updateCatalogRefreshBadge(null, false);
+}
+
+function updateCatalogRefreshBadge(text, changed) {
+    const badge = document.getElementById('catalog-refresh-badge');
+    if (!badge) return;
+    if (!text) {
+        badge.textContent = '';
+        badge.className = 'text-xs text-gray-500';
+        return;
+    }
+    badge.textContent = text + (state.catalogAutoRefresh ? ' (auto)' : '');
+    badge.className = changed
+        ? 'text-xs text-yellow-400 font-bold'
+        : 'text-xs text-gray-500';
 }
 
 // Extract the monthly renewal price (as a raw integer) from a catalog plan.
@@ -346,6 +411,7 @@ function renderCatalogList() {
 }
 
 function renderCatalogDetail(plan) {
+    state.selectedPlanCode = plan.planCode;
     const container = document.getElementById('catalog-detail');
     container.innerHTML = '';
 
@@ -1250,6 +1316,22 @@ async function init() {
 
     document.getElementById('catalog-search')?.addEventListener('input', renderCatalogList);
     document.getElementById('catalog-sort')?.addEventListener('change', renderCatalogList);
+
+    document.getElementById('catalog-autorefresh')?.addEventListener('change', (e) => {
+        if (e.target.checked) {
+            const interval = parseInt(document.getElementById('catalog-refresh-interval').value, 10);
+            startCatalogAutoRefresh(interval);
+        } else {
+            stopCatalogAutoRefresh();
+        }
+    });
+    document.getElementById('catalog-refresh-interval')?.addEventListener('change', () => {
+        if (document.getElementById('catalog-autorefresh').checked) {
+            const interval = parseInt(document.getElementById('catalog-refresh-interval').value, 10);
+            stopCatalogAutoRefresh();
+            startCatalogAutoRefresh(interval);
+        }
+    });
 
     document.getElementById('rush-order-btn').addEventListener('click', () => {
         document.getElementById('rush-submit-btn').click();
