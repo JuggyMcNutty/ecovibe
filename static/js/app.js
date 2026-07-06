@@ -1026,6 +1026,19 @@ function renderCatalogDetail(plan) {
             const regionInfo = OVH_REGIONS[state.endpoint] || OVH_REGIONS['ovh-eu'];
             const maxPrice = state.checkoutDefaults?.max_price || null;
 
+            // Guard against ordering a plan whose region suffix doesn't match
+            // the configured OVH endpoint. OVH will reject the cart with a
+            // connection error or 404 if the plan isn't available on that endpoint.
+            const planRegionSuffix = planRegion(plan.planCode).toLowerCase();
+            const endpointRegion = regionInfo.rushRegion;
+            const mismatch = planRegionSuffix && endpointRegion &&
+                !planRegionSuffix.includes(endpointRegion) &&
+                !endpointRegion.includes(planRegionSuffix);
+            if (mismatch) {
+                showError(`Plan ${plan.planCode} is for ${planRegionSuffix.toUpperCase()} but your endpoint is ${state.endpoint} (${endpointRegion}). Select a plan matching your region.`);
+                return;
+            }
+
             const setupFeeText = setup?.price
                 ? ` + $${(setup.price / 100000000).toFixed(2)} setup`
                 : '';
@@ -1038,7 +1051,7 @@ function renderCatalogDetail(plan) {
                 showLoading();
                 const result = await apiRequest('POST', '/checkout/rush', {
                     plan_code: plan.planCode,
-                    fqn: plan.planCode,
+                    fqn: buildFqn(),
                     ram, storage, bandwidth,
                     datacenters: dc ? [dc] : [],
                     region: regionInfo.rushRegion,
