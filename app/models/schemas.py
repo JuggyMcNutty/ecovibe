@@ -91,6 +91,11 @@ class AlertResponse(BaseModel):
     fqn_pattern: str
     enabled: bool
     notified_at: str | None = None
+    auto_order_profile_id: str | None = None
+
+
+class AssignProfileRequest(BaseModel):
+    profile_id: str | None = None
 
 
 class PollIntervalRequest(BaseModel):

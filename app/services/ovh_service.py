@@ -100,6 +100,20 @@ class OVHService:
     def get_availability(self, plan_code: str) -> list[dict[str, Any]]:
         return self.get("/order/eco/availableConfiguration", planCode=plan_code)
 
+    def get_plan_price(self, plan_code: str, subsidiary: str = "IE") -> int | None:
+        """Return the default price in microcents for the given plan, or None if not found."""
+        catalog = self.fetch_catalog(subsidiary=subsidiary)
+        for plan in catalog.get("plans", []):
+            if plan.get("planCode") == plan_code:
+                prices = plan.get("prices", [])
+                for p in prices:
+                    if p.get("label") == "default":
+                        price = p.get("price", {})
+                        ucents = price.get("priceInUcents")
+                        if isinstance(ucents, int):
+                            return ucents
+        return None
+
     def create_cart(self, description: str = "") -> dict[str, Any]:
         return self.post("/order/cart", description=description)
 

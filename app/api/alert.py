@@ -2,8 +2,9 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from app.models.schemas import AlertCreate, AlertResponse
+from app.models.schemas import AlertCreate, AlertResponse, AssignProfileRequest
 from app.services.monitor import DuplicateAlertError, get_monitor_service
+from app.services.storage import get_storage
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
@@ -15,6 +16,7 @@ def _to_response(alert) -> AlertResponse:
         fqn_pattern=alert.fqn_pattern,
         enabled=alert.enabled,
         notified_at=alert.notified_at.isoformat() if alert.notified_at else None,
+        auto_order_profile_id=alert.auto_order_profile_id,
     )
 
 
@@ -67,4 +69,20 @@ async def disable_alert(alert_id: str) -> AlertResponse:
     alert = await monitor.set_alert_enabled(alert_id, False)
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
+    return _to_response(alert)
+
+
+@router.put("/{alert_id}/profile")
+async def assign_profile(alert_id: str, request: AssignProfileRequest) -> AlertResponse:
+    """Assign (or clear) a checkout profile to an alert for sniper-mode auto-ordering."""
+    monitor = get_monitor_service()
+    alert = monitor.get_alert(alert_id)
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    alert.auto_order_profile_id = request.profile_id
+    storage = get_storage()
+    try:
+        storage.set_alert_profile(alert_id, request.profile_id)
+    except Exception:
+        pass
     return _to_response(alert)
