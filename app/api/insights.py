@@ -60,7 +60,7 @@ async def price_history(
 @router.post("/price/{plan_code}/refresh")
 async def refresh_price(
     plan_code: str,
-    country: str = Query(default="IE", min_length=1, max_length=4),
+    country: str | None = Query(default=None, min_length=1, max_length=4),
 ) -> dict:
     """Fetch the current price for a plan from the catalog and log it."""
     service = get_ovh_service()

@@ -138,14 +138,32 @@ class OVHService:
 
     # ---- Catalog & availability ----
 
-    def fetch_catalog(self, subsidiary: str = "IE", force: bool = False) -> dict[str, Any]:
+    def _default_subsidiary(self) -> str:
+        """Return the default subsidiary for the configured endpoint.
+
+        Each OVH region only accepts certain subsidiaries:
+          ovh-eu → IE (also FR, DE, GB, ES, PL, ...)
+          ovh-us → US
+          ovh-ca → CA
+        """
+        endpoint = get_settings().endpoint
+        if endpoint == "ovh-us":
+            return "US"
+        if endpoint == "ovh-ca":
+            return "CA"
+        return "IE"
+
+    def fetch_catalog(
+        self, subsidiary: str | None = None, force: bool = False
+    ) -> dict[str, Any]:
         """Fetch the public ECO server catalog for a given OVH subsidiary.
 
         Results are cached per-subsidiary when `use_cache` is enabled. Pass
         `force=True` to bypass the cache (e.g. for an explicit refresh button).
         The TTL is read from `Settings.cache_ttl` so `OVH_CACHE_TTL` is honoured.
         """
-        cache_key = f"catalog_{subsidiary}"
+        sub = subsidiary or self._default_subsidiary()
+        cache_key = f"catalog_{sub}"
         cache = get_cache(ttl=get_settings().cache_ttl)
 
         if self._use_cache and not force:
@@ -153,7 +171,7 @@ class OVHService:
             if cached:
                 return cached
 
-        catalog = self.get("/order/catalog/public/eco", ovhSubsidiary=subsidiary)
+        catalog = self.get("/order/catalog/public/eco", ovhSubsidiary=sub)
 
         if self._use_cache:
             cache.set(cache_key, catalog)
@@ -168,7 +186,7 @@ class OVHService:
         """
         return self.get("/order/eco/availableConfiguration", planCode=plan_code)
 
-    def get_plan_price(self, plan_code: str, subsidiary: str = "IE") -> int | None:
+    def get_plan_price(self, plan_code: str, subsidiary: str | None = None) -> int | None:
         """Look up the default price (in microcents of euro) for a plan.
 
         Walks the catalog to find the matching planCode, then its `default`

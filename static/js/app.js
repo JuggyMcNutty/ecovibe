@@ -181,10 +181,32 @@ async function checkHealth() {
 
 // --- 4. Catalog (load, search, filter, render) -----------------------------
 
-async function loadCatalog(country = 'IE') {
+const SUBSIDIARIES_BY_ENDPOINT = {
+    'ovh-eu': ['IE', 'FR', 'DE', 'GB', 'ES', 'PL', 'IT', 'PT', 'CZ', 'FI'],
+    'ovh-us': ['US'],
+    'ovh-ca': ['CA'],
+};
+
+function defaultSubsidiaryForEndpoint(endpoint) {
+    const list = SUBSIDIARIES_BY_ENDPOINT[endpoint] || SUBSIDIARIES_BY_ENDPOINT['ovh-eu'];
+    return list[0];
+}
+
+function populateCatalogCountries() {
+    const select = document.getElementById('catalog-country');
+    if (!select) return;
+    const list = SUBSIDIARIES_BY_ENDPOINT[state.endpoint] || SUBSIDIARIES_BY_ENDPOINT['ovh-eu'];
+    select.innerHTML = '';
+    list.forEach(code => {
+        select.appendChild(el('option', { value: code, text: code }));
+    });
+}
+
+async function loadCatalog(country) {
     showLoading();
     try {
-        const plans = await apiRequest('GET', `/catalog/plans?country=${encodeURIComponent(country)}`);
+        const subsidiary = country || defaultSubsidiaryForEndpoint(state.endpoint);
+        const plans = await apiRequest('GET', `/catalog/plans?country=${encodeURIComponent(subsidiary)}`);
         state.catalog = { plans };
         state.plans = plans || [];
         renderPlanSelect();
@@ -870,6 +892,7 @@ async function init() {
     if (!configured) {
         showView('credentials');
     } else {
+        populateCatalogCountries();
         await loadAlerts();
         await loadCatalog();
         await loadPollInterval();
@@ -883,6 +906,7 @@ async function init() {
         const configured = await checkHealth();
         if (configured) {
             state.configured = true;
+            populateCatalogCountries();
             await loadAlerts();
             await loadCatalog();
             await loadPollInterval();
