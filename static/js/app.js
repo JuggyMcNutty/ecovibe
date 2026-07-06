@@ -15,7 +15,7 @@ const OVH_REGIONS = {
         createAppUrl: 'https://api.us.ovhcloud.com/createApp/',
         createTokenUrl: 'https://api.us.ovhcloud.com/createToken/',
         apiEndpoint: 'https://api.us.ovhcloud.com/v1',
-        rushRegion: 'us'
+        rushRegion: 'united_states'
     },
     'ovh-ca': {
         name: 'Canada',

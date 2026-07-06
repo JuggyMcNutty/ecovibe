@@ -133,6 +133,19 @@ def test_get_passes_query_params():
     assert kwargs == {"planCode": "24sk10"}
 
 
+def test_add_configuration_uses_item_level_path():
+    """Configuration must use /item/{itemId}/configuration (works on EU and US),
+    not /eco/configuration (EU-only, 404s on US with 'invalid URL')."""
+    svc = _make_service()
+    svc._client.post = MagicMock(return_value={"id": 1})
+    svc.add_configuration_to_cart("C1", 42, "dedicated_datacenter", "hil")
+    args, kwargs = svc._client.post.call_args
+    assert args[0] == "/order/cart/C1/item/42/configuration"
+    assert kwargs == {"label": "dedicated_datacenter", "value": "hil"}
+    # itemId must NOT be in the body — it's in the URL path now.
+    assert "itemId" not in kwargs
+
+
 def test_delete_uses_client_delete():
     """DELETE should route to Client.delete(), not Client.call()."""
     svc = _make_service()

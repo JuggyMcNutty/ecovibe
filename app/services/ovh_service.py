@@ -321,10 +321,13 @@ class OVHService:
         """Attach a configuration key/value pair to an item.
 
         Used for `dedicated_datacenter`, `region`, `dedicated_os`, etc.
+        Uses the item-level path `/order/cart/{cart_id}/item/{item_id}/configuration`
+        which is supported by both ovh-eu and ovh-us. The older
+        `/order/cart/{cart_id}/eco/configuration` path is EU-only and 404s
+        on the US endpoint with "Got an invalid (or empty) URL".
         """
         self.post(
-            f"/order/cart/{cart_id}/eco/configuration",
-            itemId=item_id,
+            f"/order/cart/{cart_id}/item/{item_id}/configuration",
             label=label,
             value=value,
         )

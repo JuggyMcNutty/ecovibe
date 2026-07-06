@@ -85,6 +85,7 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
 
         # Add each selected addon (RAM/storage/bandwidth) sequentially.
         for addon in filter(None, [req.ram, req.storage, req.bandwidth]):
+            _trace(f"adding addon {addon} to cart {cart.get('cartId')}")
             await asyncio.to_thread(
                 service.add_option_to_cart,
                 cart_id=cart["cartId"],
@@ -108,6 +109,7 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
                     value=dc,
                 )
                 dc_set = True
+                _trace(f"dc {dc} accepted for cart {cart.get('cartId')}")
                 break
             except OVHServiceError as e:
                 last_dc_error = e
@@ -132,6 +134,7 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
             )
             for label, value in remaining_configs
         ])
+        _trace(f"configs set (region={req.region}, os={req.os}) for cart {cart.get('cartId')}")
 
         result = await asyncio.to_thread(
             service.checkout_cart,
