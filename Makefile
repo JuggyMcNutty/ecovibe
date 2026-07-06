@@ -1,4 +1,4 @@
-.PHONY: install dev test lint run build clean
+.PHONY: install dev test lint run clean
 
 install:
 	pip install -r requirements.txt
@@ -15,8 +15,6 @@ lint:
 run:
 	python run.py
 
-build:
-	./build.sh python3.12
-
 clean:
-	rm -rf build dist venv_build __pycache__ .pytest_cache .ruff_cache *.db
+	rm -rf __pycache__ .pytest_cache .ruff_cache *.db
+	find . -type d -name __pycache__ -exec rm -rf {} +

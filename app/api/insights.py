@@ -1,4 +1,13 @@
-"""Endpoints for historical restock data, price tracking, and order tracking."""
+"""Insights endpoints — historical restock data, price tracking, and orders.
+
+These read-only endpoints surface the data the monitor accumulates over time:
+  - Stock events (every availability transition) → restock-pattern heatmaps.
+  - Price history snapshots → spot price drops.
+  - Placed orders + their OVH status → track what actually went through.
+
+The price-refresh endpoint is the only write endpoint here — it fetches the
+current catalog price for a plan and logs it to `price_history`.
+"""
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone

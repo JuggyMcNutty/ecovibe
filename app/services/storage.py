@@ -1,3 +1,21 @@
+"""SQLite-backed persistence for alerts, settings, profiles, and history.
+
+This module owns every database interaction in the application. It uses a
+single `sqlite3.Connection` opened with `check_same_thread=False` (safe
+because all access is serialised by a `threading.Lock`). The connection
+lives for the lifetime of the process.
+
+Schema is created idempotently in `init()`. Best-effort `ALTER TABLE`
+statements add new columns to pre-existing databases without losing data.
+
+Tables:
+    alerts             — user-configured stock alerts (+ sniper profile link)
+    settings           — simple key/value store (e.g. poll_interval)
+    stock_events       — append-only log of available/unavailable transitions
+    price_history      — append-only log of price snapshots per plan
+    checkout_profiles  — saved rush-order templates
+    orders             — log of placed orders + their OVH status
+"""
 import json
 import logging
 import os
@@ -12,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 def _iso(dt: datetime | None) -> str | None:
-    return dt.isoformat() if dt else None
+    """Serialise a datetime to ISO 8601 (or None)."""
 
 
 def _parse_iso(s: str | None) -> datetime | None:
@@ -25,14 +43,28 @@ def _parse_iso(s: str | None) -> datetime | None:
 
 
 class Storage:
-    """SQLite-backed persistence for alerts and settings."""
+    """SQLite-backed persistence for alerts, settings, profiles, and history.
+
+    All methods are thread-safe via a single `threading.Lock`. The connection
+    is opened lazily on first `init()` call (which the singleton accessor
+    triggers automatically). Callers do not need to manage transactions —
+    each method commits its own changes.
+    """
 
     def __init__(self, db_path: str | None = None) -> None:
+        # Default to the path from Settings if none is provided. Tests pass
+        # a temp path to isolate the database per test.
         self._db_path = db_path or get_settings().db_path
         self._lock = threading.Lock()
         self._conn: sqlite3.Connection | None = None
 
     def init(self) -> None:
+        """Open the connection and create the schema (idempotent).
+
+        Also runs best-effort `ALTER TABLE` migrations for columns added
+        after the database was first created — this lets users upgrade the
+        app without losing their existing alerts.
+        """
         should_exist = os.path.exists(self._db_path)
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row

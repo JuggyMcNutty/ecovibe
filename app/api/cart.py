@@ -1,3 +1,13 @@
+"""Granular cart lifecycle endpoints (legacy granular API).
+
+These endpoints expose OVH's cart flow step-by-step: create → assign →
+add server → add options → add config → summary. The frontend now uses
+the one-shot `POST /api/checkout/rush` endpoint instead, but these remain
+available for programmatic use and for the `SniperService` (which calls
+`_execute_rush_order` in checkout.py, not these routes).
+
+Every endpoint returns 503 when OVH credentials are not configured.
+"""
 import asyncio
 import logging
 from typing import Any
@@ -20,6 +30,11 @@ router = APIRouter(prefix="/api/cart", tags=["cart"])
 
 @router.post("")
 async def create_cart(request: CreateCartRequest) -> dict[str, Any]:
+    """Create a cart and immediately assign it to the authenticated account.
+
+    If assignment fails, the orphaned cart is deleted to avoid leaving
+    dangling carts on OVH's side.
+    """
     service = get_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
@@ -30,6 +45,7 @@ async def create_cart(request: CreateCartRequest) -> dict[str, Any]:
     try:
         await asyncio.to_thread(service.assign_cart, cart["cartId"])
     except OVHServiceError as e:
+        # Clean up the orphaned cart before surfacing the error.
         try:
             await asyncio.to_thread(service.delete_cart, cart["cartId"])
         except OVHServiceError:
@@ -40,6 +56,7 @@ async def create_cart(request: CreateCartRequest) -> dict[str, Any]:
 
 @router.get("/{cart_id}")
 async def get_cart(cart_id: str) -> dict[str, Any]:
+    """Fetch the current state of a cart (items, prices, expiry)."""
     service = get_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
@@ -51,6 +68,7 @@ async def get_cart(cart_id: str) -> dict[str, Any]:
 
 @router.post("/{cart_id}/server")
 async def add_server(cart_id: str, request: AddServerRequest) -> dict[str, Any]:
+    """Add an ECO server line item to the cart. Returns the item (with `itemId`)."""
     service = get_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
@@ -68,6 +86,7 @@ async def add_server(cart_id: str, request: AddServerRequest) -> dict[str, Any]:
 
 @router.post("/{cart_id}/options")
 async def add_option(cart_id: str, request: AddOptionRequest) -> dict[str, Any]:
+    """Attach an option (RAM/storage/bandwidth upgrade) to a line item."""
     service = get_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
@@ -85,6 +104,10 @@ async def add_option(cart_id: str, request: AddOptionRequest) -> dict[str, Any]:
 
 @router.post("/{cart_id}/config")
 async def add_config(cart_id: str, request: AddConfigRequest) -> dict[str, Any]:
+    """Attach a configuration key/value pair to an item.
+
+    Used for `dedicated_datacenter`, `region`, `dedicated_os`, etc.
+    """
     service = get_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
@@ -103,6 +126,7 @@ async def add_config(cart_id: str, request: AddConfigRequest) -> dict[str, Any]:
 
 @router.get("/{cart_id}/summary")
 async def get_summary(cart_id: str) -> dict[str, Any]:
+    """Fetch the checkout summary (totals, taxes, payment URL preview)."""
     service = get_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")

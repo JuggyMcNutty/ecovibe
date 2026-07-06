@@ -1,3 +1,13 @@
+"""Monitor endpoints — SSE stock stream, availability checks, and poll control.
+
+The SSE endpoint (`GET /api/monitor/stream`) is the real-time channel: it
+subscribes to the shared `MonitorService` background poller and streams
+stock-change events to the browser. One poller serves all connected clients.
+
+A 15-second keep-alive comment (`: ping\n\n`) is sent when there are no
+events to send, which defeats idle-connection proxies without producing a
+client-visible event.
+"""
 import asyncio
 import json
 import logging
@@ -18,6 +28,13 @@ router = APIRouter(prefix="/api/monitor", tags=["monitor"])
 
 @router.get("/stream")
 async def stream_stock_updates() -> StreamingResponse:
+    """Server-Sent Events stream of stock changes.
+
+    The browser opens an `EventSource` to this endpoint. Each connected
+    client gets its own bounded queue; the single background poller pushes
+    diffs to every queue. The generator runs forever — disconnection
+    cancels it and the `finally` block deregisters the queue.
+    """
     monitor = get_monitor_service()
     queue = await monitor.subscribe()
 
@@ -25,8 +42,11 @@ async def stream_stock_updates() -> StreamingResponse:
         try:
             while True:
                 try:
+                    # Wait for the next diff batch, or send a keep-alive.
                     changes = await asyncio.wait_for(queue.get(), timeout=15.0)
                 except asyncio.TimeoutError:
+                    # SSE comment — keeps the connection alive without
+                    # producing a client-visible event.
                     yield ": ping\n\n"
                     continue
                 data = {
@@ -46,6 +66,8 @@ async def stream_stock_updates() -> StreamingResponse:
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
+            # Critical for nginx — disables proxy buffering so SSE events
+            # reach the client immediately instead of being batched.
             "X-Accel-Buffering": "no",
         },
     )
@@ -53,6 +75,7 @@ async def stream_stock_updates() -> StreamingResponse:
 
 @router.get("/availability")
 async def get_availability(plans: str = Query(default="")) -> dict[str, Any]:
+    """One-shot stock check for a comma-separated list of plan codes."""
     if not plans:
         return {"stocks": {}}
     plan_codes = [p.strip() for p in plans.split(",") if p.strip()]
@@ -71,6 +94,7 @@ async def get_availability(plans: str = Query(default="")) -> dict[str, Any]:
 
 @router.get("/status")
 async def get_status() -> dict[str, Any]:
+    """Return the current poll interval, alert count, and monitored plans."""
     monitor = get_monitor_service()
     return {
         "poll_interval": monitor.get_poll_interval(),
@@ -81,6 +105,7 @@ async def get_status() -> dict[str, Any]:
 
 @router.put("/poll-interval")
 async def set_poll_interval(request: PollIntervalRequest) -> dict[str, Any]:
+    """Set the poll interval (1-10 seconds). Persists across restarts."""
     monitor = get_monitor_service()
     monitor.set_poll_interval(request.poll_interval)
     return {"poll_interval": monitor.get_poll_interval()}
@@ -88,6 +113,7 @@ async def set_poll_interval(request: PollIntervalRequest) -> dict[str, Any]:
 
 @router.post("/poll-interval")
 async def set_poll_interval_post(request: PollIntervalRequest) -> dict[str, Any]:
+    """POST alias for PUT /poll-interval (some clients prefer POST)."""
     monitor = get_monitor_service()
     monitor.set_poll_interval(request.poll_interval)
     return {"poll_interval": monitor.get_poll_interval()}

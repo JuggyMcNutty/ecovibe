@@ -228,16 +228,6 @@ GET  /api/insights/orders/{order_id}              - Fetch order status from OVH
 GET  /health                                - Service health + config status
 ```
 
-## Building a Binary
-
-Requires Python 3.10-3.13 (not 3.14, which PyInstaller does not yet support):
-
-```bash
-./build.sh python3.12
-```
-
-Binary output: `dist/ovh-flash-monitor/ovh-flash-monitor`
-
 ## Development
 
 ```bash
@@ -280,11 +270,10 @@ ovh-gui/
 ├── templates/index.html    # UI with TailwindCSS
 ├── tests/                   # pytest suite
 ├── requirements.txt         # Runtime dependencies
-├── requirements-dev.txt     # Dev dependencies (pyinstaller, ruff, pytest)
+├── requirements-dev.txt     # Dev dependencies (ruff, pytest, httpx)
 ├── pyproject.toml           # Project metadata + tool config
 ├── run.py                   # Entry point
-├── build.sh                 # Binary build
-├── ovh-flash-monitor.spec   # PyInstaller spec
+├── Makefile                 # install/dev/test/lint/run/clean targets
 └── README.md
 ```
 

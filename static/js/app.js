@@ -1,3 +1,24 @@
+// ===========================================================================
+// OVH Flash Sale Monitor — frontend SPA logic (vanilla JS, no framework)
+// ===========================================================================
+// Structure:
+//   1. Constants & state
+//   2. DOM helpers (el, showView, loading, error banner, connection dot)
+//   3. API client (apiRequest, checkHealth)
+//   4. Catalog (load, search, filter, render)
+//   5. Alerts (CRUD, render lists)
+//   6. SSE monitoring (start/stop, stock alerts, reconnect)
+//   7. Browser notifications & audio
+//   8. Rush order (one-shot POST /api/checkout/rush)
+//   9. Credentials view
+//  10. Saved checkout profiles
+//  11. Sniper mode (arm/disarm/status)
+//  12. Orders list
+//  13. Init (DOMContentLoaded)
+// ===========================================================================
+
+// --- 1. Constants & state ---------------------------------------------------
+
 const API_BASE = '/api';
 
 const OVH_REGIONS = {
@@ -47,6 +68,8 @@ let state = {
 let audioContext = null;
 let alertBuffer = null;
 let alertPanelTimer = null;
+
+// --- 2. DOM helpers --------------------------------------------------------
 
 function el(tag, attrs = {}, children = []) {
     const node = document.createElement(tag);
@@ -113,6 +136,8 @@ function updateConnectionStatus(connected) {
     }
 }
 
+// --- 3. API client ---------------------------------------------------------
+
 async function apiRequest(method, path, body = null) {
     const options = {
         method,
@@ -153,6 +178,8 @@ async function checkHealth() {
         return false;
     }
 }
+
+// --- 4. Catalog (load, search, filter, render) -----------------------------
 
 async function loadCatalog(country = 'IE') {
     showLoading();
@@ -245,6 +272,8 @@ function renderCatalogList() {
         container.appendChild(div);
     });
 }
+
+// --- 5. Alerts (CRUD, render lists) ----------------------------------------
 
 async function loadAlerts() {
     try {
@@ -372,6 +401,8 @@ async function setPollInterval(seconds) {
     }
 }
 
+// --- 6. SSE monitoring (start/stop, stock alerts, reconnect) --------------
+
 function startMonitoring() {
     if (state.eventSource) {
         state.eventSource.close();
@@ -496,6 +527,8 @@ function showBrowserNotification(planCode, fqns) {
     }
 }
 
+// --- 8. Rush order (one-shot POST /api/checkout/rush) ---------------------
+
 function getSelectedDatacenters() {
     return Array.from(document.querySelectorAll('.rush-dc:checked')).map(cb => cb.value);
 }
@@ -556,6 +589,8 @@ async function rushOrder(e) {
     }
 }
 
+// --- 7. Audio (init, unlock on gesture, play alert sound) ------------------
+
 function initAudio() {
     try {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -603,6 +638,8 @@ function playAlertSound() {
         console.error('Failed to play sound:', e);
     }
 }
+
+// --- 9. Credentials view ---------------------------------------------------
 
 function updateCredentialsView(region) {
     const regionInfo = OVH_REGIONS[region] || OVH_REGIONS['ovh-eu'];
@@ -811,6 +848,8 @@ function renderOrders(orders) {
         container.appendChild(el('div', { class: 'bg-gray-700 rounded p-2' }, [head, st]));
     });
 }
+
+// --- 13. Init (DOMContentLoaded) -------------------------------------------
 
 async function init() {
     showView('loading');

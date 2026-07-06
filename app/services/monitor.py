@@ -1,3 +1,19 @@
+"""Core stock-monitoring engine.
+
+`MonitorService` runs a single background asyncio task that polls OVH for
+stock changes on every enabled alert's plan, computes diffs against the
+previous poll, and broadcasts the diffs to SSE subscribers. It also fans
+out multi-channel notifications and triggers the sniper auto-orderer when
+an armed alert matches.
+
+`SniperService` (defined first because `MonitorService` depends on it)
+handles armed alerts: when an alert with an attached checkout profile fires,
+it kicks off a background rush-order task.
+
+All state (alerts, stock cache, last-seen stock) is held in memory and
+mirrored to SQLite via `Storage`. Restarting the process reloads alerts
+and the poll-interval setting from storage.
+"""
 import asyncio
 import logging
 import uuid
@@ -13,6 +29,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class StockAlert:
+    """A user-configured watch on a plan_code + FQN pattern.
+
+    `auto_order_profile_id` optionally links the alert to a saved checkout
+    profile for sniper mode — when set, the sniper will fire the profile's
+    rush order automatically when this alert matches.
+    """
+
     id: str
     plan_code: str
     fqn_pattern: str
@@ -23,6 +46,8 @@ class StockAlert:
 
 @dataclass
 class StockStatus:
+    """Snapshot of one FQN's availability at a point in time."""
+
     plan_code: str
     fqn: str
     available: bool
@@ -42,22 +67,28 @@ class SniperService:
     """
 
     def __init__(self) -> None:
-        self._armed: dict[str, dict[str, Any]] = {}  # alert_id -> {profile_id, fqns_seen}
-        self._in_flight: set[str] = set()  # alert_ids currently being processed
-        self._results: dict[str, dict[str, Any]] = {}  # alert_id -> last result
+        # alert_id -> {profile_id, fqns_seen}
+        self._armed: dict[str, dict[str, Any]] = {}
+        # alert_ids currently being processed (prevents overlapping fires)
+        self._in_flight: set[str] = set()
+        # alert_id -> last result payload (for the status endpoint)
+        self._results: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
 
     def arm(self, alert_id: str, profile_id: str) -> None:
+        """Arm an alert: future matches will trigger the profile's rush order."""
         self._armed[alert_id] = {"profile_id": profile_id, "fqns_seen": set()}
         self._results.pop(alert_id, None)
 
     def disarm(self, alert_id: str) -> None:
+        """Cancel sniper mode for an alert. In-flight orders are not aborted."""
         self._armed.pop(alert_id, None)
 
     def is_armed(self, alert_id: str) -> bool:
         return alert_id in self._armed
 
     def status(self) -> dict[str, Any]:
+        """Snapshot of armed alerts and last results (for GET /api/sniper/status)."""
         return {
             "armed": [
                 {
@@ -76,7 +107,16 @@ class SniperService:
         plan_code: str,
         matched_fqns: list[str],
     ) -> None:
-        """Called from MonitorService after an alert match. Fires if armed + first sighting."""
+        """Called from MonitorService after an alert match.
+
+        Fires the rush order in the background if (and only if):
+          - the alert is armed,
+          - no order is already in flight for it, and
+          - there is at least one FQN we haven't already tried to order.
+
+        Tracking `fqns_seen` per arm cycle is what prevents double-orders
+        when the same stock config persists across consecutive polls.
+        """
         if alert_id not in self._armed:
             return
         if alert_id in self._in_flight:
@@ -88,11 +128,17 @@ class SniperService:
         seen.update(new_fqns)
         profile_id = self._armed[alert_id]["profile_id"]
         self._in_flight.add(alert_id)
+        # Fire-and-forget — the result is recorded in self._results.
         asyncio.create_task(self._fire(alert_id, plan_code, new_fqns[0], profile_id))
 
     async def _fire(
         self, alert_id: str, plan_code: str, fqn: str, profile_id: str
     ) -> None:
+        """Execute the rush order for one alert match.
+
+        Imports are local to avoid a circular import at module load time
+        (checkout.py imports from monitor.py for SniperService).
+        """
         try:
             from app.api.checkout import RushOrderRequest, _execute_rush_order
             from app.services.ovh_service import get_ovh_service
@@ -110,6 +156,7 @@ class SniperService:
                 self._results[alert_id] = {"status": "error", "message": "OVH not configured"}
                 return
 
+            # Profiles store datacenters as a comma-separated string.
             dcs = []
             if profile.get("datacenters"):
                 dcs = [d.strip() for d in profile["datacenters"].split(",") if d.strip()]
@@ -142,6 +189,7 @@ class SniperService:
                 "order_id": result.get("orderId"),
                 "url": result.get("url"),
             }
+            # Disarm after a successful fire — caller must re-arm to fire again.
             self._armed.pop(alert_id, None)
         except Exception as e:
             logger.error("sniper order failed for %s", alert_id, exc_info=True)
@@ -154,6 +202,7 @@ _sniper_service: SniperService | None = None
 
 
 def get_sniper_service() -> SniperService:
+    """Return the shared SniperService singleton, creating it on first use."""
     global _sniper_service
     if _sniper_service is None:
         _sniper_service = SniperService()
@@ -161,17 +210,47 @@ def get_sniper_service() -> SniperService:
 
 
 class MonitorService:
+    """Owns the background poller, alert registry, and SSE subscriber queues.
+
+    Lifecycle:
+        await monitor.start()   # called from FastAPI lifespan startup
+        ...
+        await monitor.stop()    # called from lifespan shutdown
+
+    Concurrency model:
+        A single `_run` task polls OVH for every enabled alert's plan_code,
+        computes diffs against the previous poll, and pushes changes onto
+        every subscriber's bounded queue. SSE handlers drain their queue and
+        stream events to the browser. This means N browser tabs share ONE
+        poller (no per-client OVH load).
+
+    State:
+        All maps are guarded by `_lock` (an asyncio.Lock). Mutations happen
+        under the lock; the actual OVH fetch happens outside the lock to
+        avoid blocking other alert mutations during a slow API call.
+    """
+
     def __init__(self) -> None:
+        # alert_id -> StockAlert
         self._alerts: dict[str, StockAlert] = {}
+        # plan_code -> latest StockStatus list (current stock)
         self._stock_cache: dict[str, list[StockStatus]] = {}
+        # plan_code -> {fqn: available} from the previous poll (for diffing)
         self._last_stock: dict[str, dict[str, bool]] = {}
-        self._poll_interval = 3
+        self._poll_interval = 3  # seconds; clamped to [1, 10] on set
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
+        # One bounded queue per SSE client.
         self._subscribers: list[asyncio.Queue] = []
-        self._storage = None
+        self._storage = None  # lazily-initialised Storage (or False if unavailable)
 
     def _storage_get(self):
+        """Lazily fetch the Storage singleton. Returns None if storage is unavailable.
+
+        Storage is optional — if SQLite cannot be opened, the service still
+        works in-memory (alerts are lost on restart). `False` is cached to
+        avoid retrying on every call.
+        """
         if self._storage is None:
             try:
                 from app.services.storage import get_storage
@@ -182,11 +261,13 @@ class MonitorService:
         return self._storage if self._storage is not False else None
 
     async def start(self) -> None:
+        """Load persisted alerts + settings, then spawn the background poller."""
         await self._load_from_storage()
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._run())
 
     async def _load_from_storage(self) -> None:
+        """Reload alerts and poll_interval from SQLite on startup."""
         storage = self._storage_get()
         if not storage:
             return
@@ -210,6 +291,7 @@ class MonitorService:
             logger.warning("failed to load alerts from storage", exc_info=True)
 
     async def stop(self) -> None:
+        """Cancel the background poller. Safe to call multiple times."""
         if self._task and not self._task.done():
             self._task.cancel()
             try:
@@ -219,10 +301,19 @@ class MonitorService:
         self._task = None
 
     async def _run(self) -> None:
+        """Main poll loop: poll, broadcast, sleep, repeat.
+
+        Runs forever until the task is cancelled. Exceptions in a single
+        cycle are logged but do not stop the loop — the next cycle will
+        try again after `_poll_interval` seconds.
+        """
         while True:
             try:
                 changes = await self._poll_once()
                 if changes:
+                    # Fan out to every connected SSE client. Slow subscribers
+                    # (full queue) are dropped with a warning rather than
+                    # blocking the poller.
                     for q in list(self._subscribers):
                         try:
                             q.put_nowait(changes)
@@ -235,17 +326,20 @@ class MonitorService:
             await asyncio.sleep(self._poll_interval)
 
     async def subscribe(self) -> asyncio.Queue:
+        """Register a new SSE client. Returns the queue it should await."""
         q: asyncio.Queue = asyncio.Queue(maxsize=100)
         async with self._lock:
             self._subscribers.append(q)
         return q
 
     async def unsubscribe(self, q: asyncio.Queue) -> None:
+        """Deregister a queue when its SSE client disconnects."""
         async with self._lock:
             if q in self._subscribers:
                 self._subscribers.remove(q)
 
     async def add_alert(self, plan_code: str, fqn_pattern: str = "*") -> StockAlert:
+        """Create a new alert. Raises DuplicateAlertError if (plan, pattern) exists."""
         async with self._lock:
             for existing in self._alerts.values():
                 if existing.plan_code == plan_code and existing.fqn_pattern == fqn_pattern:
@@ -264,6 +358,7 @@ class MonitorService:
         return alert
 
     async def remove_alert(self, alert_id: str) -> bool:
+        """Delete an alert. Also clears stock cache if no other alerts watch the plan."""
         async with self._lock:
             alert = self._alerts.pop(alert_id, None)
             if alert is None:
@@ -283,12 +378,14 @@ class MonitorService:
         return True
 
     def get_alerts(self) -> list[StockAlert]:
+        """Return all alerts (enabled and disabled)."""
         return list(self._alerts.values())
 
     def get_alert(self, alert_id: str) -> StockAlert | None:
         return self._alerts.get(alert_id)
 
     async def set_alert_enabled(self, alert_id: str, enabled: bool) -> StockAlert | None:
+        """Toggle an alert on/off. Disabled alerts do not participate in polling."""
         async with self._lock:
             alert = self._alerts.get(alert_id)
             if alert is not None:
@@ -302,6 +399,7 @@ class MonitorService:
         return alert
 
     def set_poll_interval(self, seconds: int) -> int:
+        """Set the poll interval, clamped to [1, 10] seconds. Persists to storage."""
         self._poll_interval = max(1, min(10, seconds))
         storage = self._storage_get()
         if storage:
@@ -317,6 +415,12 @@ class MonitorService:
     def get_stock_diff(
         self, plan_code: str, new_statuses: list[StockStatus]
     ) -> dict[str, Any]:
+        """Compute what changed since the last poll for one plan.
+
+        Returns a dict with `newly_available`, `now_unavailable`, and
+        `currently_available` FQN lists, plus a UTC timestamp. Also
+        updates `_last_stock` to the new state — callers must hold `_lock`.
+        """
         old_statuses = self._last_stock.get(plan_code, {})
         new_available_fqns = {s.fqn for s in new_statuses if s.available}
         old_available_fqns = set(old_statuses.keys())
@@ -335,11 +439,19 @@ class MonitorService:
         }
 
     async def _poll_once(self) -> list[dict[str, Any]]:
+        """One poll cycle: fetch availability for every enabled alert's plan,
+        compute diffs, fire notifications, log events, and trigger the sniper.
+
+        Returns the list of plan diffs (each with `newly_available` > 0) to
+        broadcast to SSE subscribers. OVH fetches run via `to_thread` to
+        avoid blocking the event loop.
+        """
         changes: list[dict[str, Any]] = []
         service = get_ovh_service()
         if not service.is_configured():
             return changes
 
+        # Snapshot the distinct plan_codes we need to poll this cycle.
         async with self._lock:
             plan_codes = sorted(
                 {a.plan_code for a in self._alerts.values() if a.enabled}
@@ -353,6 +465,8 @@ class MonitorService:
                     service.get_availability, plan_code
                 )
                 now = datetime.now(timezone.utc)
+                # OVH returns only currently-orderable configs, so every
+                # returned FQN is implicitly `available=True`.
                 new_statuses = [
                     StockStatus(
                         plan_code=plan_code,
@@ -368,6 +482,7 @@ class MonitorService:
                     triggered_alerts: list[tuple[StockAlert, list[str]]] = []
                     if diff["newly_available"]:
                         changes.append(diff)
+                        # Find every alert that matches at least one new FQN.
                         for alert in self._alerts.values():
                             if alert.plan_code == plan_code and alert.enabled:
                                 matched = [
@@ -379,7 +494,7 @@ class MonitorService:
                                     alert.notified_at = now
                                     triggered_alerts.append((alert, matched))
 
-                    # Log stock events for historical patterns
+                    # Persist stock events for the historical-patterns view.
                     if storage:
                         for fqn in diff["newly_available"]:
                             try:
@@ -392,7 +507,8 @@ class MonitorService:
                             except Exception:
                                 logger.debug("failed to log stock event", exc_info=True)
 
-                # Fan out multi-channel notifications (outside the lock)
+                # Fan out notifications + sniper *outside* the lock so we
+                # don't block other alert mutations during a slow webhook.
                 if triggered_alerts:
                     from app.services.notifier import notify_stock_alert
                     sniper = get_sniper_service()
@@ -410,20 +526,28 @@ class MonitorService:
                             logger.warning("sniper fire failed for %s", alert_obj.id, exc_info=True)
 
             except OVHServiceError:
+                # One plan failing should not stop the others.
                 logger.debug("availability fetch failed for %s", plan_code, exc_info=True)
 
         return changes
 
     async def poll_and_notify(self) -> list[dict[str, Any]]:
+        """One-shot poll (legacy entry point; the SSE handler uses subscribe() instead)."""
         return await self._poll_once()
 
     @staticmethod
     def _matches_pattern(fqn: str, pattern: str) -> bool:
+        """Glob match an FQN against a pattern. `*` matches everything.
+
+        Uses `fnmatch` so patterns like `24sk10*ssd*` work as expected.
+        Comparison is case-insensitive.
+        """
         if pattern == "*":
             return True
         return fnmatch(fqn.lower(), pattern.lower())
 
     def get_current_stock(self) -> dict[str, list[StockStatus]]:
+        """Return the latest cached stock snapshot per plan."""
         return self._stock_cache
 
 
@@ -431,6 +555,7 @@ _monitor_service: MonitorService | None = None
 
 
 def get_monitor_service() -> MonitorService:
+    """Return the shared MonitorService singleton, creating it on first use."""
     global _monitor_service
     if _monitor_service is None:
         _monitor_service = MonitorService()

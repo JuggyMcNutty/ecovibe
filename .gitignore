@@ -5,8 +5,6 @@ __pycache__/
 *.so
 *.egg-info/
 .eggs/
-build/
-dist/
 develop-eggs/
 *.egg
 .pytest_cache/
@@ -17,7 +15,6 @@ htmlcov/
 
 # Virtual environments
 venv/
-venv_build/
 .venv/
 env/
 
@@ -25,10 +22,6 @@ env/
 .env
 .env.*
 !.env.example
-
-# Stray pip redirect artifacts
-=*
-*==*
 
 # OS / editor
 .DS_Store

@@ -1,3 +1,21 @@
+"""Checkout endpoints — finalise a cart into an order.
+
+Two endpoints:
+    POST /api/checkout/{cart_id}  — legacy: checkout a pre-built cart.
+    POST /api/checkout/rush       — one-shot: build cart + add items + checkout.
+
+The rush endpoint is what the frontend and sniper use. It accepts a
+`RushOrderRequest` describing the desired server, options, datacenters,
+and checkout flags, then runs the full cart lifecycle in one call.
+
+Multi-datacenter fallback: if `datacenters` is a list, each is tried in
+order until one is accepted by OVH (a DC may reject if it has no capacity
+for the plan). This lets a flash-sale order survive a single DC being
+full without the user re-trying manually.
+
+`max_price` (if set) refuses checkout if the current catalog price exceeds
+the threshold — a budget guard for the sniper.
+"""
 import asyncio
 import logging
 from datetime import datetime, timezone
@@ -17,6 +35,13 @@ router = APIRouter(prefix="/api/checkout", tags=["checkout"])
 
 
 class RushOrderRequest(BaseModel):
+    """Full description of a one-shot rush order.
+
+    `datacenters` is ordered — the first one OVH accepts wins. `max_price`
+    is in microcents of euro (matches OVH's `priceInUcents` field) and
+    refuses checkout if the current price exceeds it.
+    """
+
     plan_code: str
     fqn: str
     ram: str | None = None
@@ -32,7 +57,16 @@ class RushOrderRequest(BaseModel):
 
 
 async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
-    """Build a cart, add items + configs, and checkout. Tries each datacenter in order."""
+    """Build a cart, add items + configs, and checkout.
+
+    Tries each datacenter in `req.datacenters` in order until one succeeds.
+    On any failure after cart creation, the cart is deleted to avoid
+    orphans. Region and OS configs are applied in parallel since they are
+    independent of each other.
+
+    Raises `OVHServiceError` on any upstream failure — the caller is
+    responsible for mapping it to an HTTP response.
+    """
     datacenters = req.datacenters or [""]
     cart = await asyncio.to_thread(service.create_cart, "Rush Order")
     try:
@@ -54,6 +88,7 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
         )
         item_id = server_item["itemId"]
 
+        # Add each selected addon (RAM/storage/bandwidth) sequentially.
         for addon in filter(None, [req.ram, req.storage, req.bandwidth]):
             await asyncio.to_thread(
                 service.add_option_to_cart,
@@ -63,7 +98,7 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
                 duration=req.duration,
             )
 
-        # Try each datacenter until one succeeds; skip DC config if none provided.
+        # Multi-DC fallback: try each datacenter until one is accepted.
         dc_set = False
         last_dc_error: OVHServiceError | None = None
         for dc in datacenters:
@@ -82,11 +117,12 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
             except OVHServiceError as e:
                 last_dc_error = e
                 logger.info("datacenter %s rejected for %s: %s", dc, req.plan_code, e)
+        # If every DC was rejected, surface the last error.
         if not dc_set and datacenters and datacenters[0]:
             if last_dc_error:
                 raise last_dc_error
 
-        # Remaining configs (parallel — independent of each other)
+        # Region + OS configs are independent — apply them in parallel.
         remaining_configs = [
             ("region", req.region),
             ("dedicated_os", req.os),
@@ -110,6 +146,7 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
         )
         return result
     except OVHServiceError:
+        # Any failure after cart creation → clean up the orphaned cart.
         try:
             await asyncio.to_thread(service.delete_cart, cart["cartId"])
         except OVHServiceError:
@@ -119,7 +156,7 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
 
 @router.post("/{cart_id}")
 async def checkout(cart_id: str, request: CheckoutRequest) -> dict[str, Any]:
-    """Legacy single-cart checkout."""
+    """Legacy single-cart checkout (for pre-built carts)."""
     service = get_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
@@ -147,13 +184,16 @@ async def checkout(cart_id: str, request: CheckoutRequest) -> dict[str, Any]:
 @router.post("/rush")
 async def rush_checkout(request: RushOrderRequest) -> dict[str, Any]:
     """One-shot rush order: build cart, add server/options/configs, checkout.
+
     Tries each datacenter in `datacenters` list until one succeeds.
+    Enforces `max_price` if set (refuses checkout if the current catalog
+    price exceeds the threshold). Logs the order to SQLite on success.
     """
     service = get_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
 
-    # Enforce max_price if set
+    # Budget guard: refuse to checkout if the price has spiked past the cap.
     if request.max_price is not None:
         try:
             price = await asyncio.to_thread(service.get_plan_price, request.plan_code)

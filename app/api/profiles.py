@@ -1,4 +1,11 @@
-"""CRUD for saved checkout profiles."""
+"""Saved checkout profile CRUD.
+
+A profile is a complete rush-order template: plan_code, FQN, addons,
+datacenters, region, OS, duration, and checkout flags. The sniper uses
+profiles to auto-fire orders when an alert matches.
+
+Profiles are persisted to the `checkout_profiles` table and survive restarts.
+"""
 import uuid
 from datetime import datetime, timezone
 
