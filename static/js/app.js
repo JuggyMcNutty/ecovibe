@@ -115,6 +115,18 @@ function hideError() {
     document.getElementById('error-view').classList.add('hidden');
 }
 
+let toastTimer = null;
+function showToast(message) {
+    const toast = document.getElementById('toast-view');
+    document.getElementById('toast-message').textContent = message;
+    toast.classList.remove('hidden');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+        toast.classList.add('hidden');
+        toastTimer = null;
+    }, 2500);
+}
+
 function updateConnectionStatus(connected) {
     const dot = document.getElementById('connection-dot');
     const text = document.getElementById('connection-text');
@@ -228,10 +240,15 @@ async function refreshCatalogSilent() {
     if (!state.configured || !state.catalogCountry) return;
     try {
         const url = `/catalog/plans?country=${encodeURIComponent(state.catalogCountry)}`;
-        const plans = await apiRequest('GET', url);
+        const resp = await apiRequest('GET', url);
         const oldCount = state.plans.length;
-        state.catalog = { plans };
-        state.plans = plans || [];
+        if (Array.isArray(resp)) {
+            state.plans = resp;
+            state.addonPrices = {};
+        } else {
+            state.plans = resp.plans || [];
+            state.addonPrices = resp.addonPrices || {};
+        }
         renderPlanSelect();
         renderCatalogList();
         if (state.selectedPlanCode) {
@@ -1123,8 +1140,7 @@ async function saveCheckoutDefaults(e) {
     try {
         await apiRequest('PUT', '/account/checkout-defaults', body);
         state.checkoutDefaults = body;
-        showError('Checkout defaults saved.');
-        setTimeout(() => hideError(), 2000);
+        showToast('Checkout defaults saved.');
     } catch (e) {
         showError(e.message);
     }
@@ -1423,7 +1439,8 @@ async function rushOrder(e) {
             os: osValue,
             duration: duration,
             auto_pay: autoPay,
-            waive_retractation: waive
+            waive_retractation: waive,
+            max_price: state.checkoutDefaults?.max_price || null,
         });
 
         state.orderResult = result;
