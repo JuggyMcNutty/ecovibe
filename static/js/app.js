@@ -994,6 +994,24 @@ function renderCatalogDetail(plan) {
         return segs.length > 2 ? segs.slice(0, -2).join('-') : code;
     }
 
+    // Normalize storage/memory codes for matching against stock data.
+    // OVH's catalog and stock API use inconsistent capacity naming:
+    // catalog says '2x512nvme' (physical), stock says '2x500nvme' (usable).
+    // Also handles 1920↔2000, 3840↔4000, etc.
+    function normalizeCode(code) {
+        if (!code) return '';
+        return code.replace(/(\d+)(nvme|sa|sas|hdd)/gi, (m, num, unit) => {
+            const n = parseInt(num, 10);
+            if (n >= 100) return Math.round(n / 100) * 100 + unit;
+            return m;
+        });
+    }
+
+    function codesMatch(a, b) {
+        if (!a || !b) return true;
+        return normalizeCode(a) === normalizeCode(b);
+    }
+
     function updateStockDisplay() {
         const sec = document.getElementById('stock-section');
         if (!sec) return;
@@ -1005,10 +1023,10 @@ function renderCatalogDetail(plan) {
         }
         const memShort = addonShort(selectedAddons.memory);
         const storShort = addonShort(selectedAddons.storage);
-        // Find the matching entry in stock data
+        // Find the matching entry in stock data (with capacity normalization)
         const match = stockData.find(e =>
-            (!memShort || e.memory === memShort) &&
-            (!storShort || e.storage === storShort)
+            codesMatch(memShort, e.memory) &&
+            codesMatch(storShort, e.storage)
         );
         sec.innerHTML = '';
         sec.appendChild(el('p', { class: 'text-gray-400 text-sm font-bold mb-1', text: 'Live Stock' }));
