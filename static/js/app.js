@@ -49,7 +49,8 @@ let state = {
     cartCreatedAt: null,
     orderResult: null,
     billingLoaded: false,
-    checkoutDefaults: null
+    checkoutDefaults: null,
+    addonPrices: {}
 };
 
 let audioContext = null;
@@ -200,12 +201,18 @@ async function loadCatalog(country) {
         const url = subsidiary
             ? `/catalog/plans?country=${encodeURIComponent(subsidiary)}`
             : '/catalog/plans';
-        const plans = await apiRequest('GET', url);
-        state.catalog = { plans };
-        state.plans = plans || [];
+        const resp = await apiRequest('GET', url);
+        // Response shape: {plans: [...], addonPrices: {code: {price, formattedPrice, invoiceName}}}
+        if (Array.isArray(resp)) {
+            // Backwards compat: old API returned just the plans array
+            state.plans = resp;
+            state.addonPrices = {};
+        } else {
+            state.plans = resp.plans || [];
+            state.addonPrices = resp.addonPrices || {};
+        }
         renderPlanSelect();
         renderCatalogList();
-        // Re-render detail if a plan was selected
         if (state.selectedPlanCode) {
             const p = state.plans.find(x => x.planCode === state.selectedPlanCode);
             if (p) renderCatalogDetail(p);
@@ -564,11 +571,11 @@ function renderCatalogDetail(plan) {
     }
     container.appendChild(el('p', { class: 'text-gray-500 text-xs font-mono mb-4', text: plan.planCode }));
 
-    // Price
+    // Price section (updates live as you change options)
     const priceSection = el('div', { class: 'bg-gray-700 rounded p-3 mb-4' }, [
         el('div', { class: 'flex justify-between items-center' }, [
             el('span', { class: 'text-gray-400 text-sm', text: 'Monthly price' }),
-            el('span', { class: 'text-green-400 font-bold text-lg', text: priceText }),
+            el('span', { id: 'detail-total-price', class: 'text-green-400 font-bold text-lg', text: priceText }),
         ]),
     ]);
     if (monthly?.promotions?.length) {
@@ -577,7 +584,43 @@ function renderCatalogDetail(plan) {
     }
     container.appendChild(priceSection);
 
-    // Hardware specs from addonFamilies - selectable cards
+    function getAddonPrice(addonCode) {
+        const info = state.addonPrices[addonCode];
+        if (!info) return null;
+        return info;
+    }
+
+    function calcTotal() {
+        let total = (monthly?.price || 0);
+        for (const famName of ['memory', 'storage', 'bandwidth', 'vrack']) {
+            const addon = selectedAddons[famName];
+            if (!addon) continue;
+            const info = getAddonPrice(addon);
+            if (info && info.price) total += info.price;
+        }
+        return total;
+    }
+
+    function updateTotalPrice() {
+        const total = calcTotal();
+        const el2 = document.getElementById('detail-total-price');
+        if (el2) {
+            if (total > 0) {
+                el2.textContent = `$${(total / 100000000).toFixed(2)}`;
+            } else {
+                el2.textContent = priceText;
+            }
+        }
+    }
+
+    function addonPriceLabel(addonCode) {
+        const info = getAddonPrice(addonCode);
+        if (!info) return '';
+        if (info.price === 0) return 'included';
+        return `+${info.formattedPrice || '$' + (info.price / 100000000).toFixed(2)}`;
+    }
+
+    // Hardware specs from addonFamilies - selectable cards with prices
     const families = plan.addonFamilies || [];
     const specsSection = el('div', { class: 'space-y-3 mb-4' });
     specsSection.appendChild(el('h3', { class: 'font-bold text-gray-400 text-sm uppercase mb-2', text: 'Configuration Options' }));
@@ -593,12 +636,9 @@ function renderCatalogDetail(plan) {
     function buildFqn() {
         const planBase = plan.planCode.split('-').slice(0, -1).join('-') || plan.planCode;
         const parts = [planBase];
-        // Canonical order: memory → storage → bandwidth → vrack
         for (const famName of ['memory', 'storage', 'bandwidth', 'vrack']) {
             const addon = selectedAddons[famName];
             if (!addon) continue;
-            // Strip the last 2 segments (product code + region) from the addon code
-            // e.g. ram-32g-ecc-2400-24risegame01-eu → ram-32g-ecc-2400
             const segs = addon.split('-');
             const short = segs.length > 2 ? segs.slice(0, -2).join('-') : addon;
             parts.push(short);
@@ -606,7 +646,6 @@ function renderCatalogDetail(plan) {
         return parts.join('.');
     }
 
-    // FQN preview line
     const fqnPreview = el('div', { class: 'bg-gray-700 rounded p-2 mb-3' }, [
         el('span', { class: 'text-gray-500 text-xs', text: 'FQN: ' }),
         el('code', { id: 'fqn-preview', class: 'text-blue-300 text-xs font-mono', text: buildFqn() }),
@@ -618,9 +657,47 @@ function renderCatalogDetail(plan) {
     }
 
     function syncOrderForm(famName, addon) {
-        const selectId = `order-${famName}`;
-        const sel = document.getElementById(selectId);
+        const sel = document.getElementById(`order-${famName}`);
         if (sel) sel.value = addon;
+    }
+
+    function renderCard(fam, addon, isSelected, isDefault) {
+        const card = el('div', {
+            class: `flex items-center justify-between rounded px-3 py-2 cursor-pointer transition-colors ${isSelected ? 'bg-blue-600/30 border border-blue-500' : 'bg-gray-700 border border-gray-600 hover:bg-gray-600'}`,
+            role: 'button',
+            tabindex: '0',
+        });
+        card.dataset.addon = addon;
+        card.dataset.default = isDefault ? '1' : '0';
+
+        const labelSpan = el('span', { class: isSelected ? 'text-blue-300 font-bold' : 'text-gray-300', text: humanizeAddon(addon) });
+        labelSpan.dataset.label = '1';
+
+        const priceLabel = addonPriceLabel(addon);
+        const rightSide = el('div', { class: 'flex items-center gap-2' });
+        if (priceLabel) {
+            rightSide.appendChild(el('span', {
+                class: priceLabel === 'included' ? 'text-gray-500 text-xs' : 'text-yellow-400 text-xs font-bold',
+                text: priceLabel,
+            }));
+        }
+        const badgeSpan = el('span', {
+            class: isSelected ? 'text-blue-400 text-xs font-bold' : (isDefault ? 'text-green-500 text-xs' : ''),
+            text: isSelected ? 'SELECTED' : (isDefault ? 'DEFAULT' : ''),
+        });
+        badgeSpan.dataset.badge = '1';
+        rightSide.appendChild(badgeSpan);
+
+        card.appendChild(labelSpan);
+        card.appendChild(rightSide);
+
+        card.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                card.click();
+            }
+        });
+        return card;
     }
 
     for (const fam of families) {
@@ -630,44 +707,32 @@ function renderCatalogDetail(plan) {
         for (const addon of (fam.addons || [])) {
             const isDefault = addon === fam.default;
             const isSelected = addon === selectedAddons[fam.name];
-            const card = el('div', {
-                class: `flex items-center justify-between rounded px-3 py-2 cursor-pointer transition-colors ${isSelected ? 'bg-blue-600/30 border border-blue-500' : 'bg-gray-700 border border-gray-600 hover:bg-gray-600'}`,
-                role: 'button',
-                tabindex: '0',
-                onclick: () => {
-                    selectedAddons[fam.name] = addon;
-                    // Re-render just the cards for this family
-                    itemsContainer.querySelectorAll('[data-addon]').forEach(c => {
-                        const cAddon = c.dataset.addon;
-                        const selected = cAddon === addon;
-                        c.className = `flex items-center justify-between rounded px-3 py-2 cursor-pointer transition-colors ${selected ? 'bg-blue-600/30 border border-blue-500' : 'bg-gray-700 border border-gray-600 hover:bg-gray-600'}`;
-                        const label = c.querySelector('[data-label]');
-                        if (label) label.className = selected ? 'text-blue-300' : 'text-gray-300';
-                        const badge = c.querySelector('[data-badge]');
-                        if (badge) badge.textContent = selected ? 'SELECTED' : (isDefault ? 'DEFAULT' : '');
-                    });
-                    updateFqnPreview();
-                    syncOrderForm(fam.name, addon);
-                },
-            });
-            card.dataset.addon = addon;
+            const card = renderCard(fam, addon, isSelected, isDefault);
 
-            const labelSpan = el('span', { class: isSelected ? 'text-blue-300' : 'text-gray-300', text: humanizeAddon(addon) });
-            labelSpan.dataset.label = '1';
-            const badgeSpan = el('span', {
-                class: isSelected ? 'text-blue-400 text-xs font-bold' : (isDefault ? 'text-green-500 text-xs' : 'text-gray-600 text-xs'),
-                text: isSelected ? 'SELECTED' : (isDefault ? 'DEFAULT' : ''),
+            card.addEventListener('click', () => {
+                selectedAddons[fam.name] = addon;
+                // Re-render all cards in this family
+                itemsContainer.querySelectorAll('[data-addon]').forEach(c => {
+                    const cAddon = c.dataset.addon;
+                    const cIsDefault = c.dataset.default === '1';
+                    const selected = cAddon === addon;
+                    // Update card class
+                    c.className = `flex items-center justify-between rounded px-3 py-2 cursor-pointer transition-colors ${selected ? 'bg-blue-600/30 border border-blue-500' : 'bg-gray-700 border border-gray-600 hover:bg-gray-600'}`;
+                    // Update label class
+                    const label = c.querySelector('[data-label]');
+                    if (label) label.className = selected ? 'text-blue-300 font-bold' : 'text-gray-300';
+                    // Update badge text AND class
+                    const badge = c.querySelector('[data-badge]');
+                    if (badge) {
+                        badge.textContent = selected ? 'SELECTED' : (cIsDefault ? 'DEFAULT' : '');
+                        badge.className = selected ? 'text-blue-400 text-xs font-bold' : (cIsDefault ? 'text-green-500 text-xs' : '');
+                    }
+                });
+                updateFqnPreview();
+                updateTotalPrice();
+                syncOrderForm(fam.name, addon);
             });
-            badgeSpan.dataset.badge = '1';
-            card.appendChild(labelSpan);
-            card.appendChild(badgeSpan);
 
-            card.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    card.click();
-                }
-            });
             itemsContainer.appendChild(card);
         }
 
@@ -681,6 +746,9 @@ function renderCatalogDetail(plan) {
     }
     container.appendChild(specsSection);
     container.appendChild(fqnPreview);
+
+    // Initial total price calc
+    updateTotalPrice();
 
     // Available datacenters
     const configs = plan.configurations || [];

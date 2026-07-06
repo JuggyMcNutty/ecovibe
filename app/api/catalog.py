@@ -58,14 +58,29 @@ async def get_availability(
 @router.get("/plans")
 async def get_plans(
     country: str | None = Query(default=None),
-) -> list[dict[str, Any]]:
-    """Return just the `plans` array from the catalog (lighter than /catalog)."""
+) -> dict[str, Any]:
+    """Return plans + addon pricing from the catalog."""
     service = get_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
     subsidiary = country if country else _default_subsidiary()
     try:
         catalog = await asyncio.to_thread(service.fetch_catalog, subsidiary=subsidiary)
-        return catalog.get("plans", [])
+        plans = catalog.get("plans", [])
+        # Build addon price lookup from the catalog's top-level addons array
+        addon_prices = {}
+        for addon in catalog.get("addons", []):
+            code = addon.get("planCode", "")
+            if not code:
+                continue
+            for pr in addon.get("pricings", []):
+                if pr.get("mode") == "default" and pr.get("interval") == 1 and pr.get("intervalUnit") == "month":
+                    addon_prices[code] = {
+                        "price": pr.get("price", 0),
+                        "formattedPrice": pr.get("formattedPrice", ""),
+                        "invoiceName": addon.get("invoiceName", ""),
+                    }
+                    break
+        return {"plans": plans, "addonPrices": addon_prices}
     except OVHServiceError as e:
         raise_ovh_http_error(e)
