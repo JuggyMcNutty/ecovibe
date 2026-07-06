@@ -480,6 +480,52 @@ function humanizeBandwidth(code) {
     return code;
 }
 
+const DC_NAMES = {
+    gra: 'GRA (Gravelines)',
+    sbg: 'SBG (Strasbourg)',
+    rbx: 'RBX (Roubaix)',
+    bhs: 'BHS (Beauharnois)',
+    fra: 'FRA (Frankfurt)',
+    waw: 'WAW (Warsaw)',
+    lon: 'LON (London)',
+    sgp: 'SGP (Singapore)',
+    syd: 'SYD (Sydney)',
+    eri: 'ERI (Érije)',
+    vin: 'VIN (Vint Hill)',
+    hil: 'HIL (Hillsboro)',
+};
+
+function humanizeDatacenter(code) {
+    return DC_NAMES[code?.toLowerCase()] || (code ? code.toUpperCase() : 'Unknown');
+}
+
+const OS_NAMES = {
+    'none_64.en': 'No OS',
+    'none_64.fr': 'No OS (FR)',
+    'debian_64': 'Debian (64-bit)',
+    'debian_11_64': 'Debian 11 (64-bit)',
+    'debian_12_64': 'Debian 12 (64-bit)',
+    'ubuntuserver_64': 'Ubuntu Server (64-bit)',
+    'ubuntu_2004_64': 'Ubuntu 20.04 (64-bit)',
+    'ubuntu_2204_64': 'Ubuntu 22.04 (64-bit)',
+    'ubuntu_2404_64': 'Ubuntu 24.04 (64-bit)',
+    'proxmox_64': 'Proxmox VE (64-bit)',
+    'freebsd_64': 'FreeBSD (64-bit)',
+    'windows_2022_64': 'Windows Server 2022 (64-bit)',
+    'windows_2019_64': 'Windows Server 2019 (64-bit)',
+    'windows_2016_64': 'Windows Server 2016 (64-bit)',
+    'esxi_70_64': 'VMware ESXi 7.0 (64-bit)',
+    'esxi_80_64': 'VMware ESXi 8.0 (64-bit)',
+    'opnsense_64': 'OPNsense (64-bit)',
+    'pfsense_64': 'pfSense (64-bit)',
+    'rocky_9_64': 'Rocky Linux 9 (64-bit)',
+    'alma_9_64': 'AlmaLinux 9 (64-bit)',
+};
+
+function humanizeOs(code) {
+    return OS_NAMES[code?.toLowerCase()] || (code ? code : 'Unknown');
+}
+
 function renderCatalogDetail(plan) {
     state.selectedPlanCode = plan.planCode;
     const container = document.getElementById('catalog-detail');
@@ -533,12 +579,14 @@ function renderCatalogDetail(plan) {
         selectedAddons[fam.name] = fam.default || (fam.addons || [])[0] || null;
     }
 
-    // Build the FQN string from the plan base + selected addon short codes
+    // Build the FQN string from the plan base + selected addon short codes.
+    // OVH FQN format: {planBase}.{memory}.{storage}.{bandwidth} — order matters!
     function buildFqn() {
         const planBase = plan.planCode.split('-').slice(0, -1).join('-') || plan.planCode;
         const parts = [planBase];
-        for (const fam of families) {
-            const addon = selectedAddons[fam.name];
+        // Canonical order: memory → storage → bandwidth
+        for (const famName of ['memory', 'storage', 'bandwidth']) {
+            const addon = selectedAddons[famName];
             if (!addon) continue;
             // Strip the last 2 segments (product code + region) from the addon code
             // e.g. ram-32g-ecc-2400-24risegame01-eu → ram-32g-ecc-2400
@@ -629,7 +677,7 @@ function renderCatalogDetail(plan) {
     const configs = plan.configurations || [];
     const dcConfig = configs.find(c => c.name === 'dedicated_datacenter');
     if (dcConfig && dcConfig.values && dcConfig.values.length) {
-        const dcList = dcConfig.values.map(dc => el('span', { class: 'inline-block bg-gray-700 text-gray-300 text-xs px-2 py-1 rounded mr-1 mb-1', text: dc }));
+        const dcList = dcConfig.values.map(dc => el('span', { class: 'inline-block bg-gray-700 text-gray-300 text-xs px-2 py-1 rounded mr-1 mb-1', text: humanizeDatacenter(dc) }));
         container.appendChild(el('div', { class: 'mb-4' }, [
             el('p', { class: 'text-gray-400 text-sm font-bold mb-1', text: 'Available Datacenters' }),
             el('div', {}, dcList),
@@ -639,18 +687,18 @@ function renderCatalogDetail(plan) {
     // OS options
     const osConfig = configs.find(c => c.name === 'dedicated_os');
     if (osConfig && osConfig.values && osConfig.values.length) {
-        const osList = osConfig.values.map(os => el('span', { class: 'inline-block bg-gray-700 text-gray-300 text-xs px-2 py-1 rounded mr-1 mb-1', text: os }));
+        const osList = osConfig.values.map(os => el('span', { class: 'inline-block bg-gray-700 text-gray-300 text-xs px-2 py-1 rounded mr-1 mb-1', text: humanizeOs(os) }));
         container.appendChild(el('div', { class: 'mb-4' }, [
             el('p', { class: 'text-gray-400 text-sm font-bold mb-1', text: 'OS Options' }),
             el('div', {}, osList),
         ]));
     }
 
-    // Use case
+    // Use case (split comma-separated values into separate badges)
     if (useCase) {
-        container.appendChild(el('div', { class: 'mb-4' }, [
-            el('span', { class: 'inline-block bg-blue-600/30 text-blue-400 text-xs px-2 py-1 rounded', text: `Use case: ${useCase}` }),
-        ]));
+        const useCases = useCase.split(',').map(s => s.trim()).filter(Boolean);
+        const badges = useCases.map(uc => el('span', { class: 'inline-block bg-blue-600/30 text-blue-400 text-xs px-2 py-1 rounded mr-1 mb-1', text: uc }));
+        container.appendChild(el('div', { class: 'mb-4' }, badges));
     }
 
     // Order form + actions
