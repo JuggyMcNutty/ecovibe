@@ -52,9 +52,12 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
     """
     datacenters = req.datacenters or [""]
     cart = await asyncio.to_thread(service.create_cart, "Rush Order")
+    logger.info("created cart %s for plan %s", cart.get("cartId"), req.plan_code)
     try:
         await asyncio.to_thread(service.assign_cart, cart["cartId"])
-    except OVHServiceError:
+        logger.info("assigned cart %s", cart.get("cartId"))
+    except OVHServiceError as e:
+        logger.error("assign failed for cart %s: %s", cart.get("cartId"), e)
         try:
             await asyncio.to_thread(service.delete_cart, cart["cartId"])
         except OVHServiceError:
@@ -70,6 +73,7 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
             quantity=1,
         )
         item_id = server_item["itemId"]
+        logger.info("added server %s to cart %s (item %s)", req.plan_code, cart.get("cartId"), item_id)
 
         # Add each selected addon (RAM/storage/bandwidth) sequentially.
         for addon in filter(None, [req.ram, req.storage, req.bandwidth]):
