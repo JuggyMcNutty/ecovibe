@@ -248,12 +248,39 @@ function formatPrice(priceValue) {
     return `$${(priceValue / 100000000).toFixed(2)}`;
 }
 
+// Region suffixes on planCode (e.g. "24sk10-eu") map to readable labels.
+const REGION_LABELS = {
+    'eu': 'Europe',
+    'us': 'US',
+    'ca': 'Canada',
+    'sgp': 'Singapore',
+    'syd': 'Sydney',
+    'lon': 'London',
+};
+
+function planRegion(planCode) {
+    // planCode looks like "24sk102-ca" → extract "ca" → "Canada"
+    const parts = (planCode || '').split('-');
+    if (parts.length > 1) {
+        const suffix = parts[parts.length - 1].toLowerCase();
+        if (REGION_LABELS[suffix]) return REGION_LABELS[suffix];
+        return suffix.toUpperCase();
+    }
+    return '';
+}
+
+function planLabel(plan) {
+    const name = plan.invoiceName || plan.planCode;
+    const region = planRegion(plan.planCode);
+    return region ? `${name} [${region}]` : name;
+}
+
 function renderPlanSelect() {
     const select = document.getElementById('plan-select');
     select.innerHTML = '';
     select.appendChild(el('option', { value: '', text: 'Select a plan...' }));
     state.plans.forEach(plan => {
-        const opt = el('option', { value: plan.planCode, text: plan.invoiceName || plan.planCode });
+        const opt = el('option', { value: plan.planCode, text: planLabel(plan) });
         select.appendChild(opt);
     });
 }
@@ -291,8 +318,10 @@ function renderCatalogList() {
         const priceText = monthly?.formattedPrice || (monthly?.price != null ? formatPrice(monthly.price) : 'On request');
 
         const name = el('span', { class: 'font-bold text-blue-400', text: plan.invoiceName || plan.planCode });
+        const region = planRegion(plan.planCode);
+        const regionSpan = region ? el('span', { class: 'text-yellow-400 ml-1 text-xs', text: `[${region}]` }) : null;
         const code = el('span', { class: 'text-gray-400 ml-2', text: plan.planCode });
-        const left = el('div', {}, [name, code]);
+        const left = el('div', {}, [name, regionSpan, code]);
         const price = el('span', { class: 'text-green-400', text: priceText });
 
         const div = el('div', {
