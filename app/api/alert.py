@@ -1,24 +1,11 @@
-from typing import Any, Dict, List
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 
+from app.models.schemas import AlertCreate, AlertResponse
 from app.services.monitor import DuplicateAlertError, get_monitor_service
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
-
-
-class AlertCreate(BaseModel):
-    plan_code: str
-    fqn_pattern: str = "*"
-
-
-class AlertResponse(BaseModel):
-    id: str
-    plan_code: str
-    fqn_pattern: str
-    enabled: bool
-    notified_at: str | None
 
 
 def _to_response(alert) -> AlertResponse:
@@ -37,18 +24,18 @@ async def create_alert(request: AlertCreate) -> AlertResponse:
     try:
         alert = await monitor.add_alert(request.plan_code, request.fqn_pattern)
     except DuplicateAlertError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
     return _to_response(alert)
 
 
 @router.get("")
-async def list_alerts() -> List[AlertResponse]:
+async def list_alerts() -> list[AlertResponse]:
     monitor = get_monitor_service()
     return [_to_response(a) for a in monitor.get_alerts()]
 
 
 @router.delete("/{alert_id}")
-async def delete_alert(alert_id: str) -> Dict[str, Any]:
+async def delete_alert(alert_id: str) -> dict[str, Any]:
     monitor = get_monitor_service()
     success = await monitor.remove_alert(alert_id)
     if not success:

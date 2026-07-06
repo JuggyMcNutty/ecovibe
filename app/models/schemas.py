@@ -1,6 +1,6 @@
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Price(BaseModel):
@@ -15,15 +15,15 @@ class CartItem(BaseModel):
     planCode: str
     duration: str
     quantity: int
-    prices: List[Dict[str, Any]]
+    prices: list[dict[str, Any]]
 
 
 class Cart(BaseModel):
     cartId: str
-    description: Optional[str] = ""
+    description: str | None = ""
     expire: str
     readOnly: bool
-    items: List[Dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
 
 
 class ServerOption(BaseModel):
@@ -36,21 +36,21 @@ class ServerOption(BaseModel):
 class PlanInfo(BaseModel):
     planCode: str
     invoiceName: str
-    durations: List[str]
+    durations: list[str]
     price: Price
 
 
 class ServerAvailability(BaseModel):
     planCode: str
     fqn: str
-    referencePrice: Optional[Price] = None
+    referencePrice: Price | None = None
 
 
 class OrderSummary(BaseModel):
-    details: List[Dict[str, Any]]
-    prices: Dict[str, Any]
-    orderId: Optional[int] = None
-    url: Optional[str] = None
+    details: list[dict[str, Any]]
+    prices: dict[str, Any]
+    orderId: int | None = None
+    url: str | None = None
 
 
 class CreateCartRequest(BaseModel):
@@ -78,3 +78,20 @@ class AddConfigRequest(BaseModel):
 class CheckoutRequest(BaseModel):
     auto_pay: bool = False
     waive_retractation: bool = False
+
+
+class AlertCreate(BaseModel):
+    plan_code: str
+    fqn_pattern: str = "*"
+
+
+class AlertResponse(BaseModel):
+    id: str
+    plan_code: str
+    fqn_pattern: str
+    enabled: bool
+    notified_at: str | None = None
+
+
+class PollIntervalRequest(BaseModel):
+    poll_interval: int = Field(..., ge=1, le=10)

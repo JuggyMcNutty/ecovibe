@@ -13,7 +13,7 @@ Real-time stock monitoring and fast checkout for OVH ECO servers. Never miss a f
 ## Quick Start
 
 ```bash
-# 1. Install dependencies
+# 1. Install dependencies (runtime only)
 pip install -r requirements.txt
 
 # 2. Set environment variables (for your region)
@@ -28,31 +28,42 @@ python run.py
 
 Open http://localhost:8000 in your browser.
 
+For development (includes tests + linting):
+
+```bash
+pip install -r requirements-dev.txt
+```
+
 ## Requirements
 
-- Python 3.9+
+- **Python 3.10+**
 - OVH API credentials for your region
 
 ## Features
 
 ### Flash Sale Monitor
-- **Real-time stock tracking** via SSE (Server-Sent Events)
+- **Real-time stock tracking** via SSE (Server-Sent Events) with a single shared background poller
 - **Browser notifications** when desired configs become available
-- **Sound alerts** - audio notification even when tab is backgrounded
-- **1-10 second polling** configurable interval
+- **Sound alerts** - audio notification (requires a user gesture first, e.g. clicking "Start Monitor")
+- **1-10 second polling** configurable interval (persisted across restarts)
 - **One-click Rush Order** when stock is detected
 
 ### Server Catalog
 - Browse ECO server catalog
-- Filter by country/subsidiary (IE, FR, DE, UK, etc.)
+- Filter by country/subsidiary (IE, FR, DE, GB, ES, PL, IT, PT, CZ, FI)
 - View configurations, pricing, and availability
-- Quick-add servers to watchlist
+- Quick-add servers to watchlist (click or keyboard)
 
 ### Checkout
 - Full cart management
 - Configure RAM, storage, bandwidth options
-- Set datacenter and region
+- Set datacenter (GRA, SBG, RBX, BHS, FRA, WAW, LON, SGP, SYD, ERI) and region (Europe/Canada/US)
+- Select operating system and billing duration
 - Auto-pay and waive retraction options
+
+### Persistence
+- Alerts and poll-interval setting are persisted to SQLite (`ovh-flash-monitor.db`)
+- Alerts survive process restarts
 
 ## Configuration
 
@@ -62,8 +73,12 @@ Open http://localhost:8000 in your browser.
 | `OVH_APPLICATION_KEY` | - | Your application key |
 | `OVH_APPLICATION_SECRET` | - | Your application secret |
 | `OVH_CONSUMER_KEY` | - | Your consumer key |
-| `OVH_USE_CACHE` | `false` | Enable in-memory caching |
+| `OVH_USE_CACHE` | `false` | Enable in-memory catalog caching |
 | `OVH_CACHE_TTL` | `300` | Cache TTL in seconds |
+| `OVH_DB_PATH` | `ovh-flash-monitor.db` | SQLite database path for alert persistence |
+| `OVH_CORS_ORIGINS` | `[]` | Comma-separated allowed CORS origins |
+
+See `.env.example` for a template.
 
 ## Region-Specific Setup
 
@@ -132,25 +147,44 @@ export OVH_CONSUMER_KEY="your_ca_consumer_key"
 ## API Endpoints
 
 ```
-GET  /api/catalog?country=IE          - Fetch server catalog
-GET  /api/catalog/availability       - Check plan availability
-GET  /api/catalog/plans               - List available plans
-GET  /api/monitor/stream               - SSE real-time stock updates
-GET  /api/monitor/availability         - Current stock status
-POST /api/alerts                       - Create stock alert
-GET  /api/alerts                       - List alerts
-DELETE /api/alerts/{id}               - Remove alert
-POST /api/cart                        - Create cart
-POST /api/cart/{id}/server            - Add server
-POST /api/cart/{id}/options           - Add options
-POST /api/cart/{id}/config            - Set configuration
-GET  /api/cart/{id}/summary           - Order summary
-POST /api/checkout/{id}               - Place order
+# Catalog
+GET  /api/catalog?country=IE                - Fetch full server catalog
+GET  /api/catalog/plans?country=IE         - List available plans
+GET  /api/catalog/availability?plan_code=XX - Check plan availability
+
+# Monitor
+GET  /api/monitor/stream                    - SSE real-time stock updates
+GET  /api/monitor/availability?plans=XX,YY  - Current stock for plans
+GET  /api/monitor/status                    - Monitor status (interval, alert count)
+PUT  /api/monitor/poll-interval             - Set poll interval (body: {poll_interval: 1-10})
+POST /api/monitor/poll-interval             - Alias for PUT
+
+# Alerts
+POST   /api/alerts                          - Create stock alert
+GET    /api/alerts                          - List alerts
+GET    /api/alerts/{id}                     - Get a single alert
+DELETE /api/alerts/{id}                     - Remove alert
+PUT    /api/alerts/{id}/enable              - Enable alert
+PUT    /api/alerts/{id}/disable             - Disable alert
+
+# Cart
+POST /api/cart                              - Create cart (body: {description})
+GET  /api/cart/{id}                         - Get cart details
+POST /api/cart/{id}/server                  - Add server item
+POST /api/cart/{id}/options                  - Add option to item
+POST /api/cart/{id}/config                   - Set item configuration
+GET  /api/cart/{id}/summary                  - Order summary
+
+# Checkout
+POST /api/checkout/{id}                     - Place order (body: {auto_pay, waive_retractation})
+
+# Health
+GET  /health                                - Service health + config status
 ```
 
 ## Building a Binary
 
-Requires Python 3.10-3.13 (not 3.14):
+Requires Python 3.10-3.13 (not 3.14, which PyInstaller does not yet support):
 
 ```bash
 ./build.sh python3.12
@@ -158,31 +192,49 @@ Requires Python 3.10-3.13 (not 3.14):
 
 Binary output: `dist/ovh-flash-monitor/ovh-flash-monitor`
 
+## Development
+
+```bash
+# Run tests
+pytest
+
+# Lint
+ruff check app/ tests/ run.py
+
+# Run in dev mode
+uvicorn app.main:app --reload
+```
+
 ## Project Structure
 
 ```
 ovh-gui/
 ├── app/
-│   ├── main.py              # FastAPI entry point
-│   ├── config.py            # Environment/config
+│   ├── __init__.py
+│   ├── main.py              # FastAPI app + lifespan
+│   ├── config.py            # Environment/config (pydantic-settings)
 │   ├── api/                 # Route handlers
-│   │   ├── catalog.py
-│   │   ├── monitor.py       # SSE stock streaming
-│   │   ├── alert.py
-│   │   ├── cart.py
-│   │   └── order.py
-│   ├── models/schemas.py     # Pydantic models
+│   │   ├── catalog.py       # Catalog endpoints
+│   │   ├── monitor.py       # SSE stock streaming + poll-interval
+│   │   ├── alert.py         # Alert CRUD
+│   │   ├── cart.py          # Cart lifecycle
+│   │   ├── checkout.py      # Checkout endpoint
+│   │   └── errors.py        # OVH->HTTP error mapping
+│   ├── models/schemas.py    # Pydantic request/response models
 │   └── services/
 │       ├── ovh_service.py   # OVH API wrapper
-│       ├── monitor.py       # Stock monitoring
-│       └── cache.py
-├── static/js/
-│   └── app.js               # Frontend SPA
-├── templates/
-│   └── index.html           # UI with TailwindCSS
-├── requirements.txt
+│       ├── monitor.py       # Stock monitoring + background poller
+│       ├── cache.py         # In-memory TTL cache
+│       └── storage.py       # SQLite persistence
+├── static/js/app.js         # Frontend SPA
+├── templates/index.html    # UI with TailwindCSS
+├── tests/                   # pytest suite
+├── requirements.txt         # Runtime dependencies
+├── requirements-dev.txt     # Dev dependencies (pyinstaller, ruff, pytest)
+├── pyproject.toml           # Project metadata + tool config
 ├── run.py                   # Entry point
 ├── build.sh                 # Binary build
+├── ovh-flash-monitor.spec   # PyInstaller spec
 └── README.md
 ```
 
@@ -194,7 +246,7 @@ ovh-gui/
    - Rush Order form pre-filled
    - Auto-pay enabled if you want instant checkout
 
-2. **Enable notifications** when prompted by browser
+2. **Enable notifications** when prompted (click "Start Monitor" to grant permission)
 
 3. **Keep the tab open** and monitoring active
 

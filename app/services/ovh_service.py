@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import ovh
 from ovh.exceptions import APIError
@@ -16,8 +16,8 @@ class OVHServiceError(Exception):
     def __init__(
         self,
         message: str,
-        status_code: Optional[int] = None,
-        query_id: Optional[str] = None,
+        status_code: int | None = None,
+        query_id: str | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -26,10 +26,10 @@ class OVHServiceError(Exception):
 
 
 class OVHService:
-    def __init__(self, use_cache: Optional[bool] = None):
+    def __init__(self, use_cache: bool | None = None):
         settings = get_settings()
         self._use_cache = settings.use_cache if use_cache is None else use_cache
-        self._client: Optional[ovh.Client] = None
+        self._client: ovh.Client | None = None
         self._setup_client()
 
     def _setup_client(self) -> None:
@@ -81,7 +81,7 @@ class OVHService:
     def delete(self, path: str, **kwargs) -> Any:
         return self._call("DELETE", path, **kwargs)
 
-    def fetch_catalog(self, subsidiary: str = "IE", force: bool = False) -> Dict[str, Any]:
+    def fetch_catalog(self, subsidiary: str = "IE", force: bool = False) -> dict[str, Any]:
         cache_key = f"catalog_{subsidiary}"
         cache = get_cache(ttl=get_settings().cache_ttl)
 
@@ -97,10 +97,10 @@ class OVHService:
 
         return catalog
 
-    def get_availability(self, plan_code: str) -> List[Dict[str, Any]]:
+    def get_availability(self, plan_code: str) -> list[dict[str, Any]]:
         return self.get("/order/eco/availableConfiguration", planCode=plan_code)
 
-    def create_cart(self, description: str = "") -> Dict[str, Any]:
+    def create_cart(self, description: str = "") -> dict[str, Any]:
         return self.post("/order/cart", description=description)
 
     def assign_cart(self, cart_id: str) -> None:
@@ -108,7 +108,7 @@ class OVHService:
 
     def add_server_to_cart(
         self, cart_id: str, plan_code: str, duration: str = "P1M", quantity: int = 1
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         return self.post(
             f"/order/cart/{cart_id}/eco",
             planCode=plan_code,
@@ -119,7 +119,7 @@ class OVHService:
 
     def add_option_to_cart(
         self, cart_id: str, item_id: int, plan_code: str, duration: str = "P1M"
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         return self.post(
             f"/order/cart/{cart_id}/eco/options",
             itemId=item_id,
@@ -139,15 +139,15 @@ class OVHService:
             value=value,
         )
 
-    def get_cart(self, cart_id: str) -> Dict[str, Any]:
+    def get_cart(self, cart_id: str) -> dict[str, Any]:
         return self.get(f"/order/cart/{cart_id}")
 
-    def get_cart_summary(self, cart_id: str) -> Dict[str, Any]:
+    def get_cart_summary(self, cart_id: str) -> dict[str, Any]:
         return self.get(f"/order/cart/{cart_id}/summary")
 
     def checkout_cart(
         self, cart_id: str, auto_pay: bool = False, waive_retractation: bool = False
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         return self.post(
             f"/order/cart/{cart_id}/checkout",
             autoPayWithPreferredPaymentMethod=auto_pay,
@@ -158,10 +158,10 @@ class OVHService:
         self.delete(f"/order/cart/{cart_id}")
 
 
-_ovh_service: Optional[OVHService] = None
+_ovh_service: OVHService | None = None
 
 
-def get_ovh_service(use_cache: Optional[bool] = None) -> OVHService:
+def get_ovh_service(use_cache: bool | None = None) -> OVHService:
     global _ovh_service
     if _ovh_service is None:
         _ovh_service = OVHService(use_cache=use_cache)

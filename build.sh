@@ -44,7 +44,7 @@ fi
 
 # Clean previous builds
 echo "Cleaning previous builds..."
-rm -rf build dist
+rm -rf build dist venv_build
 
 # Install dependencies in a temporary venv
 echo "Setting up build environment..."
@@ -54,19 +54,9 @@ pip install --upgrade pip
 pip install -r requirements.txt
 pip install pyinstaller
 
-# Copy static files
-echo "Copying static files..."
-mkdir -p dist/ovh-flash-monitor/static/js dist/ovh-flash-monitor/templates
-cp static/js/app.js dist/ovh-flash-monitor/static/js/
-cp templates/index.html dist/ovh-flash-monitor/templates/
-
-# Build with PyInstaller
+# Build with PyInstaller (datas for static/ and templates/ are in the .spec)
 echo "Building with PyInstaller..."
 pyinstaller ovh-flash-monitor.spec --clean
-
-# Copy static files to final location
-cp -r static/js dist/ovh-flash-monitor/static/
-cp -r templates dist/ovh-flash-monitor/
 
 # Cleanup
 deactivate

@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, Dict
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
@@ -11,7 +11,7 @@ router = APIRouter(prefix="/api/checkout", tags=["checkout"])
 
 
 @router.post("/{cart_id}")
-async def checkout(cart_id: str, request: CheckoutRequest) -> Dict[str, Any]:
+async def checkout(cart_id: str, request: CheckoutRequest) -> dict[str, Any]:
     service = get_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")

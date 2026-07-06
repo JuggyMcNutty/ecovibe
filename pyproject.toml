@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ovh-flash-monitor"
+version = "0.2.0"
+description = "Real-time OVH ECO server flash sale stock monitoring with instant rush-order checkout."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "corpeder" }]
+dependencies = [
+    "fastapi>=0.109.0,<0.200",
+    "uvicorn[standard]>=0.27.0",
+    "ovh>=1.2.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyinstaller>=6.0.0,<7",
+    "ruff>=0.6",
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+ovh-flash-monitor = "run:main"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true

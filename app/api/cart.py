@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Any, Dict
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/cart", tags=["cart"])
 
 
 @router.post("")
-async def create_cart(request: CreateCartRequest) -> Dict[str, Any]:
+async def create_cart(request: CreateCartRequest) -> dict[str, Any]:
     service = get_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
@@ -39,7 +39,7 @@ async def create_cart(request: CreateCartRequest) -> Dict[str, Any]:
 
 
 @router.get("/{cart_id}")
-async def get_cart(cart_id: str) -> Dict[str, Any]:
+async def get_cart(cart_id: str) -> dict[str, Any]:
     service = get_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
@@ -50,7 +50,7 @@ async def get_cart(cart_id: str) -> Dict[str, Any]:
 
 
 @router.post("/{cart_id}/server")
-async def add_server(cart_id: str, request: AddServerRequest) -> Dict[str, Any]:
+async def add_server(cart_id: str, request: AddServerRequest) -> dict[str, Any]:
     service = get_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
@@ -67,7 +67,7 @@ async def add_server(cart_id: str, request: AddServerRequest) -> Dict[str, Any]:
 
 
 @router.post("/{cart_id}/options")
-async def add_option(cart_id: str, request: AddOptionRequest) -> Dict[str, Any]:
+async def add_option(cart_id: str, request: AddOptionRequest) -> dict[str, Any]:
     service = get_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
@@ -84,7 +84,7 @@ async def add_option(cart_id: str, request: AddOptionRequest) -> Dict[str, Any]:
 
 
 @router.post("/{cart_id}/config")
-async def add_config(cart_id: str, request: AddConfigRequest) -> Dict[str, Any]:
+async def add_config(cart_id: str, request: AddConfigRequest) -> dict[str, Any]:
     service = get_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
@@ -102,7 +102,7 @@ async def add_config(cart_id: str, request: AddConfigRequest) -> Dict[str, Any]:
 
 
 @router.get("/{cart_id}/summary")
-async def get_summary(cart_id: str) -> Dict[str, Any]:
+async def get_summary(cart_id: str) -> dict[str, Any]:
     service = get_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")

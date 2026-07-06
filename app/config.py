@@ -1,10 +1,8 @@
 from functools import lru_cache
-from typing import Dict, List, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
-SUPPORTED_ENDPOINTS: Dict[str, str] = {
+SUPPORTED_ENDPOINTS: dict[str, str] = {
     "ovh-eu": "OVHcloud Europe (IE, FR, DE, GB, ES, PL...)",
     "ovh-us": "OVHcloud US (US based services)",
     "ovh-ca": "OVHcloud Canada (CA based services)",
@@ -15,13 +13,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OVH_", case_sensitive=False)
 
     endpoint: str = "ovh-eu"
-    application_key: Optional[str] = None
-    application_secret: Optional[str] = None
-    consumer_key: Optional[str] = None
+    application_key: str | None = None
+    application_secret: str | None = None
+    consumer_key: str | None = None
     use_cache: bool = False
     cache_ttl: int = 300
     db_path: str = "ovh-flash-monitor.db"
-    cors_origins: List[str] = []
+    cors_origins: list[str] = []
 
 
 @lru_cache

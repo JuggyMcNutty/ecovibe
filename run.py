@@ -8,14 +8,10 @@ NOTE: Building to a standalone binary requires Python 3.10, 3.11, 3.12, or 3.13.
 Python 3.14 is NOT yet supported by PyInstaller.
 """
 
-import sys
-
 
 def main():
-    if sys.version_info < (3, 10):
-        raise SystemExit("Python 3.10+ is required.")
-
     import uvicorn
+
     from app.main import app
 
     print("OVH Flash Sale Monitor")

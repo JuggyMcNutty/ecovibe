@@ -1,13 +1,13 @@
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 class SimpleCache:
     def __init__(self, ttl: int = 300):
-        self._cache: Dict[str, tuple[Any, datetime]] = {}
+        self._cache: dict[str, tuple[Any, datetime]] = {}
         self._ttl = ttl
 
-    def get(self, key: str) -> Optional[Any]:
+    def get(self, key: str) -> Any | None:
         if key in self._cache:
             value, expires_at = self._cache[key]
             if datetime.now() < expires_at:
@@ -23,7 +23,7 @@ class SimpleCache:
         self._cache.clear()
 
 
-_cache: Optional[SimpleCache] = None
+_cache: SimpleCache | None = None
 
 
 def get_cache(ttl: int = 300) -> SimpleCache:

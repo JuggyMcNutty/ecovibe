@@ -1,23 +1,19 @@
 import asyncio
 import json
 import logging
-from typing import Any, Dict
+from typing import Any
 
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
 
 from app.api.errors import raise_ovh_http_error
+from app.models.schemas import PollIntervalRequest
 from app.services.monitor import get_monitor_service
 from app.services.ovh_service import OVHServiceError, get_ovh_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/monitor", tags=["monitor"])
-
-
-class PollIntervalRequest(BaseModel):
-    poll_interval: int = Field(..., ge=1, le=10)
 
 
 @router.get("/stream")
@@ -56,13 +52,13 @@ async def stream_stock_updates() -> StreamingResponse:
 
 
 @router.get("/availability")
-async def get_availability(plans: str = Query(default="")) -> Dict[str, Any]:
+async def get_availability(plans: str = Query(default="")) -> dict[str, Any]:
     if not plans:
         return {"stocks": {}}
     plan_codes = [p.strip() for p in plans.split(",") if p.strip()]
     svc = get_ovh_service()
     try:
-        stocks: Dict[str, list] = {}
+        stocks: dict[str, list] = {}
         for plan_code in plan_codes:
             avail = await asyncio.to_thread(svc.get_availability, plan_code)
             stocks[plan_code] = [
@@ -74,7 +70,7 @@ async def get_availability(plans: str = Query(default="")) -> Dict[str, Any]:
 
 
 @router.get("/status")
-async def get_status() -> Dict[str, Any]:
+async def get_status() -> dict[str, Any]:
     monitor = get_monitor_service()
     return {
         "poll_interval": monitor.get_poll_interval(),
@@ -84,14 +80,14 @@ async def get_status() -> Dict[str, Any]:
 
 
 @router.put("/poll-interval")
-async def set_poll_interval(request: PollIntervalRequest) -> Dict[str, Any]:
+async def set_poll_interval(request: PollIntervalRequest) -> dict[str, Any]:
     monitor = get_monitor_service()
     monitor.set_poll_interval(request.poll_interval)
     return {"poll_interval": monitor.get_poll_interval()}
 
 
 @router.post("/poll-interval")
-async def set_poll_interval_post(request: PollIntervalRequest) -> Dict[str, Any]:
+async def set_poll_interval_post(request: PollIntervalRequest) -> dict[str, Any]:
     monitor = get_monitor_service()
     monitor.set_poll_interval(request.poll_interval)
     return {"poll_interval": monitor.get_poll_interval()}

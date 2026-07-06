@@ -1,11 +1,10 @@
 import asyncio
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from fnmatch import fnmatch
-from typing import Any, Dict, List, Optional
-
-from dataclasses import dataclass
+from typing import Any
 
 from app.services.ovh_service import OVHServiceError, get_ovh_service
 
@@ -18,7 +17,7 @@ class StockAlert:
     plan_code: str
     fqn_pattern: str
     enabled: bool = True
-    notified_at: Optional[datetime] = None
+    notified_at: datetime | None = None
 
 
 @dataclass
@@ -35,17 +34,51 @@ class DuplicateAlertError(Exception):
 
 class MonitorService:
     def __init__(self) -> None:
-        self._alerts: Dict[str, StockAlert] = {}
-        self._stock_cache: Dict[str, List[StockStatus]] = {}
-        self._last_stock: Dict[str, Dict[str, bool]] = {}
+        self._alerts: dict[str, StockAlert] = {}
+        self._stock_cache: dict[str, list[StockStatus]] = {}
+        self._last_stock: dict[str, dict[str, bool]] = {}
         self._poll_interval = 3
         self._lock = asyncio.Lock()
-        self._task: Optional[asyncio.Task] = None
-        self._subscribers: List[asyncio.Queue] = []
+        self._task: asyncio.Task | None = None
+        self._subscribers: list[asyncio.Queue] = []
+        self._storage = None
+
+    def _storage_get(self):
+        if self._storage is None:
+            try:
+                from app.services.storage import get_storage
+                self._storage = get_storage()
+            except Exception:
+                logger.warning("storage unavailable; alerts will not persist", exc_info=True)
+                self._storage = False
+        return self._storage if self._storage is not False else None
 
     async def start(self) -> None:
+        await self._load_from_storage()
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._run())
+
+    async def _load_from_storage(self) -> None:
+        storage = self._storage_get()
+        if not storage:
+            return
+        try:
+            loaded = storage.load_alerts()
+            for a in loaded:
+                self._alerts[a["id"]] = StockAlert(
+                    id=a["id"],
+                    plan_code=a["plan_code"],
+                    fqn_pattern=a["fqn_pattern"],
+                    enabled=a["enabled"],
+                    notified_at=a["notified_at"],
+                )
+            interval_str = storage.get_setting("poll_interval")
+            if interval_str:
+                self.set_poll_interval(int(interval_str))
+            if loaded:
+                logger.info("loaded %d alerts from storage", len(loaded))
+        except Exception:
+            logger.warning("failed to load alerts from storage", exc_info=True)
 
     async def stop(self) -> None:
         if self._task and not self._task.done():
@@ -93,7 +126,13 @@ class MonitorService:
             alert_id = str(uuid.uuid4())
             alert = StockAlert(id=alert_id, plan_code=plan_code, fqn_pattern=fqn_pattern)
             self._alerts[alert_id] = alert
-            return alert
+        storage = self._storage_get()
+        if storage:
+            try:
+                storage.upsert_alert(alert_id, plan_code, fqn_pattern, True, None)
+            except Exception:
+                logger.warning("failed to persist alert %s", alert_id, exc_info=True)
+        return alert
 
     async def remove_alert(self, alert_id: str) -> bool:
         async with self._lock:
@@ -106,31 +145,49 @@ class MonitorService:
             if not still_monitored:
                 self._last_stock.pop(alert.plan_code, None)
                 self._stock_cache.pop(alert.plan_code, None)
-            return True
+        storage = self._storage_get()
+        if storage:
+            try:
+                storage.delete_alert(alert_id)
+            except Exception:
+                logger.warning("failed to delete alert %s", alert_id, exc_info=True)
+        return True
 
-    def get_alerts(self) -> List[StockAlert]:
+    def get_alerts(self) -> list[StockAlert]:
         return list(self._alerts.values())
 
-    def get_alert(self, alert_id: str) -> Optional[StockAlert]:
+    def get_alert(self, alert_id: str) -> StockAlert | None:
         return self._alerts.get(alert_id)
 
-    async def set_alert_enabled(self, alert_id: str, enabled: bool) -> Optional[StockAlert]:
+    async def set_alert_enabled(self, alert_id: str, enabled: bool) -> StockAlert | None:
         async with self._lock:
             alert = self._alerts.get(alert_id)
             if alert is not None:
                 alert.enabled = enabled
-            return alert
+        storage = self._storage_get()
+        if storage and alert is not None:
+            try:
+                storage.set_alert_enabled(alert_id, enabled)
+            except Exception:
+                logger.warning("failed to persist alert %s enable=%s", alert_id, enabled, exc_info=True)
+        return alert
 
     def set_poll_interval(self, seconds: int) -> int:
         self._poll_interval = max(1, min(10, seconds))
+        storage = self._storage_get()
+        if storage:
+            try:
+                storage.set_setting("poll_interval", str(self._poll_interval))
+            except Exception:
+                logger.warning("failed to persist poll_interval", exc_info=True)
         return self._poll_interval
 
     def get_poll_interval(self) -> int:
         return self._poll_interval
 
     def get_stock_diff(
-        self, plan_code: str, new_statuses: List[StockStatus]
-    ) -> Dict[str, Any]:
+        self, plan_code: str, new_statuses: list[StockStatus]
+    ) -> dict[str, Any]:
         old_statuses = self._last_stock.get(plan_code, {})
         new_available_fqns = {s.fqn for s in new_statuses if s.available}
         old_available_fqns = set(old_statuses.keys())
@@ -148,8 +205,8 @@ class MonitorService:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-    async def _poll_once(self) -> List[Dict[str, Any]]:
-        changes: List[Dict[str, Any]] = []
+    async def _poll_once(self) -> list[dict[str, Any]]:
+        changes: list[dict[str, Any]] = []
         service = get_ovh_service()
         if not service.is_configured():
             return changes
@@ -189,7 +246,7 @@ class MonitorService:
 
         return changes
 
-    async def poll_and_notify(self) -> List[Dict[str, Any]]:
+    async def poll_and_notify(self) -> list[dict[str, Any]]:
         return await self._poll_once()
 
     @staticmethod
@@ -198,11 +255,11 @@ class MonitorService:
             return True
         return fnmatch(fqn.lower(), pattern.lower())
 
-    def get_current_stock(self) -> Dict[str, List[StockStatus]]:
+    def get_current_stock(self) -> dict[str, list[StockStatus]]:
         return self._stock_cache
 
 
-_monitor_service: Optional[MonitorService] = None
+_monitor_service: MonitorService | None = None
 
 
 def get_monitor_service() -> MonitorService:

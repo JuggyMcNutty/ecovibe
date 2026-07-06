@@ -6,7 +6,7 @@ block_cipher = None
 project_root = os.path.dirname(os.path.abspath(SPEC))
 
 a = Analysis(
-    [os.path.join(project_root, "app", "main.py")],
+    [os.path.join(project_root, "run.py")],
     pathex=[project_root],
     binaries=[],
     datas=[
@@ -25,7 +25,6 @@ a = Analysis(
         "_codecs_tw",
         "_codecs_kr",
         "_codecs_jp",
-        "_multibufect",
         "uvicorn",
         "uvicorn.logging",
         "uvicorn.loops.auto",
@@ -37,7 +36,6 @@ a = Analysis(
         "pydantic",
         "pydantic_settings",
         "ovh",
-        "dotenv",
     ],
     hookspath=[],
     hooksconfig={},

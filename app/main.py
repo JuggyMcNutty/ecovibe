@@ -1,6 +1,6 @@
-import sys
-import os
 import logging
+import os
+import sys
 from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ def create_app():
     from fastapi.responses import HTMLResponse
     from fastapi.staticfiles import StaticFiles
 
-    from app.api import catalog, cart, checkout, monitor, alert
+    from app.api import alert, cart, catalog, checkout, monitor
     from app.config import get_settings
 
     app = FastAPI(
