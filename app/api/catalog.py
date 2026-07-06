@@ -52,6 +52,7 @@ def _build_product_specs(catalog: dict[str, Any]) -> dict[str, Any]:
                 "frequency": cpu.get("frequency"),
                 "boost": cpu.get("boost"),
                 "number": cpu.get("number", 1),
+                "score": cpu.get("score"),
             } if cpu else None,
             "frame": {
                 "size": frame.get("size", ""),

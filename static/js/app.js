@@ -413,6 +413,13 @@ function getFilteredPlans() {
     if (sort === 'price-asc') plans.sort((a, b) => priceOf(a) - priceOf(b));
     else if (sort === 'price-desc') plans.sort((a, b) => priceOf(b) - priceOf(a));
     else if (sort === 'name') plans.sort((a, b) => (a.invoiceName || '').localeCompare(b.invoiceName || ''));
+    else if (sort === 'score-desc' || sort === 'score-asc') {
+        const scoreOf = (p) => {
+            const ps = state.productSpecs[p.product] || {};
+            return ps.cpu?.score ?? 0;
+        };
+        plans.sort((a, b) => sort === 'score-desc' ? scoreOf(b) - scoreOf(a) : scoreOf(a) - scoreOf(b));
+    }
     return plans;
 }
 
@@ -659,9 +666,13 @@ function renderCatalogDetail(plan) {
     if (cpuDesc) {
         container.appendChild(el('p', { class: 'text-gray-300 mb-1', text: cpuDesc }));
     }
-    // Hardware spec badges: chassis, SLA, anti-DDoS
+    // Hardware spec badges: CPU score, chassis, SLA, anti-DDoS, range
     const specBadges = [];
+    if (cpu && cpu.score) {
+        specBadges.push(`CPU score: ${cpu.score.toLocaleString()}`);
+    }
     if (frame && frame.size) specBadges.push(`${frame.size} chassis`);
+    if (frame && frame.dualPowerSupply) specBadges.push('Dual PSU');
     if (services && services.sla) specBadges.push(`${services.sla}% SLA`);
     if (services && services.antiddos) specBadges.push(`Anti-DDoS ${services.antiddos}`);
     if (productSpec.range) specBadges.push(`${productSpec.range.toUpperCase()} range`);
@@ -807,8 +818,20 @@ function renderCatalogDetail(plan) {
         card.dataset.addon = addon;
         card.dataset.default = isDefault ? '1' : '0';
 
+        const info = getAddonPrice(addon);
+        const ovhName = info?.invoiceName;
         const labelSpan = el('span', { class: isSelected ? 'text-blue-300 font-bold' : 'text-gray-300', text: humanizeAddon(addon) });
         labelSpan.dataset.label = '1';
+
+        // Show OVH's official invoiceName as a subtitle if it differs from
+        // our humanized version (it's often more descriptive).
+        let subtitle = null;
+        if (ovhName && ovhName.toLowerCase() !== humanizeAddon(addon).toLowerCase()) {
+            subtitle = el('span', { class: 'text-gray-500 text-xs block', text: ovhName });
+            subtitle.dataset.subtitle = '1';
+        }
+
+        const leftSide = el('div', {}, [labelSpan, subtitle]);
 
         const priceLabel = addonPriceLabel(addon);
         const rightSide = el('div', { class: 'flex items-center gap-2' });
@@ -825,7 +848,7 @@ function renderCatalogDetail(plan) {
         badgeSpan.dataset.badge = '1';
         rightSide.appendChild(badgeSpan);
 
-        card.appendChild(labelSpan);
+        card.appendChild(leftSide);
         card.appendChild(rightSide);
 
         card.addEventListener('keydown', (e) => {
