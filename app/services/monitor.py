@@ -1,18 +1,9 @@
-"""Core stock-monitoring engine.
+"""Stock monitoring engine + sniper auto-orderer.
 
-`MonitorService` runs a single background asyncio task that polls OVH for
-stock changes on every enabled alert's plan, computes diffs against the
-previous poll, and broadcasts the diffs to SSE subscribers. It also fans
-out multi-channel notifications and triggers the sniper auto-orderer when
-an armed alert matches.
-
-`SniperService` (defined first because `MonitorService` depends on it)
-handles armed alerts: when an alert with an attached checkout profile fires,
-it kicks off a background rush-order task.
-
-All state (alerts, stock cache, last-seen stock) is held in memory and
-mirrored to SQLite via `Storage`. Restarting the process reloads alerts
-and the poll-interval setting from storage.
+MonitorService runs a single background poller that checks OVH for stock
+changes and broadcasts to SSE subscribers. SniperService fires rush orders
+automatically when an armed alert matches. State is in-memory, mirrored
+to SQLite.
 """
 import asyncio
 import logging
@@ -29,12 +20,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class StockAlert:
-    """A user-configured watch on a plan_code + FQN pattern.
-
-    `auto_order_profile_id` optionally links the alert to a saved checkout
-    profile for sniper mode — when set, the sniper will fire the profile's
-    rush order automatically when this alert matches.
-    """
+    """A watch on a plan_code + FQN pattern. auto_order_profile_id
+    links to a checkout profile for sniper mode."""
 
     id: str
     plan_code: str
@@ -128,7 +115,7 @@ class SniperService:
         seen.update(new_fqns)
         profile_id = self._armed[alert_id]["profile_id"]
         self._in_flight.add(alert_id)
-        # Fire-and-forget — the result is recorded in self._results.
+        # Fire-and-forget - the result is recorded in self._results.
         asyncio.create_task(self._fire(alert_id, plan_code, new_fqns[0], profile_id))
 
     async def _fire(
@@ -189,7 +176,7 @@ class SniperService:
                 "order_id": result.get("orderId"),
                 "url": result.get("url"),
             }
-            # Disarm after a successful fire — caller must re-arm to fire again.
+            # Disarm after a successful fire - caller must re-arm to fire again.
             self._armed.pop(alert_id, None)
         except Exception as e:
             logger.error("sniper order failed for %s", alert_id, exc_info=True)
@@ -210,47 +197,25 @@ def get_sniper_service() -> SniperService:
 
 
 class MonitorService:
-    """Owns the background poller, alert registry, and SSE subscriber queues.
+    """Background poller + alert registry + SSE subscriber queues.
 
-    Lifecycle:
-        await monitor.start()   # called from FastAPI lifespan startup
-        ...
-        await monitor.stop()    # called from lifespan shutdown
-
-    Concurrency model:
-        A single `_run` task polls OVH for every enabled alert's plan_code,
-        computes diffs against the previous poll, and pushes changes onto
-        every subscriber's bounded queue. SSE handlers drain their queue and
-        stream events to the browser. This means N browser tabs share ONE
-        poller (no per-client OVH load).
-
-    State:
-        All maps are guarded by `_lock` (an asyncio.Lock). Mutations happen
-        under the lock; the actual OVH fetch happens outside the lock to
-        avoid blocking other alert mutations during a slow API call.
+    One poller serves all SSE clients. State is guarded by an asyncio.Lock;
+    OVH fetches happen outside the lock so slow API calls don't block
+    alert mutations.
     """
 
     def __init__(self) -> None:
-        # alert_id -> StockAlert
         self._alerts: dict[str, StockAlert] = {}
-        # plan_code -> latest StockStatus list (current stock)
         self._stock_cache: dict[str, list[StockStatus]] = {}
-        # plan_code -> {fqn: available} from the previous poll (for diffing)
         self._last_stock: dict[str, dict[str, bool]] = {}
-        self._poll_interval = 3  # seconds; clamped to [1, 10] on set
+        self._poll_interval = 3  # clamped to [1, 10]
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
-        # One bounded queue per SSE client.
         self._subscribers: list[asyncio.Queue] = []
-        self._storage = None  # lazily-initialised Storage (or False if unavailable)
+        self._storage = None
 
     def _storage_get(self):
-        """Lazily fetch the Storage singleton. Returns None if storage is unavailable.
-
-        Storage is optional — if SQLite cannot be opened, the service still
-        works in-memory (alerts are lost on restart). `False` is cached to
-        avoid retrying on every call.
-        """
+        """Lazily fetch Storage. Returns None if unavailable."""
         if self._storage is None:
             try:
                 from app.services.storage import get_storage
@@ -304,7 +269,7 @@ class MonitorService:
         """Main poll loop: poll, broadcast, sleep, repeat.
 
         Runs forever until the task is cancelled. Exceptions in a single
-        cycle are logged but do not stop the loop — the next cycle will
+        cycle are logged but do not stop the loop - the next cycle will
         try again after `_poll_interval` seconds.
         """
         while True:
@@ -419,7 +384,7 @@ class MonitorService:
 
         Returns a dict with `newly_available`, `now_unavailable`, and
         `currently_available` FQN lists, plus a UTC timestamp. Also
-        updates `_last_stock` to the new state — callers must hold `_lock`.
+        updates `_last_stock` to the new state - callers must hold `_lock`.
         """
         old_statuses = self._last_stock.get(plan_code, {})
         new_available_fqns = {s.fqn for s in new_statuses if s.available}
@@ -439,13 +404,7 @@ class MonitorService:
         }
 
     async def _poll_once(self) -> list[dict[str, Any]]:
-        """One poll cycle: fetch availability for every enabled alert's plan,
-        compute diffs, fire notifications, log events, and trigger the sniper.
-
-        Returns the list of plan diffs (each with `newly_available` > 0) to
-        broadcast to SSE subscribers. OVH fetches run via `to_thread` to
-        avoid blocking the event loop.
-        """
+        """One poll cycle. Returns diffs to broadcast to SSE clients."""
         changes: list[dict[str, Any]] = []
         service = get_ovh_service()
         if not service.is_configured():

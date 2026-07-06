@@ -5,7 +5,7 @@ Two naming conventions coexist intentionally:
     and are used to document response shapes (and may be attached as
     `response_model` in future).
   - snake_case models (AddServerRequest, CheckoutRequest, ...) are the
-    request bodies the API accepts — Python-idiomatic for the public API.
+    request bodies the API accepts - Python-idiomatic for the public API.
 
 All durations use ISO 8601 period strings (e.g. "P1M" = 1 month).
 """

@@ -1,13 +1,4 @@
-"""Alert CRUD endpoints — create, list, get, delete, enable/disable.
-
-Alerts watch a `plan_code` for FQNs matching `fqn_pattern` (a glob). When
-the monitor detects newly-available FQNs that match, it fires notifications
-and (if armed) the sniper auto-orderer.
-
-The PUT /{id}/profile endpoint links an alert to a saved checkout profile
-for sniper mode — when the alert fires, the profile's rush order runs
-automatically.
-"""
+"""Alert CRUD + profile assignment for sniper mode."""
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -104,6 +95,6 @@ async def assign_profile(alert_id: str, request: AssignProfileRequest) -> AlertR
     try:
         storage.set_alert_profile(alert_id, request.profile_id)
     except Exception:
-        # Best-effort persistence — the in-memory assignment still works.
+        # Best-effort persistence - the in-memory assignment still works.
         pass
     return _to_response(alert)

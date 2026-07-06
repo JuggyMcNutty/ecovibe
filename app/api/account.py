@@ -1,11 +1,4 @@
-"""Account & billing endpoints — OVH account info and payment methods.
-
-Surfaces the OVH account details (name, nichandle, email, currency) and
-available payment methods so the user can verify billing is set up before
-ordering. Default checkout preferences (auto-pay, waive retraction, duration)
-are persisted in the settings table and used by the catalog order form
-and sniper auto-order.
-"""
+"""Account info, payment methods, and default checkout preferences."""
 import asyncio
 import logging
 

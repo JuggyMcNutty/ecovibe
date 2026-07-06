@@ -1,21 +1,4 @@
-"""Checkout endpoints — finalise a cart into an order.
-
-Two endpoints:
-    POST /api/checkout/{cart_id}  — legacy: checkout a pre-built cart.
-    POST /api/checkout/rush       — one-shot: build cart + add items + checkout.
-
-The rush endpoint is what the frontend and sniper use. It accepts a
-`RushOrderRequest` describing the desired server, options, datacenters,
-and checkout flags, then runs the full cart lifecycle in one call.
-
-Multi-datacenter fallback: if `datacenters` is a list, each is tried in
-order until one is accepted by OVH (a DC may reject if it has no capacity
-for the plan). This lets a flash-sale order survive a single DC being
-full without the user re-trying manually.
-
-`max_price` (if set) refuses checkout if the current catalog price exceeds
-the threshold — a budget guard for the sniper.
-"""
+"""Checkout endpoints - place orders and one-shot rush orders."""
 import asyncio
 import logging
 from datetime import datetime, timezone
@@ -37,7 +20,7 @@ router = APIRouter(prefix="/api/checkout", tags=["checkout"])
 class RushOrderRequest(BaseModel):
     """Full description of a one-shot rush order.
 
-    `datacenters` is ordered — the first one OVH accepts wins. `max_price`
+    `datacenters` is ordered - the first one OVH accepts wins. `max_price`
     is in microcents of euro (matches OVH's `priceInUcents` field) and
     refuses checkout if the current price exceeds it.
     """
@@ -64,7 +47,7 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
     orphans. Region and OS configs are applied in parallel since they are
     independent of each other.
 
-    Raises `OVHServiceError` on any upstream failure — the caller is
+    Raises `OVHServiceError` on any upstream failure - the caller is
     responsible for mapping it to an HTTP response.
     """
     datacenters = req.datacenters or [""]
@@ -122,7 +105,7 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
             if last_dc_error:
                 raise last_dc_error
 
-        # Region + OS configs are independent — apply them in parallel.
+        # Region + OS configs are independent - apply them in parallel.
         remaining_configs = [
             ("region", req.region),
             ("dedicated_os", req.os),

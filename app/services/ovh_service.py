@@ -1,13 +1,8 @@
-"""Thin wrapper around the official `ovh` Python SDK client.
+"""Wrapper around the official ovh Python SDK.
 
-This service encapsulates every OVH REST API call used by the application.
-The API layer (`app/api/*`) talks exclusively to `OVHService` rather than
-the raw SDK, which keeps OVH-specific concerns (camelCase kwargs, error
-mapping, caching) in one place.
-
-All methods are synchronous because the `ovh` SDK uses `requests` under the
-hood. Callers in async route handlers must wrap calls with
-`await asyncio.to_thread(...)` to avoid blocking the event loop.
+All OVH API calls go through here so the rest of the app doesn't need to
+know about camelCase kwargs, error mapping, or caching. Methods are sync
+(ovh SDK uses requests) - wrap with asyncio.to_thread in async handlers.
 """
 import logging
 from typing import Any
@@ -22,12 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class OVHServiceError(Exception):
-    """Raised on any OVH API failure.
-
-    Carries the upstream HTTP status code (when available) and OVH query ID
-    so the API layer can map to an appropriate HTTP response and log the
-    query ID for support follow-up.
-    """
+    """Carries the OVH status code and query ID for error mapping."""
 
     def __init__(
         self,
@@ -42,15 +32,10 @@ class OVHServiceError(Exception):
 
 
 class OVHService:
-    """Wraps a single `ovh.Client` instance.
+    """Wraps an ovh.Client. Credentials come from the DB, not env vars.
 
-    Credentials are loaded from the SQLite database (via the setup wizard),
-    NOT from environment variables. The client is only constructed when all
-    three OVH credentials are present in the database; otherwise
-    `is_configured()` returns False and every call raises `OVHServiceError`.
-
-    Call `reconfigure()` after saving new credentials to rebuild the client
-    without restarting the process.
+    Call reconfigure() after saving new credentials to rebuild the client
+    without restarting.
     """
 
     def __init__(self, use_cache: bool | None = None) -> None:
@@ -61,16 +46,10 @@ class OVHService:
         self._setup_client()
 
     def _setup_client(self) -> None:
-        """Construct the OVH client from credentials stored in the database.
-
-        If no credentials are stored, the client stays None and
-        `is_configured()` returns False. Logs a warning so the operator
-        knows to run the setup wizard.
-        """
-        # Load credentials from the database.
+        """Build the OVH client from DB-stored credentials."""
         creds = self._load_credentials()
         if not creds:
-            logger.info("No OVH credentials found in database — run the setup wizard.")
+            logger.info("No OVH credentials found in database - run the setup wizard.")
             return
 
         missing = [
@@ -83,9 +62,7 @@ class OVHService:
             if not val
         ]
         if missing:
-            logger.warning(
-                "OVH client not initialised: missing credentials: %s", ", ".join(missing)
-            )
+            logger.warning("OVH client not initialised: missing: %s", ", ".join(missing))
             return
 
         self._endpoint = creds.get("endpoint", get_settings().endpoint)
@@ -95,15 +72,11 @@ class OVHService:
             application_secret=creds["application_secret"],
             consumer_key=creds["consumer_key"],
         )
-        logger.info("OVH client initialised for endpoint: %s", self._endpoint)
+        logger.info("OVH client ready for endpoint: %s", self._endpoint)
 
     @staticmethod
     def _load_credentials() -> dict[str, str] | None:
-        """Load OVH credentials from the SQLite database.
-
-        Returns None if the storage layer is unavailable or no credentials
-        are stored.
-        """
+        """Fetch credentials from the DB, or None if not configured."""
         try:
             from app.services.storage import get_storage
             storage = get_storage()
@@ -126,20 +99,13 @@ class OVHService:
         return self._endpoint
 
     def is_configured(self) -> bool:
-        """True iff the OVH client was constructed (all credentials were present)."""
         return self._client is not None
 
     def _call(self, method: str, path: str, **kwargs) -> Any:
-        """Central dispatch: invoke the SDK and translate `APIError` → `OVHServiceError`.
+        """Route to the SDK's verb wrappers (not call() directly).
 
-        Routes to the SDK's verb-specific methods (`get`/`post`/`put`/`delete`)
-        rather than `call()` directly, because the verb wrappers handle kwargs
-        correctly: GET/DELETE kwargs become query string params, while
-        POST/PUT kwargs become the JSON body. `call()` only accepts a `data`
-        positional arg and would raise `TypeError` on any kwargs.
-
-        The original `APIError` is chained via `from e` so the full traceback
-        is preserved in server logs.
+        The verb wrappers handle kwargs properly: GET/DELETE -> query string,
+        POST/PUT -> JSON body. call() would TypeError on kwargs.
         """
         if not self._client:
             raise OVHServiceError("OVH API not configured. Please set credentials.")
@@ -319,7 +285,7 @@ class OVHService:
 
         `auto_pay=True` charges the account's preferred payment method
         immediately. `waive_retractation=True` skips the legal withdrawal
-        period — essential for flash sales where you want the server now.
+        period - essential for flash sales where you want the server now.
         """
         return self.post(
             f"/order/cart/{cart_id}/checkout",

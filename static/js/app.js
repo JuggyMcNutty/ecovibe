@@ -1,23 +1,4 @@
-// ===========================================================================
-// OVH Flash Sale Monitor — frontend SPA logic (vanilla JS, no framework)
-// ===========================================================================
-// Structure:
-//   1. Constants & state
-//   2. DOM helpers (el, showView, loading, error banner, connection dot)
-//   3. API client (apiRequest, checkHealth)
-//   4. Catalog (load, search, filter, render)
-//   5. Alerts (CRUD, render lists)
-//   6. SSE monitoring (start/stop, stock alerts, reconnect)
-//   7. Browser notifications & audio
-//   8. Rush order (one-shot POST /api/checkout/rush)
-//   9. Credentials view
-//  10. Saved checkout profiles
-//  11. Sniper mode (arm/disarm/status)
-//  12. Orders list
-//  13. Init (DOMContentLoaded)
-// ===========================================================================
-
-// --- 1. Constants & state ---------------------------------------------------
+// OVH Flash Sale Monitor - frontend SPA (vanilla JS, no framework)
 
 const API_BASE = '/api';
 
@@ -75,7 +56,7 @@ let audioContext = null;
 let alertBuffer = null;
 let alertPanelTimer = null;
 
-// --- 2. DOM helpers --------------------------------------------------------
+// DOM helpers
 
 function el(tag, attrs = {}, children = []) {
     const node = document.createElement(tag);
@@ -90,7 +71,7 @@ function el(tag, attrs = {}, children = []) {
             node[key.toLowerCase()] = value;
         } else if (key === 'checked' || key === 'selected' || key === 'disabled') {
             if (value) node.setAttribute(key, key);
-            // Don't set the attribute if false — presence/absence is what matters
+            // Don't set the attribute if false - presence/absence is what matters
         } else if (key === 'value' && (tag === 'input' || tag === 'option' || tag === 'select' || tag === 'textarea')) {
             node.value = value;
         } else if (typeof value === 'string' || typeof value === 'number') {
@@ -145,7 +126,7 @@ function updateConnectionStatus(connected) {
     }
 }
 
-// --- 3. API client ---------------------------------------------------------
+// API client
 
 async function apiRequest(method, path, body = null) {
     const options = {
@@ -188,7 +169,7 @@ async function checkHealth() {
     }
 }
 
-// --- 4. Catalog (load, search, filter, render) -----------------------------
+// Catalog
 
 const SUBSIDIARIES_BY_ENDPOINT = {
     'ovh-eu': ['IE', 'FR', 'DE', 'GB', 'ES', 'PL', 'IT', 'PT', 'CZ', 'FI'],
@@ -256,7 +237,7 @@ async function refreshCatalogSilent() {
             updateCatalogRefreshBadge(`${state.plans.length} plans`, false);
         }
     } catch (e) {
-        // Silent fail — don't disrupt the user with error banners on background polls
+        // Silent fail - don't disrupt the user with error banners on background polls
         console.error('Catalog auto-refresh failed:', e);
     }
 }
@@ -298,7 +279,7 @@ function updateCatalogRefreshBadge(text, changed) {
 //   intervalUnit: 'month' | 'none'
 //   capacities: ['installation'] | ['renew'] (we want 'renew')
 //   price: integer in microcents (divide by 10^8 to get currency units)
-//   formattedPrice: "$90.00 USD" (pre-formatted by OVH — use for display)
+//   formattedPrice: "$90.00 USD" (pre-formatted by OVH - use for display)
 function getPlanMonthlyPrice(plan) {
     const pricings = plan.pricings || [];
     const monthly = pricings.find(p => p.mode === 'default' && p.interval === 1 && p.intervalUnit === 'month');
@@ -415,7 +396,7 @@ function renderCatalogList() {
     });
 }
 
-// --- Human-readable addon label parsers ---
+// Human-readable addon label parsers
 
 function humanizeAddon(code) {
     if (!code) return 'Unknown';
@@ -469,9 +450,9 @@ function humanizeStorage(code) {
 function humanizeBandwidth(code) {
     // bandwidth-{speed}[-upto-{max}][-unguaranteed]-{product}-{region}
     // e.g. bandwidth-500-25sk-eu → "500 Mbps"
-    //      bandwidth-1000-upto-2000-24sys3p-eu → "1–2 Gbps (burstable)"
+    //      bandwidth-1000-upto-2000-24sys3p-eu → "1-2 Gbps (burstable)"
     //      bandwidth-300-unguaranteed-25skle-us → "300 Mbps (unguaranteed)"
-    //      bandwidth-6000-upto-12000-24sys3p-eu → "6–12 Gbps (burstable)"
+    //      bandwidth-6000-upto-12000-24sys3p-eu → "6-12 Gbps (burstable)"
     const m = code.match(/^bandwidth-(\d+)(?:-upto-(\d+))?(?:-(unguaranteed))?-/i);
     if (m) {
         const min = parseInt(m[1], 10);
@@ -479,7 +460,7 @@ function humanizeBandwidth(code) {
         let label;
         if (m[2]) {
             const max = parseInt(m[2], 10);
-            label = `${fmt(min)}–${fmt(max)} (burstable)`;
+            label = `${fmt(min)}-${fmt(max)} (burstable)`;
         } else {
             label = fmt(min);
         }
@@ -492,8 +473,8 @@ function humanizeBandwidth(code) {
 function humanizeVrack(code) {
     // vrack-bandwidth-{min}[-upto-{max}]-{product}-{region}
     // e.g. vrack-bandwidth-1000-24sys-eu → "vRack 1 Gbps"
-    //      vrack-bandwidth-1000-upto-2000-24rise-eu → "vRack 1–2 Gbps (burstable)"
-    //      vrack-bandwidth-50000-upto-100000-24sys3p-eu → "vRack 50–100 Gbps (burstable)"
+    //      vrack-bandwidth-1000-upto-2000-24rise-eu → "vRack 1-2 Gbps (burstable)"
+    //      vrack-bandwidth-50000-upto-100000-24sys3p-eu → "vRack 50-100 Gbps (burstable)"
     //      vrack-bandwidth-500-25sk-eu → "vRack 500 Mbps"
     const m = code.match(/^vrack-bandwidth-(\d+)(?:-upto-(\d+))?/i);
     if (m) {
@@ -501,7 +482,7 @@ function humanizeVrack(code) {
         const fmt = (v) => v >= 1000 ? `${v / 1000} Gbps` : `${v} Mbps`;
         if (m[2]) {
             const max = parseInt(m[2], 10);
-            return `vRack ${fmt(min)}–${fmt(max)} (burstable)`;
+            return `vRack ${fmt(min)}-${fmt(max)} (burstable)`;
         }
         return `vRack ${fmt(min)}`;
     }
@@ -596,7 +577,7 @@ function renderCatalogDetail(plan) {
     }
     container.appendChild(priceSection);
 
-    // Hardware specs from addonFamilies — selectable cards
+    // Hardware specs from addonFamilies - selectable cards
     const families = plan.addonFamilies || [];
     const specsSection = el('div', { class: 'space-y-3 mb-4' });
     specsSection.appendChild(el('h3', { class: 'font-bold text-gray-400 text-sm uppercase mb-2', text: 'Configuration Options' }));
@@ -608,7 +589,7 @@ function renderCatalogDetail(plan) {
     }
 
     // Build the FQN string from the plan base + selected addon short codes.
-    // OVH FQN format: {planBase}.{memory}.{storage}.{bandwidth}.{vrack} — order matters!
+    // OVH FQN format: {planBase}.{memory}.{storage}.{bandwidth}.{vrack} - order matters!
     function buildFqn() {
         const planBase = plan.planCode.split('-').slice(0, -1).join('-') || plan.planCode;
         const parts = [planBase];
@@ -975,7 +956,7 @@ function switchTab(tabId) {
     }
 }
 
-// --- 4b. Billing & account info -------------------------------------------
+// Billing & account info
 
 async function loadBillingInfo() {
     await Promise.all([loadAccountInfo(), loadPaymentMethods(), loadCheckoutDefaults()]);
@@ -1081,7 +1062,7 @@ async function saveCheckoutDefaults(e) {
     }
 }
 
-// --- 5. Alerts (CRUD, render lists) ----------------------------------------
+// Alerts
 
 async function loadAlerts() {
     try {
@@ -1209,7 +1190,7 @@ async function setPollInterval(seconds) {
     }
 }
 
-// --- 6. SSE monitoring (start/stop, stock alerts, reconnect) --------------
+// SSE monitoring
 
 function startMonitoring() {
     if (state.eventSource) {
@@ -1335,7 +1316,7 @@ function showBrowserNotification(planCode, fqns) {
     }
 }
 
-// --- 8. Rush order (one-shot POST /api/checkout/rush) ---------------------
+// Rush order
 
 function getSelectedDatacenters() {
     return Array.from(document.querySelectorAll('.rush-dc:checked')).map(cb => cb.value);
@@ -1397,7 +1378,7 @@ async function rushOrder(e) {
     }
 }
 
-// --- 7. Audio (init, unlock on gesture, play alert sound) ------------------
+// Audio
 
 function initAudio() {
     try {
@@ -1447,7 +1428,7 @@ function playAlertSound() {
     }
 }
 
-// --- 9. Credentials view ---------------------------------------------------
+// Credentials
 
 function updateCredentialsView(region) {
     const regionInfo = OVH_REGIONS[region] || OVH_REGIONS['ovh-eu'];
@@ -1560,7 +1541,7 @@ async function loadExistingCredentials() {
             }
         }
     } catch (e) {
-        // ignore — fresh install
+        // ignore - fresh install
     }
 }
 
@@ -1757,7 +1738,7 @@ function renderOrders(orders) {
     });
 }
 
-// --- 13. Init (DOMContentLoaded) -------------------------------------------
+// Init
 
 async function init() {
     showView('loading');

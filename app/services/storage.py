@@ -1,21 +1,4 @@
-"""SQLite-backed persistence for alerts, settings, profiles, and history.
-
-This module owns every database interaction in the application. It uses a
-single `sqlite3.Connection` opened with `check_same_thread=False` (safe
-because all access is serialised by a `threading.Lock`). The connection
-lives for the lifetime of the process.
-
-Schema is created idempotently in `init()`. Best-effort `ALTER TABLE`
-statements add new columns to pre-existing databases without losing data.
-
-Tables:
-    alerts             — user-configured stock alerts (+ sniper profile link)
-    settings           — simple key/value store (e.g. poll_interval)
-    stock_events       — append-only log of available/unavailable transitions
-    price_history      — append-only log of price snapshots per plan
-    checkout_profiles  — saved rush-order templates
-    orders             — log of placed orders + their OVH status
-"""
+"""SQLite persistence for alerts, profiles, credentials, and history."""
 import json
 import logging
 import os
@@ -47,7 +30,7 @@ class Storage:
 
     All methods are thread-safe via a single `threading.Lock`. The connection
     is opened lazily on first `init()` call (which the singleton accessor
-    triggers automatically). Callers do not need to manage transactions —
+    triggers automatically). Callers do not need to manage transactions -
     each method commits its own changes.
     """
 
@@ -62,7 +45,7 @@ class Storage:
         """Open the connection and create the schema (idempotent).
 
         Also runs best-effort `ALTER TABLE` migrations for columns added
-        after the database was first created — this lets users upgrade the
+        after the database was first created - this lets users upgrade the
         app without losing their existing alerts.
         """
         should_exist = os.path.exists(self._db_path)

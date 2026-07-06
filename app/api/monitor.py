@@ -1,13 +1,4 @@
-"""Monitor endpoints — SSE stock stream, availability checks, and poll control.
-
-The SSE endpoint (`GET /api/monitor/stream`) is the real-time channel: it
-subscribes to the shared `MonitorService` background poller and streams
-stock-change events to the browser. One poller serves all connected clients.
-
-A 15-second keep-alive comment (`: ping\n\n`) is sent when there are no
-events to send, which defeats idle-connection proxies without producing a
-client-visible event.
-"""
+"""SSE stock stream, availability checks, and poll-interval control."""
 import asyncio
 import json
 import logging
@@ -32,7 +23,7 @@ async def stream_stock_updates() -> StreamingResponse:
 
     The browser opens an `EventSource` to this endpoint. Each connected
     client gets its own bounded queue; the single background poller pushes
-    diffs to every queue. The generator runs forever — disconnection
+    diffs to every queue. The generator runs forever - disconnection
     cancels it and the `finally` block deregisters the queue.
     """
     monitor = get_monitor_service()
@@ -45,7 +36,7 @@ async def stream_stock_updates() -> StreamingResponse:
                     # Wait for the next diff batch, or send a keep-alive.
                     changes = await asyncio.wait_for(queue.get(), timeout=15.0)
                 except asyncio.TimeoutError:
-                    # SSE comment — keeps the connection alive without
+                    # SSE comment - keeps the connection alive without
                     # producing a client-visible event.
                     yield ": ping\n\n"
                     continue
@@ -66,7 +57,7 @@ async def stream_stock_updates() -> StreamingResponse:
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            # Critical for nginx — disables proxy buffering so SSE events
+            # Critical for nginx - disables proxy buffering so SSE events
             # reach the client immediately instead of being batched.
             "X-Accel-Buffering": "no",
         },

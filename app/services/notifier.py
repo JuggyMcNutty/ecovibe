@@ -1,13 +1,4 @@
-"""Multi-channel notifier: Telegram, Discord, Slack, and email.
-
-Each channel is independently optional — configured via `OVH_*` environment
-variables. A failure in any one channel is logged but does not affect the
-others, so a misconfigured Slack webhook will not silence your Telegram bot.
-
-The public entry point is `notify_stock_alert()`, which fans out to every
-configured channel concurrently. The `MonitorService` calls this after an
-alert fires.
-"""
+"""Multi-channel notifier: Telegram, Discord, Slack, email."""
 import asyncio
 import logging
 import smtplib
@@ -114,7 +105,7 @@ async def _send_slack(plan_code: str, fqns: list[str], price: float | None) -> N
 def _send_email(plan_code: str, fqns: list[str], price: float | None) -> None:
     """Send an HTML email via SMTP. No-op if not configured.
 
-    Synchronous (smtplib is blocking) — callers should run via
+    Synchronous (smtplib is blocking) - callers should run via
     `asyncio.to_thread(_send_email, ...)` to avoid blocking the event loop.
     Uses STARTTLS when SMTP credentials are provided.
     """

@@ -1,13 +1,4 @@
-"""Sniper mode — arm/disarm per-alert auto-ordering.
-
-When an alert is armed with a saved checkout profile, the monitor will
-automatically fire that profile's rush order the moment the alert matches
-newly-available stock. The sniper fires once per arm cycle (no duplicate
-orders); re-arm after a success or failure to fire again.
-
-The actual fire logic lives in `SniperService` (`app/services/monitor.py`);
-these endpoints are thin wrappers around arm/disarm/status.
-"""
+"""Sniper mode - arm/disarm per-alert auto-ordering."""
 import logging
 
 from fastapi import APIRouter, HTTPException

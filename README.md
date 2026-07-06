@@ -21,7 +21,7 @@ python run.py
 ```
 
 Open http://localhost:8000 in your browser. On first startup, the setup
-wizard will appear — enter your OVH API credentials (application key,
+wizard will appear - enter your OVH API credentials (application key,
 secret, and consumer key) directly in the browser. Credentials are stored
 in the local SQLite database; no environment variables are needed for
 secrets.
@@ -42,7 +42,7 @@ pip install -r requirements-dev.txt
 ### Flash Sale Monitor
 - **Real-time stock tracking** via SSE (Server-Sent Events) with a single shared background poller
 - **Browser notifications** when desired configs become available
-- **Multi-channel notifications** (Telegram, Discord, Slack, email) — never miss a flash sale when away from the browser
+- **Multi-channel notifications** (Telegram, Discord, Slack, email) - never miss a flash sale when away from the browser
 - **Sound alerts** - audio notification (requires a user gesture first, e.g. clicking "Start Monitor")
 - **1-10 second polling** configurable interval (persisted across restarts)
 - **One-click Rush Order** when stock is detected
@@ -61,17 +61,17 @@ pip install -r requirements-dev.txt
 - Quick-add servers to watchlist (click or keyboard)
 
 ### Checkout
-- **Saved checkout profiles** — pre-configure cart templates (RAM, storage, DCs, OS, duration, etc.)
-- **Multi-datacenter fallback** — try DCs in order (GRA→SBG→RBX→...) during rush order
+- **Saved checkout profiles** - pre-configure cart templates (RAM, storage, DCs, OS, duration, etc.)
+- **Multi-datacenter fallback** - try DCs in order (GRA→SBG→RBX→...) during rush order
 - Configure RAM, storage, bandwidth options
 - Set region (Europe/Canada/US), operating system, and billing duration
 - Auto-pay and waive retraction options
-- **Max price cap** — refuse checkout if price exceeds threshold
+- **Max price cap** - refuse checkout if price exceeds threshold
 
 ### Historical Insights
-- **Restock patterns** — stock events are logged to SQLite; view hourly aggregation to find the best times to monitor
-- **Price history** — track price changes per plan over time
-- **Order tracking** — recently placed orders with status
+- **Restock patterns** - stock events are logged to SQLite; view hourly aggregation to find the best times to monitor
+- **Price history** - track price changes per plan over time
+- **Order tracking** - recently placed orders with status
 
 ### Persistence
 - Alerts, poll-interval setting, checkout profiles, stock events, price history, and orders are persisted to SQLite (`ovh-flash-monitor.db`)

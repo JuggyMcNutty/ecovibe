@@ -1,10 +1,4 @@
-"""Catalog endpoints — browse the OVH ECO server catalog and availability.
-
-All endpoints return 503 when OVH credentials are not configured, and the
-appropriate HTTP status (via `raise_ovh_http_error`) on upstream failures.
-OVH SDK calls run in a thread via `asyncio.to_thread` to avoid blocking
-the event loop.
-"""
+"""Catalog endpoints - browse ECO server catalog and availability."""
 import asyncio
 from typing import Any
 

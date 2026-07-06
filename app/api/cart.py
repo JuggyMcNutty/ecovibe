@@ -1,13 +1,4 @@
-"""Granular cart lifecycle endpoints (legacy granular API).
-
-These endpoints expose OVH's cart flow step-by-step: create → assign →
-add server → add options → add config → summary. The frontend now uses
-the one-shot `POST /api/checkout/rush` endpoint instead, but these remain
-available for programmatic use and for the `SniperService` (which calls
-`_execute_rush_order` in checkout.py, not these routes).
-
-Every endpoint returns 503 when OVH credentials are not configured.
-"""
+"""Granular cart lifecycle endpoints (legacy - prefer /api/checkout/rush)."""
 import asyncio
 import logging
 from typing import Any

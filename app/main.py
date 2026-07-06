@@ -1,27 +1,17 @@
-"""FastAPI application entry point for the OVH Flash Sale Monitor.
-
-This module constructs the FastAPI app, wires up all routers and middleware,
-and manages the background monitor service lifecycle via a lifespan context.
-"""
+"""FastAPI app factory and lifespan management."""
 import logging
 import os
 from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
 
-# Project root (one level above the `app/` package). Used to locate the
-# `static/` and `templates/` directories when running from source.
+# Project root (one level up from app/). Used to find static/ and templates/.
 BASE_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 @asynccontextmanager
 async def lifespan(app):
-    """Start the background stock poller on startup, stop it on shutdown.
-
-    The MonitorService runs a single long-lived asyncio task that polls OVH
-    for stock changes and broadcasts updates to SSE subscribers. The poller
-    only runs while the app is up — shutting down cancels it cleanly.
-    """
+    """Start/stop the background stock poller."""
     from app.services.monitor import get_monitor_service
 
     monitor = get_monitor_service()
@@ -33,12 +23,7 @@ async def lifespan(app):
 
 
 def create_app():
-    """Build and return the configured FastAPI application.
-
-    Imported routers are mounted under their respective `/api/...` prefixes.
-    Imports are kept inside the factory so that test configuration (env vars,
-    monkeypatched settings) is applied before module-level side effects run.
-    """
+    """Build the FastAPI app with all routers and middleware."""
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import HTMLResponse
@@ -67,8 +52,6 @@ def create_app():
 
     settings = get_settings()
 
-    # CORS is opt-in via OVH_CORS_ORIGINS. Defaults to an empty allow-list
-    # (same-origin only), which is correct when serving the SPA from `/`.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -76,12 +59,10 @@ def create_app():
         allow_headers=["*"],
     )
 
-    # Mount the static asset directory (frontend JS) if present.
     static_path = os.path.join(BASE_PATH, "static")
     if os.path.exists(static_path):
         app.mount("/static", StaticFiles(directory=static_path), name="static")
 
-    # Register every API router. Each router declares its own prefix/tag.
     app.include_router(catalog.router)
     app.include_router(cart.router)
     app.include_router(checkout.router)
@@ -95,12 +76,11 @@ def create_app():
 
     @app.get("/", response_class=HTMLResponse)
     async def root() -> str:
-        """Serve the single-page frontend from `templates/index.html`."""
+        """Serve the SPA frontend."""
         template_path = os.path.join(BASE_PATH, "templates", "index.html")
         if os.path.exists(template_path):
             with open(template_path) as f:
                 return f.read()
-        # Fallback shown if the templates directory is missing (e.g. wrong CWD).
         return """
         <html><body style="background:#1a1a2e;color:#eee;font-family:sans-serif;padding:2rem;">
             <h1>OVH Flash Sale Monitor</h1>
@@ -110,11 +90,7 @@ def create_app():
 
     @app.get("/api/health")
     async def health() -> dict:
-        """Lightweight liveness check.
-
-        Returns whether OVH credentials are configured (from the database)
-        and the configured endpoint. No secrets are exposed.
-        """
+        """Liveness check. Returns whether OVH credentials are configured."""
         from app.services.ovh_service import get_ovh_service
         service = get_ovh_service()
         return {
@@ -126,7 +102,6 @@ def create_app():
     return app
 
 
-# Module-level app instance. Imported by `run.py` and uvicorn via `app.main:app`.
 app = create_app()
 
 

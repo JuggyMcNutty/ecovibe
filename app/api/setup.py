@@ -1,17 +1,4 @@
-"""Setup wizard endpoints — save, test, and manage OVH credentials.
-
-Credentials are stored in the SQLite database (not env vars) so they can
-be configured from the browser on first startup. The GET endpoint returns
-only masked versions of the keys — the actual secrets are never sent back
-to the browser after saving.
-
-Flow:
-  1. User opens the app → GET /api/setup/credentials → {configured: false}
-  2. User enters keys in the setup wizard → POST /api/setup/credentials
-  3. Backend saves to DB, resets the OVHService singleton
-  4. User clicks "Test" → POST /api/setup/test → calls GET /me on OVH
-  5. On success, the app proceeds to the monitor view
-"""
+"""Setup wizard - save, test, and manage OVH credentials in the DB."""
 import asyncio
 import logging
 
@@ -35,7 +22,7 @@ class CredentialsRequest(BaseModel):
 
 
 class CredentialsResponse(BaseModel):
-    """Masked credential info — safe to return to the browser."""
+    """Masked credential info - safe to return to the browser."""
     configured: bool
     endpoint: str | None = None
     application_key_masked: str | None = None
@@ -55,7 +42,7 @@ def _mask(value: str | None) -> str | None:
 async def get_credentials() -> CredentialsResponse:
     """Return whether credentials are configured, with masked key previews.
 
-    Never returns the actual secrets — only enough to confirm which keys
+    Never returns the actual secrets - only enough to confirm which keys
     are stored and show the user a hint of which key is which.
     """
     storage = get_storage()
