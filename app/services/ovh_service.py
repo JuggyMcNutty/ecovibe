@@ -122,10 +122,16 @@ class OVHService:
         delta) is not safe under concurrent access from the background
         poller, rush orders and account endpoints.
 
-        On a 403 "This application key is invalid" we refresh the client's
-        cached time delta and retry once: OVH reports a signature mismatch
-        (which a stale timestamp causes) as an invalid application key, and
-        the SDK caches the delta forever so it never self-corrects.
+        Two retry strategies (both single-retry, not looping):
+
+        - 403 "This application key is invalid": refresh the client's cached
+          time delta and retry. OVH reports a signature mismatch (caused by
+          a stale timestamp) as an invalid application key, and the SDK
+          caches the delta forever so it never self-corrects.
+
+        - 500/502/503/504: transient OVH server errors. Retry once after a
+          short backoff. OVH's API occasionally returns 500s that succeed
+          on immediate retry.
         """
         if not self._client:
             raise OVHServiceError("OVH API not configured. Please set credentials.")
@@ -139,6 +145,14 @@ class OVHService:
                         e.query_id,
                     )
                     self._reset_time_delta()
+                    return self._do_call(method, path, **kwargs)
+                if e.status_code in (500, 502, 503, 504):
+                    logger.warning(
+                        "OVH %s transient error - retrying once (query_id=%s)",
+                        e.status_code, e.query_id,
+                    )
+                    import time
+                    time.sleep(0.5)
                     return self._do_call(method, path, **kwargs)
                 raise
 
@@ -264,6 +278,24 @@ class OVHService:
                     ):
                         return pr["price"]
         return None
+
+    def get_plan_datacenters(self, plan_code: str, subsidiary: str | None = None) -> list[str]:
+        """Return the list of datacenters where a plan is orderable.
+
+        Extracted from the catalog's ``configurations`` array for the plan,
+        looking for the ``dedicated_datacenter`` entry. Used as a fallback
+        when the rush order has no DCs selected - OVH requires
+        ``dedicated_datacenter`` to be set before checkout or it returns
+        400 "in customFields there must be a field with name
+        'dedicated_datacenter'".
+        """
+        catalog = self.fetch_catalog(subsidiary=subsidiary)
+        for plan in catalog.get("plans", []):
+            if plan.get("planCode") == plan_code:
+                for cfg in plan.get("configurations", []):
+                    if cfg.get("name") == "dedicated_datacenter":
+                        return cfg.get("values", [])
+        return []
 
     # ---- Cart lifecycle ----
     #

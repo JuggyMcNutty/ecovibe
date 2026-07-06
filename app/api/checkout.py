@@ -57,7 +57,23 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
     Raises `OVHServiceError` on any upstream failure - the caller is
     responsible for mapping it to an HTTP response.
     """
-    datacenters = req.datacenters or [""]
+    datacenters = list(req.datacenters)
+    # If no DCs were selected, auto-discover the plan's available DCs from
+    # the catalog. OVH requires `dedicated_datacenter` before checkout or
+    # it returns 400 "in customFields there must be a field with name
+    # 'dedicated_datacenter'".
+    if not any(d for d in datacenters):
+        try:
+            plan_dcs = await asyncio.to_thread(
+                service.get_plan_datacenters, req.plan_code
+            )
+            if plan_dcs:
+                datacenters = plan_dcs
+                _trace(f"no DCs selected - auto-trying plan DCs: {plan_dcs}")
+        except OVHServiceError:
+            pass
+    if not any(d for d in datacenters):
+        datacenters = [""]
     _trace(f"start: plan={req.plan_code} endpoint={service.endpoint} region={req.region}")
     cart = await asyncio.to_thread(service.create_cart, "Rush Order")
     _trace(f"created cart {cart.get('cartId')} for plan {req.plan_code}")
@@ -114,10 +130,16 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
             except OVHServiceError as e:
                 last_dc_error = e
                 logger.info("datacenter %s rejected for %s: %s", dc, req.plan_code, e)
-        # If every DC was rejected, surface the last error.
-        if not dc_set and datacenters and datacenters[0]:
+        # If no DC was accepted, surface the error. OVH requires
+        # dedicated_datacenter before checkout - proceeding without one
+        # results in a 400 or a misleading 500.
+        if not dc_set:
             if last_dc_error:
                 raise last_dc_error
+            raise OVHServiceError(
+                "No datacenter available for this plan. "
+                "Select a datacenter in the rush order form."
+            )
 
         # Region + OS configs are independent - apply them in parallel.
         remaining_configs = [

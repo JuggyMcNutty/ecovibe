@@ -302,3 +302,96 @@ def test_calls_are_serialised_by_lock():
 
     assert len(results) == 5
     assert max_concurrent[0] == 1
+
+
+def test_500_retries_once():
+    """A 500 from OVH should be retried once (transient server error)."""
+    from ovh.exceptions import APIError
+
+    svc = _make_service()
+    fake_response = MagicMock()
+    fake_response.status_code = 500
+    fake_response.headers = {}
+
+    calls = []
+
+    def side_effect(path, **kwargs):
+        calls.append(path)
+        if len(calls) == 1:
+            raise APIError("Internal server error", response=fake_response)
+        return {"ok": True}
+
+    svc._client.get = side_effect
+    result = svc.get("/me")
+    assert result == {"ok": True}
+    assert len(calls) == 2
+
+
+def test_500_does_not_retry_indefinitely():
+    """If the 500 persists, surface it after one retry."""
+    from ovh.exceptions import APIError
+
+    svc = _make_service()
+    fake_response = MagicMock()
+    fake_response.status_code = 500
+    fake_response.headers = {}
+
+    calls = []
+
+    def side_effect(path, **kwargs):
+        calls.append(path)
+        raise APIError("Internal server error", response=fake_response)
+
+    svc._client.get = side_effect
+    with pytest.raises(OVHServiceError) as exc_info:
+        svc.get("/me")
+    assert exc_info.value.status_code == 500
+    assert len(calls) == 2
+
+
+def test_400_does_not_retry():
+    """Only 500-599 should retry, not client errors like 400."""
+    from ovh.exceptions import APIError
+
+    svc = _make_service()
+    fake_response = MagicMock()
+    fake_response.status_code = 400
+    fake_response.headers = {}
+
+    calls = []
+
+    def side_effect(path, **kwargs):
+        calls.append(path)
+        raise APIError("Bad request", response=fake_response)
+
+    svc._client.get = side_effect
+    with pytest.raises(OVHServiceError) as exc_info:
+        svc.get("/me")
+    assert exc_info.value.status_code == 400
+    assert len(calls) == 1
+
+
+def test_get_plan_datacenters():
+    """get_plan_datacenters should extract DC values from the catalog's
+    dedicated_datacenter configuration entry."""
+    svc = _make_service()
+    fake_catalog = {
+        "plans": [
+            {
+                "planCode": "24sys012-v1-us",
+                "configurations": [
+                    {"name": "dedicated_datacenter", "values": ["hil", "vin"]},
+                    {"name": "region", "values": ["united_states"]},
+                ],
+            }
+        ]
+    }
+    svc.fetch_catalog = MagicMock(return_value=fake_catalog)
+    dcs = svc.get_plan_datacenters("24sys012-v1-us")
+    assert dcs == ["hil", "vin"]
+
+
+def test_get_plan_datacenters_returns_empty_for_unknown_plan():
+    svc = _make_service()
+    svc.fetch_catalog = MagicMock(return_value={"plans": []})
+    assert svc.get_plan_datacenters("nope") == []
