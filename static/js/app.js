@@ -478,14 +478,13 @@ function humanizeAddon(code) {
 }
 
 function humanizeRam(code) {
-    // ram-{size}g[-{type}]-{speed}-{product}-{region}
+    // ram-{size}g[-{type}]-[{speed}-]{product}-{region}
     // Patterns seen in the wild:
     //   ram-32g-ecc-2400-24risegame01-eu      → "32 GB ECC @ 2400 MHz"
     //   ram-64g-noecc-2133-25skle04-us        → "64 GB non-ECC @ 2133 MHz"
-    //   ram-16g-24skstor01-us                 → "16 GB ECC @ 2133 MHz" (no type → ECC)
+    //   ram-16g-24skstor01-us                 → "16 GB ECC" (no speed in code)
     //   ram-128g-on-die-ecc-3600-25risel01-eu → "128 GB On-Die ECC @ 3600 MHz"
-    //   ram-128g-ecc-2933-24rise-ca            → "128 GB ECC @ 2933 MHz"
-    const m = code.match(/^ram-(\d+)g(?:-(on-die-ecc|ecc|noecc))?-(\d+)-/i);
+    const m = code.match(/^ram-(\d+)g(?:-(on-die-ecc|ecc|noecc))?(?:-(\d+))?-/i);
     if (m) {
         const size = m[1];
         let type;
@@ -494,7 +493,7 @@ function humanizeRam(code) {
         else if (m[2].toLowerCase() === 'on-die-ecc') type = 'On-Die ECC';
         else type = 'ECC';
         const speed = m[3];
-        return `${size} GB ${type} @ ${speed} MHz`;
+        return speed ? `${size} GB ${type} @ ${speed} MHz` : `${size} GB ${type}`;
     }
     return code;
 }
@@ -887,20 +886,15 @@ function renderCatalogDetail(plan) {
         card.dataset.addon = addon;
         card.dataset.default = isDefault ? '1' : '0';
 
+        // Prefer OVH's invoiceName (always present, descriptive) and fall
+        // back to our humanizer only if the addon has no price entry.
         const info = getAddonPrice(addon);
         const ovhName = info?.invoiceName;
-        const labelSpan = el('span', { class: isSelected ? 'text-blue-300 font-bold' : 'text-gray-300', text: humanizeAddon(addon) });
+        const labelText = ovhName || humanizeAddon(addon);
+        const labelSpan = el('span', { class: isSelected ? 'text-blue-300 font-bold' : 'text-gray-300', text: labelText });
         labelSpan.dataset.label = '1';
 
-        // Show OVH's official invoiceName as a subtitle if it differs from
-        // our humanized version (it's often more descriptive).
-        let subtitle = null;
-        if (ovhName && ovhName.toLowerCase() !== humanizeAddon(addon).toLowerCase()) {
-            subtitle = el('span', { class: 'text-gray-500 text-xs block', text: ovhName });
-            subtitle.dataset.subtitle = '1';
-        }
-
-        const leftSide = el('div', {}, [labelSpan, subtitle]);
+        const leftSide = el('div', {}, [labelSpan]);
 
         const priceLabel = addonPriceLabel(addon);
         const rightSide = el('div', { class: 'flex items-center gap-2' });
