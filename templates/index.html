@@ -7,7 +7,7 @@
     <meta name="theme-color" content="#111827">
     <title>OVH Flash Sale Monitor</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23111827'/%3E%3Ctext x='8' y='12' font-size='12' text-anchor='middle' fill='%2360a5fa'%3EO%3C/text%3E%3C/svg%3E">
-    <link rel="stylesheet" href="/static/css/app.css?v=6">
+    <link rel="stylesheet" href="/static/css/app.css?v=8">
 </head>
 <body class="bg-gray-900 text-gray-100 min-h-screen">
     <div id="app" class="container mx-auto p-4">
@@ -114,13 +114,14 @@
         <div id="monitor-view" class="hidden">
             <!-- Tab bar -->
             <div class="flex gap-2 mb-4 border-b border-gray-700">
-                <button data-tab="monitor-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-800 text-blue-400 font-bold">Monitor</button>
-                <button data-tab="catalog-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-700 text-gray-400 hover:text-gray-200">Catalog</button>
+                <button data-tab="catalog-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-800 text-blue-400 font-bold">Catalog</button>
+                <button data-tab="monitor-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-700 text-gray-400 hover:text-gray-200">Monitor</button>
                 <button data-tab="billing-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-700 text-gray-400 hover:text-gray-200">Billing</button>
+                <button data-tab="insights-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-700 text-gray-400 hover:text-gray-200">Insights</button>
             </div>
 
             <!-- Monitor tab -->
-            <div id="monitor-tab" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div id="monitor-tab" class="hidden grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div class="lg:col-span-2 space-y-4">
                     <div class="bg-gray-800 rounded-lg p-4">
                         <div class="flex justify-between items-center mb-4">
@@ -333,7 +334,7 @@
             </div>
 
             <!-- Catalog tab -->
-            <div id="catalog-tab" class="hidden">
+            <div id="catalog-tab" class="">
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     <div class="bg-gray-800 rounded-lg p-4">
                         <div class="flex gap-2 mb-2">
@@ -463,8 +464,44 @@
                 Back to Monitor
             </button>
         </div>
+
+        <!-- Insights tab -->
+        <div id="insights-tab" class="hidden">
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div class="bg-gray-800 rounded-lg p-4">
+                    <h2 class="text-xl font-bold mb-4">Restock Patterns</h2>
+                    <div class="flex gap-2 mb-3">
+                        <select id="insights-plan-select" class="flex-1 bg-gray-700 px-3 py-2 rounded">
+                            <option value="">Select a monitored plan...</option>
+                        </select>
+                        <select id="insights-days" class="bg-gray-700 px-2 py-2 rounded text-sm">
+                            <option value="7">7 days</option>
+                            <option value="30" selected>30 days</option>
+                            <option value="90">90 days</option>
+                        </select>
+                    </div>
+                    <div id="restock-pattern" class="space-y-2">
+                        <p class="text-gray-500 text-sm">Select a plan to see restock patterns by hour.</p>
+                    </div>
+                </div>
+
+                <div class="bg-gray-800 rounded-lg p-4">
+                    <h2 class="text-xl font-bold mb-4">Price History</h2>
+                    <div id="price-history" class="space-y-2">
+                        <p class="text-gray-500 text-sm">Select a plan to see price history.</p>
+                    </div>
+                </div>
+
+                <div class="bg-gray-800 rounded-lg p-4 lg:col-span-2">
+                    <h2 class="text-xl font-bold mb-4">Recent Stock Events</h2>
+                    <div id="stock-events" class="space-y-2 max-h-[40vh] overflow-y-auto">
+                        <p class="text-gray-500 text-sm">Select a plan to see recent stock events.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
-    <script src="/static/js/app.js?v=16"></script>
+    <script src="/static/js/app.js?v=18"></script>
 </body>
 </html>

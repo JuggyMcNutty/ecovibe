@@ -1035,9 +1035,15 @@ function switchTab(tabId) {
     document.getElementById('catalog-tab').classList.toggle('hidden', tabId !== 'catalog-tab');
     const billingTab = document.getElementById('billing-tab');
     if (billingTab) billingTab.classList.toggle('hidden', tabId !== 'billing-tab');
+    const insightsTab = document.getElementById('insights-tab');
+    if (insightsTab) insightsTab.classList.toggle('hidden', tabId !== 'insights-tab');
     // Lazy-load billing data when switching to that tab
     if (tabId === 'billing-tab' && !state.billingLoaded) {
         loadBillingInfo();
+    }
+    // Refresh insights plan dropdown when switching to that tab
+    if (tabId === 'insights-tab') {
+        populateInsightsPlanSelect();
     }
 }
 
@@ -1167,11 +1173,29 @@ function renderAlertsList() {
         return;
     }
     state.alerts.forEach(alert => {
-        const name = el('span', { class: 'font-bold text-blue-400', text: alert.plan_code });
+        const name = el('span', {
+            class: `font-bold ${alert.enabled ? 'text-blue-400' : 'text-gray-500'}`,
+            text: alert.plan_code,
+        });
         const pattern = el('span', { class: 'text-gray-400 ml-2 text-sm', text: alert.fqn_pattern });
         const left = el('div', {}, [name, pattern]);
+        const toggleBtn = el('button', {
+            class: `text-xs px-2 py-1 rounded ${alert.enabled ? 'bg-yellow-700 hover:bg-yellow-600 text-yellow-100' : 'bg-green-700 hover:bg-green-600 text-green-100'}`,
+            title: alert.enabled ? 'Pause alert' : 'Resume alert',
+            'data-id': alert.id,
+        }, [
+            el('span', { text: alert.enabled ? 'Pause' : 'Resume' }),
+        ]);
+        toggleBtn.addEventListener('click', async () => {
+            try {
+                await apiRequest('PUT', `/alerts/${encodeURIComponent(alert.id)}/${alert.enabled ? 'disable' : 'enable'}`);
+                await loadAlerts();
+            } catch (e) {
+                showError(e.message);
+            }
+        });
         const delBtn = el('button', {
-            class: 'text-red-400 hover:text-red-300 delete-alert-btn',
+            class: 'text-red-400 hover:text-red-300 delete-alert-btn ml-2',
             'data-id': alert.id,
             text: '\u00D7',
             'aria-label': `Delete alert for ${alert.plan_code}`
@@ -1179,7 +1203,9 @@ function renderAlertsList() {
         delBtn.addEventListener('click', async () => {
             await deleteAlert(alert.id);
         });
-        const row = el('div', { class: 'bg-gray-700 rounded p-2 flex justify-between items-center' }, [left, delBtn]);
+        const row = el('div', {
+            class: `rounded p-2 flex justify-between items-center ${alert.enabled ? 'bg-gray-700' : 'bg-gray-800 opacity-60'}`,
+        }, [left, el('div', { class: 'flex items-center' }, [toggleBtn, delBtn])]);
         container.appendChild(row);
     });
 }
@@ -1814,13 +1840,184 @@ function renderOrders(orders) {
         const time = o.placed_at ? new Date(o.placed_at).toLocaleString() : '';
         const id = o.order_id ? `#${o.order_id}` : '(pending)';
         const status = o.status || 'unknown';
-        const head = el('div', {}, [
-            el('span', { class: 'text-blue-400 font-bold', text: `${o.plan_code} ${id}` }),
-            el('span', { class: 'text-gray-400 ml-2 text-xs', text: time }),
+        const head = el('div', { class: 'flex justify-between items-center' }, [
+            el('div', {}, [
+                el('span', { class: 'text-blue-400 font-bold', text: `${o.plan_code} ${id}` }),
+                el('span', { class: 'text-gray-400 ml-2 text-xs', text: time }),
+            ]),
+            o.order_id ? el('button', {
+                class: 'text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded',
+                text: 'Refresh',
+                onclick: async (ev) => {
+                    const btn = ev.currentTarget;
+                    btn.disabled = true;
+                    btn.textContent = '...';
+                    try {
+                        const r = await apiRequest('GET', `/insights/orders/${encodeURIComponent(o.order_id)}`);
+                        showToast(`Order #${o.order_id}: ${r.status}`);
+                        await loadOrders();
+                    } catch (e) {
+                        showError(e.message);
+                    } finally {
+                        btn.disabled = false;
+                        btn.textContent = 'Refresh';
+                    }
+                },
+            }) : null,
         ]);
         const st = el('span', { class: 'text-xs text-gray-400', text: `status: ${status}` });
         container.appendChild(el('div', { class: 'bg-gray-700 rounded p-2' }, [head, st]));
     });
+}
+
+// ----- Insights tab -----
+
+function populateInsightsPlanSelect() {
+    const select = document.getElementById('insights-plan-select');
+    if (!select) return;
+    const current = select.value;
+    select.innerHTML = '';
+    select.appendChild(el('option', { value: '', text: 'Select a monitored plan...' }));
+    const codes = sortedMonitoredPlanCodes();
+    codes.forEach(code => {
+        select.appendChild(el('option', { value: code, text: code }));
+    });
+    if (current && codes.includes(current)) {
+        select.value = current;
+    }
+}
+
+function sortedMonitoredPlanCodes() {
+    const fromAlerts = (state.alerts || []).map(a => a.plan_code);
+    const fromCatalog = state.plans.map(p => p.planCode);
+    const merged = Array.from(new Set([...fromAlerts, ...fromCatalog]));
+    return merged.sort();
+}
+
+async function loadInsightsData() {
+    const planCode = document.getElementById('insights-plan-select').value;
+    const days = parseInt(document.getElementById('insights-days').value, 10) || 30;
+    if (!planCode) {
+        document.getElementById('restock-pattern').innerHTML = '';
+        document.getElementById('restock-pattern').appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'Select a plan to see restock patterns by hour.' }));
+        document.getElementById('price-history').innerHTML = '';
+        document.getElementById('price-history').appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'Select a plan to see price history.' }));
+        document.getElementById('stock-events').innerHTML = '';
+        document.getElementById('stock-events').appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'Select a plan to see recent stock events.' }));
+        return;
+    }
+    await Promise.all([
+        loadRestockPatterns(planCode, days),
+        loadPriceHistoryView(planCode),
+        loadStockEvents(planCode, days),
+    ]);
+}
+
+async function loadRestockPatterns(planCode, days) {
+    const container = document.getElementById('restock-pattern');
+    if (!container) return;
+    container.innerHTML = '';
+    try {
+        const data = await apiRequest('GET', `/insights/patterns/${encodeURIComponent(planCode)}?days=${days}`);
+        const counts = data?.hourly_counts || [];
+        if (!counts.length) {
+            container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No restock events logged for this plan yet.' }));
+            return;
+        }
+        const max = Math.max(...counts.map(c => c.count), 1);
+        const byHour = Object.fromEntries(counts.map(c => [c.hour, c.count]));
+        const grid = el('div', { class: 'grid grid-cols-12 gap-1' });
+        for (let h = 0; h < 24; h++) {
+            const c = byHour[h] || 0;
+            const heightPct = Math.round((c / max) * 100);
+            const bar = el('div', {
+                class: 'bg-blue-600 rounded-t',
+                style: `height: ${Math.max(heightPct, 4)}%; min-height: 4px;`,
+                title: `${h}:00 - ${c} events`,
+            });
+            const cell = el('div', { class: 'flex flex-col items-center justify-end h-16' }, [
+                bar,
+                el('span', { class: 'text-gray-500 text-xs mt-1', text: `${h}` }),
+            ]);
+            grid.appendChild(cell);
+        }
+        container.appendChild(grid);
+        container.appendChild(el('p', { class: 'text-gray-400 text-xs mt-2', text: `Bars show restock count per hour over the last ${days} days (UTC). Peak hour: ${peakHour(counts)}:00 with ${max} events.` }));
+    } catch (e) {
+        container.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
+    }
+}
+
+function peakHour(counts) {
+    if (!counts.length) return '—';
+    return counts.reduce((a, b) => (b.count > a.count ? b : a)).hour;
+}
+
+async function loadPriceHistoryView(planCode) {
+    const container = document.getElementById('price-history');
+    if (!container) return;
+    container.innerHTML = '';
+    try {
+        const data = await apiRequest('GET', `/insights/price/${encodeURIComponent(planCode)}`);
+        const history = data?.history || [];
+        const refreshBtn = el('button', {
+            class: 'bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm mb-3',
+            text: 'Refresh price now',
+            onclick: async () => {
+                try {
+                    await apiRequest('POST', `/insights/price/${encodeURIComponent(planCode)}/refresh`);
+                    showToast('Price refreshed.');
+                    await loadPriceHistoryView(planCode);
+                } catch (e) {
+                    showError(e.message);
+                }
+            },
+        });
+        container.appendChild(refreshBtn);
+        if (!history.length) {
+            container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No price history yet. Click "Refresh price now" to log the current price.' }));
+            return;
+        }
+        // Simple text table; no chart library in the project.
+        const list = el('div', { class: 'space-y-1' });
+        history.slice(0, 20).forEach(h => {
+            const time = new Date(h.timestamp).toLocaleString();
+            const price = `$${(h.price_in_ucents / 100000000).toFixed(2)}`;
+            list.appendChild(el('div', { class: 'flex justify-between bg-gray-700 rounded px-2 py-1 text-sm' }, [
+                el('span', { class: 'text-gray-400', text: time }),
+                el('span', { class: 'text-green-400 font-bold', text: price }),
+            ]));
+        });
+        container.appendChild(list);
+    } catch (e) {
+        container.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
+    }
+}
+
+async function loadStockEvents(planCode, days) {
+    const container = document.getElementById('stock-events');
+    if (!container) return;
+    container.innerHTML = '';
+    try {
+        const data = await apiRequest('GET', `/insights/history/${encodeURIComponent(planCode)}?days=${days}`);
+        const events = data?.events || [];
+        if (!events.length) {
+            container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No stock events logged for this plan yet.' }));
+            return;
+        }
+        events.slice(0, 200).forEach(e => {
+            const time = new Date(e.timestamp).toLocaleString();
+            const available = e.event_type === 'available';
+            container.appendChild(el('div', {
+                class: `flex justify-between rounded px-2 py-1 text-sm ${available ? 'bg-green-900/30 border border-green-700' : 'bg-gray-700'}`,
+            }, [
+                el('span', { class: 'text-gray-300 font-mono text-xs', text: e.fqn }),
+                el('span', { class: `text-xs ${available ? 'text-green-400' : 'text-gray-500'}`, text: `${e.event_type} · ${time}` }),
+            ]));
+        });
+    } catch (e) {
+        container.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
+    }
 }
 
 // Init
@@ -1961,6 +2158,10 @@ async function init() {
     // Sniper mode
     document.getElementById('sniper-arm-btn')?.addEventListener('click', armSniper);
     document.getElementById('sniper-disarm-btn')?.addEventListener('click', disarmSniper);
+
+    // Insights tab
+    document.getElementById('insights-plan-select')?.addEventListener('change', loadInsightsData);
+    document.getElementById('insights-days')?.addEventListener('change', loadInsightsData);
 }
 
 document.addEventListener('DOMContentLoaded', init);
