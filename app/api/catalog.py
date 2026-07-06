@@ -11,7 +11,6 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from app.api.errors import raise_ovh_http_error
-from app.config import get_settings
 from app.services.ovh_service import OVHServiceError, get_ovh_service
 
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
@@ -26,12 +25,8 @@ def _default_subsidiary() -> str:
       ovh-ca → CA
     Sending the wrong subsidiary (e.g. IE to ovh-us) returns HTTP 400.
     """
-    endpoint = get_settings().endpoint
-    if endpoint == "ovh-us":
-        return "US"
-    if endpoint == "ovh-ca":
-        return "CA"
-    return "IE"
+    service = get_ovh_service()
+    return service._default_subsidiary()
 
 
 @router.get("")

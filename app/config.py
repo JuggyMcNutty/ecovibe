@@ -1,8 +1,14 @@
 """Application configuration loaded from environment variables.
 
-All variables are prefixed with `OVH_` (e.g. `OVH_APPLICATION_KEY`).
-The settings instance is cached via `lru_cache` — call `get_settings.cache_clear()`
-in tests after monkeypatching env vars.
+Non-secret configuration is loaded from env vars prefixed with `OVH_`
+(e.g. `OVH_CACHE_TTL`). The settings instance is cached via `lru_cache` —
+call `get_settings.cache_clear()` in tests after monkeypatching env vars.
+
+OVH API credentials (application key, secret, consumer key) are NO LONGER
+read from env vars. They are stored in the SQLite database via the setup
+wizard and loaded by `OVHService` at startup. The `endpoint` field here
+is only a fallback default for the case where no credentials have been
+saved to the database yet.
 """
 from functools import lru_cache
 
@@ -18,13 +24,11 @@ SUPPORTED_ENDPOINTS: dict[str, str] = {
 
 
 class Settings(BaseSettings):
-    """Runtime configuration. All fields are optional with sensible defaults.
+    """Runtime configuration. Non-secret fields are loaded from env vars.
 
-    OVH API:
-        endpoint:            Region (ovh-eu / ovh-us / ovh-ca).
-        application_key:     OVH application key. Required to call the API.
-        application_secret:  OVH application secret.
-        consumer_key:        OVH consumer key (per-token authorisation).
+    OVH API credentials are stored in the database (via the setup wizard),
+    NOT in env vars. The `endpoint` field here is only used as a default
+    before any credentials are saved.
 
     Caching:
         use_cache:   Toggle in-memory catalog caching (default off — flash-sale
@@ -32,7 +36,7 @@ class Settings(BaseSettings):
         cache_ttl:   Seconds before a cached catalog entry is considered stale.
 
     Persistence:
-        db_path:     SQLite database path for alerts, profiles, orders, etc.
+        db_path:     SQLite database path for alerts, profiles, credentials, etc.
 
     CORS:
         cors_origins:  List of allowed origins for cross-origin requests.
@@ -48,11 +52,8 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="OVH_", case_sensitive=False)
 
-    # OVH API credentials
+    # Default endpoint (overridden by DB-stored credentials once configured)
     endpoint: str = "ovh-eu"
-    application_key: str | None = None
-    application_secret: str | None = None
-    consumer_key: str | None = None
 
     # Catalog cache
     use_cache: bool = False

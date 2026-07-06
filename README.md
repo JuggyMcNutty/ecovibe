@@ -16,17 +16,15 @@ Real-time stock monitoring and fast checkout for OVH ECO servers. Never miss a f
 # 1. Install dependencies (runtime only)
 pip install -r requirements.txt
 
-# 2. Set environment variables (for your region)
-export OVH_APPLICATION_KEY="your_key"
-export OVH_APPLICATION_SECRET="your_secret"
-export OVH_CONSUMER_KEY="your_consumer_key"
-export OVH_ENDPOINT="ovh-eu"   # or ovh-us or ovh-ca
-
-# 3. Run
+# 2. Run
 python run.py
 ```
 
-Open http://localhost:8000 in your browser.
+Open http://localhost:8000 in your browser. On first startup, the setup
+wizard will appear — enter your OVH API credentials (application key,
+secret, and consumer key) directly in the browser. Credentials are stored
+in the local SQLite database; no environment variables are needed for
+secrets.
 
 For development (includes tests + linting):
 
@@ -81,15 +79,15 @@ pip install -r requirements-dev.txt
 
 ## Configuration
 
+OVH API credentials are configured via the browser setup wizard on first
+startup and stored in the SQLite database. Non-secret configuration uses
+environment variables:
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OVH_ENDPOINT` | `ovh-eu` | API endpoint (ovh-eu, ovh-us, ovh-ca) |
-| `OVH_APPLICATION_KEY` | - | Your application key |
-| `OVH_APPLICATION_SECRET` | - | Your application secret |
-| `OVH_CONSUMER_KEY` | - | Your consumer key |
 | `OVH_USE_CACHE` | `false` | Enable in-memory catalog caching |
 | `OVH_CACHE_TTL` | `300` | Cache TTL in seconds |
-| `OVH_DB_PATH` | `ovh-flash-monitor.db` | SQLite database path for persistence |
+| `OVH_DB_PATH` | `ovh-flash-monitor.db` | SQLite database path for persistence + credentials |
 | `OVH_CORS_ORIGINS` | `[]` | Comma-separated allowed CORS origins |
 | `OVH_TELEGRAM_BOT_TOKEN` | - | Telegram bot token for notifications |
 | `OVH_TELEGRAM_CHAT_ID` | - | Telegram chat ID to receive alerts |
@@ -106,65 +104,37 @@ See `.env.example` for a template.
 
 ## Region-Specific Setup
 
+OVH credentials are region-specific. Select your region in the setup wizard
+and use the corresponding API console to create your application and token:
+
 ### United States (ovh-us)
-
-For US-based OVHcloud accounts:
-
-```bash
-export OVH_ENDPOINT="ovh-us"
-export OVH_APPLICATION_KEY="your_us_application_key"
-export OVH_APPLICATION_SECRET="your_us_application_secret"
-export OVH_CONSUMER_KEY="your_us_consumer_key"
-```
-
-**US API Endpoints:**
 - API Base: `https://api.us.ovhcloud.com/v1`
 - Create App: `https://api.us.ovhcloud.com/createApp/`
 - Create Token: `https://api.us.ovhcloud.com/createToken/`
 
 ### Europe (ovh-eu)
-
-```bash
-export OVH_ENDPOINT="ovh-eu"
-export OVH_APPLICATION_KEY="your_eu_application_key"
-export OVH_APPLICATION_SECRET="your_eu_application_secret"
-export OVH_CONSUMER_KEY="your_eu_consumer_key"
-```
-
-**EU API Endpoints:**
 - API Base: `https://eu.api.ovh.com/v1`
 - Create App: `https://eu.api.ovh.com/createApp/`
 - Create Token: `https://eu.api.ovh.com/createToken/`
 
 ### Canada (ovh-ca)
-
-```bash
-export OVH_ENDPOINT="ovh-ca"
-export OVH_APPLICATION_KEY="your_ca_application_key"
-export OVH_APPLICATION_SECRET="your_ca_application_secret"
-export OVH_CONSUMER_KEY="your_ca_consumer_key"
-```
-
-**CA API Endpoints:**
 - API Base: `https://ca.api.ovh.com/v1`
 - Create App: `https://ca.api.ovh.com/createApp/`
 - Create Token: `https://ca.api.ovh.com/createToken/`
 
 ## Getting OVH Credentials
 
-1. **Create Application** - Visit your region's API console:
-   - Europe: https://eu.api.ovh.com/createApp/
-   - US: https://api.us.ovhcloud.com/createApp/
-   - Canada: https://ca.api.ovh.com/createApp/
+1. **Create Application** - Visit your region's API console (links above).
 
-2. **Create Token** - Visit token creation page for your region:
-   - Europe: https://eu.api.ovh.com/createToken/
-   - US: https://api.us.ovhcloud.com/createToken/
-   - Canada: https://ca.api.ovh.com/createToken/
+2. **Create Token** - Visit the token creation page for your region.
 
 3. **Required Permissions**:
    - GET/PUT/POST/DELETE on `/order/*`
    - GET on `/me`
+
+4. **Enter in Setup Wizard** - Open http://localhost:8000, select your
+   region, and paste the three keys into the setup form. Click "Save & Test"
+   to verify the connection.
 
 **Note:** Credentials are region-specific. US credentials only work with `ovh-us`, EU credentials only work with `ovh-eu`.
 
@@ -224,8 +194,14 @@ POST /api/insights/price/{plan_code}/refresh     - Fetch + log current price
 GET  /api/insights/orders                         - Recently placed orders
 GET  /api/insights/orders/{order_id}              - Fetch order status from OVH
 
+# Setup Wizard
+GET    /api/setup/credentials                    - Check if credentials are configured (masked)
+POST   /api/setup/credentials                    - Save OVH credentials to database
+POST   /api/setup/test                           - Test credentials via GET /me on OVH
+DELETE /api/setup/credentials                    - Delete stored credentials
+
 # Health
-GET  /health                                - Service health + config status
+GET  /api/health                                - Service health + config status
 ```
 
 ## Development
@@ -258,6 +234,7 @@ ovh-gui/
 │   │   ├── profiles.py      # Saved checkout profile CRUD
 │   │   ├── sniper.py        # Sniper arm/disarm/status
 │   │   ├── insights.py      # History, patterns, price, orders
+│   │   ├── setup.py         # Setup wizard (save/test OVH credentials)
 │   │   └── errors.py        # OVH->HTTP error mapping
 │   ├── models/schemas.py    # Pydantic request/response models
 │   └── services/

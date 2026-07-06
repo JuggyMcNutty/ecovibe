@@ -718,12 +718,112 @@ function updateCredentialsView(region) {
     document.getElementById('create-app-link').textContent = regionInfo.createAppUrl;
     document.getElementById('create-token-link').href = regionInfo.createTokenUrl;
     document.getElementById('create-token-link').textContent = regionInfo.createTokenUrl;
-    document.getElementById('env-vars-template').textContent =
-        `export OVH_APPLICATION_KEY="your_key"\nexport OVH_APPLICATION_SECRET="your_secret"\nexport OVH_CONSUMER_KEY="your_consumer_key"\nexport OVH_ENDPOINT="${region}"`;
 
     const rushRegion = document.getElementById('rush-region');
     if (rushRegion) {
         rushRegion.value = regionInfo.rushRegion;
+    }
+}
+
+async function saveCredentials() {
+    const endpoint = document.getElementById('ovh-region-select').value;
+    const applicationKey = document.getElementById('cred-app-key').value.trim();
+    const applicationSecret = document.getElementById('cred-app-secret').value.trim();
+    const consumerKey = document.getElementById('cred-consumer-key').value.trim();
+
+    if (!applicationKey || !applicationSecret || !consumerKey) {
+        showCredentialTestResult('error', 'All three credential fields are required.');
+        return;
+    }
+
+    showCredentialTestResult('loading', 'Saving and testing credentials...');
+
+    try {
+        await apiRequest('POST', '/setup/credentials', {
+            endpoint,
+            application_key: applicationKey,
+            application_secret: applicationSecret,
+            consumer_key: consumerKey,
+        });
+
+        // Test the credentials
+        try {
+            const result = await apiRequest('POST', '/setup/test');
+            showCredentialTestResult('success',
+                `Connected as ${result.firstname || ''} ${result.name || ''} (${result.nichandle || 'unknown'})`);
+
+            // After 1.5s, proceed to the monitor
+            setTimeout(async () => {
+                state.configured = true;
+                state.endpoint = endpoint;
+                populateCatalogCountries();
+                await loadAlerts();
+                await loadCatalog();
+                await loadPollInterval();
+                await loadProfiles();
+                await loadOrders();
+                await loadSniperStatus();
+                document.getElementById('settings-btn').classList.remove('hidden');
+                showView('monitor');
+            }, 1500);
+        } catch (e) {
+            showCredentialTestResult('error', `Credentials saved but test failed: ${e.message}`);
+        }
+    } catch (e) {
+        showCredentialTestResult('error', e.message);
+    }
+}
+
+async function deleteCredentials() {
+    if (!confirm('Delete stored credentials? You will need to re-enter them to use the monitor.')) {
+        return;
+    }
+    try {
+        await apiRequest('DELETE', '/setup/credentials');
+        showCredentialTestResult('success', 'Credentials deleted. Restart the server to reconfigure.');
+        document.getElementById('cred-app-key').value = '';
+        document.getElementById('cred-app-secret').value = '';
+        document.getElementById('cred-consumer-key').value = '';
+        document.getElementById('delete-credentials-btn').classList.add('hidden');
+        document.getElementById('setup-title').textContent = 'Setup Required';
+        document.getElementById('settings-btn').classList.add('hidden');
+        state.configured = false;
+    } catch (e) {
+        showCredentialTestResult('error', e.message);
+    }
+}
+
+function showCredentialTestResult(type, message) {
+    const div = document.getElementById('cred-test-result');
+    div.classList.remove('hidden', 'bg-green-900/50', 'border-green-700', 'text-green-300',
+                         'bg-red-900/50', 'border-red-700', 'text-red-300',
+                         'bg-blue-900/50', 'border-blue-700', 'text-blue-300');
+    if (type === 'success') {
+        div.className = 'rounded p-3 text-sm bg-green-900/50 border border-green-700 text-green-300';
+    } else if (type === 'error') {
+        div.className = 'rounded p-3 text-sm bg-red-900/50 border border-red-700 text-red-300';
+    } else {
+        div.className = 'rounded p-3 text-sm bg-blue-900/50 border border-blue-700 text-blue-300';
+    }
+    div.textContent = message;
+}
+
+async function loadExistingCredentials() {
+    try {
+        const result = await apiRequest('GET', '/setup/credentials');
+        if (result.configured) {
+            document.getElementById('setup-title').textContent = 'Credentials Configured';
+            document.getElementById('setup-description').textContent =
+                `Credentials are stored for endpoint ${result.endpoint}. App key: ${result.application_key_masked || '****'}, Consumer key: ${result.consumer_key_masked || '****'}.`;
+            document.getElementById('delete-credentials-btn').classList.remove('hidden');
+            // Pre-select the right region
+            if (result.endpoint) {
+                document.getElementById('ovh-region-select').value = result.endpoint;
+                updateCredentialsView(result.endpoint);
+            }
+        }
+    } catch (e) {
+        // ignore — fresh install
     }
 }
 
@@ -939,8 +1039,10 @@ async function init() {
     }
 
     if (!configured) {
+        await loadExistingCredentials();
         showView('credentials');
     } else {
+        document.getElementById('settings-btn').classList.remove('hidden');
         populateCatalogCountries();
         await loadAlerts();
         await loadCatalog();
@@ -951,21 +1053,16 @@ async function init() {
         showView('monitor');
     }
 
-    document.getElementById('check-credentials-btn').addEventListener('click', async () => {
-        const configured = await checkHealth();
-        if (configured) {
-            state.configured = true;
-            populateCatalogCountries();
-            await loadAlerts();
-            await loadCatalog();
-            await loadPollInterval();
-            await loadProfiles();
-            await loadOrders();
-            await loadSniperStatus();
-            showView('monitor');
-        } else {
-            showError('Credentials not configured. Please follow the setup instructions.');
-        }
+    document.getElementById('save-credentials-btn').addEventListener('click', saveCredentials);
+    document.getElementById('delete-credentials-btn').addEventListener('click', deleteCredentials);
+    document.getElementById('skip-credentials-btn').addEventListener('click', () => {
+        // Skip to monitor (will show 503s for OVH calls until configured)
+        showView('monitor');
+    });
+
+    document.getElementById('settings-btn').addEventListener('click', () => {
+        showView('credentials');
+        loadExistingCredentials();
     });
 
     document.getElementById('toggle-monitor-btn').addEventListener('click', () => {

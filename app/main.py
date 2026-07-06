@@ -44,7 +44,7 @@ def create_app():
     from fastapi.responses import HTMLResponse
     from fastapi.staticfiles import StaticFiles
 
-    from app.api import alert, cart, catalog, checkout, insights, monitor, profiles, sniper
+    from app.api import alert, cart, catalog, checkout, insights, monitor, profiles, setup, sniper
     from app.config import get_settings
 
     app = FastAPI(
@@ -79,6 +79,7 @@ def create_app():
     app.include_router(insights.router)
     app.include_router(profiles.router)
     app.include_router(sniper.router)
+    app.include_router(setup.router)
 
     @app.get("/", response_class=HTMLResponse)
     async def root() -> str:
@@ -99,17 +100,15 @@ def create_app():
     async def health() -> dict:
         """Lightweight liveness check.
 
-        Returns the configured OVH endpoint region and whether credentials
-        are present. No secrets are exposed — only a boolean `configured` flag.
+        Returns whether OVH credentials are configured (from the database)
+        and the configured endpoint. No secrets are exposed.
         """
+        from app.services.ovh_service import get_ovh_service
+        service = get_ovh_service()
         return {
             "status": "ok",
-            "endpoint": settings.endpoint,
-            "configured": all([
-                settings.application_key,
-                settings.application_secret,
-                settings.consumer_key,
-            ]),
+            "endpoint": service.endpoint,
+            "configured": service.is_configured(),
         }
 
     return app

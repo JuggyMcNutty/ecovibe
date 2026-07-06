@@ -44,33 +44,41 @@ class OVHServiceError(Exception):
 class OVHService:
     """Wraps a single `ovh.Client` instance.
 
-    The client is only constructed when all three OVH credentials are present;
-    otherwise `is_configured()` returns False and every call raises
-    `OVHServiceError`. This lets the API layer return a clean 503 to clients
-    that hit endpoints before configuring credentials.
+    Credentials are loaded from the SQLite database (via the setup wizard),
+    NOT from environment variables. The client is only constructed when all
+    three OVH credentials are present in the database; otherwise
+    `is_configured()` returns False and every call raises `OVHServiceError`.
+
+    Call `reconfigure()` after saving new credentials to rebuild the client
+    without restarting the process.
     """
 
     def __init__(self, use_cache: bool | None = None) -> None:
         settings = get_settings()
-        # Allow per-instance override of the global cache setting; otherwise
-        # fall back to the value in Settings.
         self._use_cache = settings.use_cache if use_cache is None else use_cache
         self._client: ovh.Client | None = None
+        self._endpoint: str = settings.endpoint
         self._setup_client()
 
     def _setup_client(self) -> None:
-        """Construct the OVH client if all required credentials are present.
+        """Construct the OVH client from credentials stored in the database.
 
-        Logs a warning naming any missing credential so misconfiguration is
-        visible without needing to inspect the /health endpoint.
+        If no credentials are stored, the client stays None and
+        `is_configured()` returns False. Logs a warning so the operator
+        knows to run the setup wizard.
         """
-        settings = get_settings()
+        # Load credentials from the database.
+        creds = self._load_credentials()
+        if not creds:
+            logger.info("No OVH credentials found in database — run the setup wizard.")
+            return
+
         missing = [
             name
             for name, val in (
-                ("application_key", settings.application_key),
-                ("application_secret", settings.application_secret),
-                ("consumer_key", settings.consumer_key),
+                ("application_key", creds.get("application_key")),
+                ("application_secret", creds.get("application_secret")),
+                ("consumer_key", creds.get("consumer_key")),
             )
             if not val
         ]
@@ -79,12 +87,43 @@ class OVHService:
                 "OVH client not initialised: missing credentials: %s", ", ".join(missing)
             )
             return
+
+        self._endpoint = creds.get("endpoint", get_settings().endpoint)
         self._client = ovh.Client(
-            endpoint=settings.endpoint,
-            application_key=settings.application_key,
-            application_secret=settings.application_secret,
-            consumer_key=settings.consumer_key,
+            endpoint=self._endpoint,
+            application_key=creds["application_key"],
+            application_secret=creds["application_secret"],
+            consumer_key=creds["consumer_key"],
         )
+        logger.info("OVH client initialised for endpoint: %s", self._endpoint)
+
+    @staticmethod
+    def _load_credentials() -> dict[str, str] | None:
+        """Load OVH credentials from the SQLite database.
+
+        Returns None if the storage layer is unavailable or no credentials
+        are stored.
+        """
+        try:
+            from app.services.storage import get_storage
+            storage = get_storage()
+            return storage.load_credentials()
+        except Exception:
+            logger.warning("could not load credentials from storage", exc_info=True)
+            return None
+
+    def reconfigure(self) -> None:
+        """Rebuild the OVH client after credentials have been saved/updated.
+
+        Called by the setup wizard after POST /api/setup/credentials.
+        """
+        self._client = None
+        self._setup_client()
+
+    @property
+    def endpoint(self) -> str:
+        """Return the configured OVH endpoint (e.g. 'ovh-eu')."""
+        return self._endpoint
 
     def is_configured(self) -> bool:
         """True iff the OVH client was constructed (all credentials were present)."""
@@ -146,10 +185,9 @@ class OVHService:
           ovh-us → US
           ovh-ca → CA
         """
-        endpoint = get_settings().endpoint
-        if endpoint == "ovh-us":
+        if self._endpoint == "ovh-us":
             return "US"
-        if endpoint == "ovh-ca":
+        if self._endpoint == "ovh-ca":
             return "CA"
         return "IE"
 
@@ -295,7 +333,8 @@ class OVHService:
 
 
 # Module-level singleton. The first call constructs the service; later calls
-# reuse it. Reset by setting `_ovh_service = None` (tests do this).
+# reuse it. Call `reset_ovh_service()` to force a rebuild after credentials
+# are saved/updated (the setup wizard does this).
 _ovh_service: OVHService | None = None
 
 
@@ -305,3 +344,13 @@ def get_ovh_service(use_cache: bool | None = None) -> OVHService:
     if _ovh_service is None:
         _ovh_service = OVHService(use_cache=use_cache)
     return _ovh_service
+
+
+def reset_ovh_service() -> None:
+    """Discard the current OVHService singleton so the next call rebuilds it.
+
+    Called after credentials are saved/updated via the setup wizard so the
+    new credentials take effect without a process restart.
+    """
+    global _ovh_service
+    _ovh_service = None

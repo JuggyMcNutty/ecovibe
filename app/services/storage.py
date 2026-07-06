@@ -160,6 +160,14 @@ class Storage:
                 )
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS credentials (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
             self._conn.commit()
 
     def close(self) -> None:
@@ -265,6 +273,56 @@ class Storage:
         with open(tmp, "w") as f:
             json.dump(snapshot, f, default=str)
         os.replace(tmp, path)
+
+    # ----- OVH credentials -----
+
+    def save_credentials(
+        self,
+        endpoint: str,
+        application_key: str,
+        application_secret: str,
+        consumer_key: str,
+    ) -> None:
+        """Persist OVH API credentials to the database.
+
+        Stored in the `credentials` key-value table. Values are plaintext
+        because the OVH SDK needs them in plaintext to sign requests.
+        """
+        with self._lock:
+            cur = self._conn.cursor()
+            for key, value in (
+                ("endpoint", endpoint),
+                ("application_key", application_key),
+                ("application_secret", application_secret),
+                ("consumer_key", consumer_key),
+            ):
+                cur.execute(
+                    "INSERT INTO credentials (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (key, value),
+                )
+            self._conn.commit()
+
+    def load_credentials(self) -> dict[str, str] | None:
+        """Return all stored credentials, or None if none are stored.
+
+        Returns a dict with keys: endpoint, application_key,
+        application_secret, consumer_key.
+        """
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute("SELECT key, value FROM credentials")
+            rows = cur.fetchall()
+        if not rows:
+            return None
+        return {r["key"]: r["value"] for r in rows}
+
+    def clear_credentials(self) -> None:
+        """Delete all stored credentials."""
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute("DELETE FROM credentials")
+            self._conn.commit()
 
     # ----- stock events (restock history) -----
 

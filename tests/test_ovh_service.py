@@ -1,5 +1,4 @@
 """Tests for OVHService error handling and request construction."""
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,23 +7,27 @@ from app.services.ovh_service import OVHService, OVHServiceError
 
 
 def _make_service():
-    """Build an OVHService with a mocked client and dummy credentials."""
-    with patch.dict(os.environ, {
-        "OVH_APPLICATION_KEY": "ak",
-        "OVH_APPLICATION_SECRET": "as",
-        "OVH_CONSUMER_KEY": "ck",
-        "OVH_ENDPOINT": "ovh-eu",
-    }):
-        from app.config import get_settings
-        get_settings.cache_clear()
-        with patch("app.services.ovh_service.ovh.Client") as MockClient:
-            MockClient.return_value = MagicMock()
-            svc = OVHService(use_cache=False)
+    """Build an OVHService with a mocked client and dummy credentials.
+
+    Credentials are stored in a mock storage (since they now come from the
+    database, not env vars).
+    """
+    fake_creds = {
+        "endpoint": "ovh-eu",
+        "application_key": "ak",
+        "application_secret": "as",
+        "consumer_key": "ck",
+    }
+    with patch("app.services.ovh_service.ovh.Client") as MockClient, \
+         patch.object(OVHService, "_load_credentials", staticmethod(lambda: fake_creds)):
+        MockClient.return_value = MagicMock()
+        svc = OVHService(use_cache=False)
     return svc
 
 
 def test_not_configured_raises():
-    with patch("app.services.ovh_service.ovh.Client"):
+    with patch.object(OVHService, "_load_credentials", staticmethod(lambda: None)), \
+         patch("app.services.ovh_service.ovh.Client"):
         svc = OVHService(use_cache=False)
         assert not svc.is_configured()
         with pytest.raises(OVHServiceError):
@@ -123,3 +126,20 @@ def test_put_uses_client_put():
     svc._client.put = MagicMock(return_value={"ok": True})
     svc.put("/some/path", field="value")
     svc._client.put.assert_called_once_with("/some/path", field="value")
+
+
+def test_endpoint_is_stored():
+    """The configured endpoint should be accessible via the endpoint property."""
+    svc = _make_service()
+    assert svc.endpoint == "ovh-eu"
+    assert svc.is_configured()
+
+
+def test_reconfigure_rebuilds_client():
+    """reconfigure() should rebuild the client with new credentials."""
+    svc = _make_service()
+    assert svc.is_configured()
+    # Simulate credentials being deleted
+    with patch.object(OVHService, "_load_credentials", staticmethod(lambda: None)):
+        svc.reconfigure()
+    assert not svc.is_configured()

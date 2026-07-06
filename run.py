@@ -7,12 +7,12 @@ Run from the project root:
 
 Then open http://localhost:8000 in your browser.
 
-Required environment variables (see `.env.example`):
+On first startup, the setup wizard will appear in your browser. Enter your
+OVH API credentials there — they are stored in the local SQLite database.
+No environment variables are needed for OVH secrets.
 
-    OVH_APPLICATION_KEY
-    OVH_APPLICATION_SECRET
-    OVH_CONSUMER_KEY
-    OVH_ENDPOINT     (ovh-eu | ovh-us | ovh-ca)
+Non-secret configuration (caching, notifications, etc.) can be set via
+environment variables — see `.env.example`.
 """
 
 
@@ -25,11 +25,8 @@ def main() -> None:
     print("=" * 40)
     print("Starting server on http://0.0.0.0:8000")
     print()
-    print("Set these environment variables before running:")
-    print("  export OVH_APPLICATION_KEY=your_key")
-    print("  export OVH_APPLICATION_SECRET=your_secret")
-    print("  export OVH_CONSUMER_KEY=your_consumer_key")
-    print("  export OVH_ENDPOINT=ovh-eu   # or ovh-us / ovh-ca")
+    print("Open the URL in your browser to configure OVH credentials.")
+    print("Credentials are stored in the database — no env vars needed.")
     print()
 
     uvicorn.run(app, host="0.0.0.0", port=8000)

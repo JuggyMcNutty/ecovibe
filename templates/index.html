@@ -30,6 +30,9 @@
                     <input type="checkbox" id="sound-toggle" class="w-5 h-5" checked>
                     <span>Sound</span>
                 </label>
+                <button id="settings-btn" class="bg-gray-700 hover:bg-gray-600 px-3 py-2 rounded-lg text-sm hidden" title="Edit OVH credentials">
+                    Settings
+                </button>
             </div>
         </header>
 
@@ -45,8 +48,8 @@
 
         <div id="credentials-view" class="hidden">
             <div class="bg-gray-800 rounded-lg p-6 max-w-2xl mx-auto">
-                <h2 class="text-2xl font-bold mb-4 text-yellow-400">Setup Required</h2>
-                <p class="text-gray-300 mb-6">Configure your OVH API credentials to use the flash sale monitor.</p>
+                <h2 class="text-2xl font-bold mb-4 text-yellow-400" id="setup-title">Setup Required</h2>
+                <p class="text-gray-300 mb-6" id="setup-description">Configure your OVH API credentials to use the flash sale monitor. Credentials are stored in the local database.</p>
 
                 <div class="mb-4">
                     <label class="block text-sm text-gray-400 mb-2" for="ovh-region-select">Select Your OVH Region</label>
@@ -71,19 +74,41 @@
                         <p class="text-sm text-yellow-400 mt-2">Required: GET/PUT/POST/DELETE on /order/* and GET on /me</p>
                     </div>
 
-                    <div class="bg-gray-700 rounded p-4">
-                        <h3 class="font-bold text-blue-400 mb-2">Step 3: Set Environment Variables</h3>
-                        <pre class="bg-gray-900 p-4 rounded text-sm overflow-x-auto mt-2" id="env-vars-template">export OVH_APPLICATION_KEY="your_key"
-export OVH_APPLICATION_SECRET="your_secret"
-export OVH_CONSUMER_KEY="your_consumer_key"
-export OVH_ENDPOINT="ovh-eu"</pre>
+                    <div class="bg-gray-700 rounded p-4 space-y-3">
+                        <h3 class="font-bold text-blue-400 mb-2">Step 3: Enter Your Credentials</h3>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1" for="cred-app-key">Application Key</label>
+                            <input type="text" id="cred-app-key" class="w-full bg-gray-900 px-3 py-2 rounded font-mono text-sm"
+                                   placeholder="e.g. pcLPvgyGXgOsjFQU" autocomplete="off">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1" for="cred-app-secret">Application Secret</label>
+                            <input type="password" id="cred-app-secret" class="w-full bg-gray-900 px-3 py-2 rounded font-mono text-sm"
+                                   placeholder="e.g. AsmWpxea54SgVU7D..." autocomplete="off">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1" for="cred-consumer-key">Consumer Key</label>
+                            <input type="text" id="cred-consumer-key" class="w-full bg-gray-900 px-3 py-2 rounded font-mono text-sm"
+                                   placeholder="e.g. yZT6MAhCd6XUJ5o2..." autocomplete="off">
+                        </div>
+                        <div id="cred-test-result" class="hidden rounded p-3 text-sm"></div>
                     </div>
                 </div>
 
-                <button id="check-credentials-btn"
-                        class="mt-6 bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg">
-                    Check Credentials
-                </button>
+                <div class="flex gap-3 mt-6">
+                    <button id="save-credentials-btn"
+                            class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg">
+                        Save &amp; Test
+                    </button>
+                    <button id="delete-credentials-btn"
+                            class="hidden bg-red-700 hover:bg-red-600 text-white px-6 py-2 rounded-lg">
+                        Delete Credentials
+                    </button>
+                    <button id="skip-credentials-btn"
+                            class="bg-gray-700 hover:bg-gray-600 text-white px-6 py-2 rounded-lg">
+                        Skip
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -338,6 +363,6 @@ export OVH_ENDPOINT="ovh-eu"</pre>
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=4"></script>
+    <script src="/static/js/app.js?v=5"></script>
 </body>
 </html>
