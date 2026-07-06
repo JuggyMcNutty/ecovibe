@@ -158,3 +158,14 @@ tests/                   # pytest suite (57 tests, uses TestClient)
   non-uvicorn loggers (even WARNING level). Use `print(...,
   file=sys.stderr)` for debug tracing that must appear in the
   console, or configure logging explicitly.
+- **Shared `ovh.Client` concurrency**: the `OVHService` singleton's
+  `ovh.Client` (and its bundled `requests.Session` + lazily-cached
+  server-time delta) is used from multiple threads via
+  `asyncio.to_thread` (monitor poller, rush orders, account
+  endpoints). `OVHService._call` serialises all calls with a
+  `threading.Lock` so the SDK's shared state is never touched
+  concurrently. On a 403 "This application key is invalid" the lock
+  holder resets `client._time_delta = None` and retries once - the
+  SDK caches the delta forever, so clock drift (NTP step,
+  suspend/resume) otherwise permanently breaks every signature and
+  OVH reports the signature mismatch as an invalid application key.
