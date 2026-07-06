@@ -206,7 +206,10 @@ async function loadCatalog(country) {
     showLoading();
     try {
         const subsidiary = country || defaultSubsidiaryForEndpoint(state.endpoint);
-        const plans = await apiRequest('GET', `/catalog/plans?country=${encodeURIComponent(subsidiary)}`);
+        const url = subsidiary
+            ? `/catalog/plans?country=${encodeURIComponent(subsidiary)}`
+            : '/catalog/plans';
+        const plans = await apiRequest('GET', url);
         state.catalog = { plans };
         state.plans = plans || [];
         renderPlanSelect();

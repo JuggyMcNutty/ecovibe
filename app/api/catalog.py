@@ -43,7 +43,7 @@ async def get_catalog(
     service = get_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
-    subsidiary = country or _default_subsidiary()
+    subsidiary = country if country else _default_subsidiary()
     try:
         return await asyncio.to_thread(
             service.fetch_catalog, subsidiary=subsidiary, force=force_refresh
@@ -68,13 +68,13 @@ async def get_availability(
 
 @router.get("/plans")
 async def get_plans(
-    country: str | None = Query(default=None, min_length=1, max_length=4),
+    country: str | None = Query(default=None),
 ) -> list[dict[str, Any]]:
     """Return just the `plans` array from the catalog (lighter than /catalog)."""
     service = get_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
-    subsidiary = country or _default_subsidiary()
+    subsidiary = country if country else _default_subsidiary()
     try:
         catalog = await asyncio.to_thread(service.fetch_catalog, subsidiary=subsidiary)
         return catalog.get("plans", [])
