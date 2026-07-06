@@ -38,10 +38,10 @@ def test_apierror_is_caught_and_mapped():
     fake_response = MagicMock()
     fake_response.status_code = 404
 
-    def raise_error(method, path, **kwargs):
+    def raise_error(path, **kwargs):
         raise ResourceNotFoundError(response=fake_response)
 
-    svc._client.call = raise_error
+    svc._client.get = raise_error
     with pytest.raises(OVHServiceError) as exc_info:
         svc.get("/order/cart/nope")
     assert exc_info.value.status_code == 404
@@ -55,10 +55,10 @@ def test_apierror_carries_query_id():
     fake_response.status_code = 500
     fake_response.headers = {"X-OVH-QUERYID": "abc-123"}
 
-    def raise_error(method, path, **kwargs):
+    def raise_error(path, **kwargs):
         raise APIError("boom", response=fake_response)
 
-    svc._client.call = raise_error
+    svc._client.get = raise_error
     with pytest.raises(OVHServiceError) as exc_info:
         svc.get("/x")
     assert exc_info.value.status_code == 500
@@ -67,19 +67,18 @@ def test_apierror_carries_query_id():
 
 def test_create_cart_passes_description():
     svc = _make_service()
-    svc._client.call = MagicMock(return_value={"cartId": "C123"})
+    svc._client.post = MagicMock(return_value={"cartId": "C123"})
     result = svc.create_cart(description="my cart")
     assert result == {"cartId": "C123"}
-    svc._client.call.assert_called_once_with("POST", "/order/cart", description="my cart")
+    svc._client.post.assert_called_once_with("/order/cart", description="my cart")
 
 
 def test_add_server_to_cart_body():
     svc = _make_service()
-    svc._client.call = MagicMock(return_value={"itemId": 1})
+    svc._client.post = MagicMock(return_value={"itemId": 1})
     svc.add_server_to_cart("C1", "24sk10", duration="P12M", quantity=1)
-    args, kwargs = svc._client.call.call_args
-    assert args[0] == "POST"
-    assert args[1] == "/order/cart/C1/eco"
+    args, kwargs = svc._client.post.call_args
+    assert args[0] == "/order/cart/C1/eco"
     assert kwargs == {
         "planCode": "24sk10",
         "duration": "P12M",
@@ -90,10 +89,37 @@ def test_add_server_to_cart_body():
 
 def test_checkout_cart_body():
     svc = _make_service()
-    svc._client.call = MagicMock(return_value={"orderId": 42})
+    svc._client.post = MagicMock(return_value={"orderId": 42})
     svc.checkout_cart("C1", auto_pay=True, waive_retractation=True)
-    args, kwargs = svc._client.call.call_args
+    args, kwargs = svc._client.post.call_args
+    assert args[0] == "/order/cart/C1/checkout"
     assert kwargs == {
         "autoPayWithPreferredPaymentMethod": True,
         "waiveRetractationPeriod": True,
     }
+
+
+def test_get_passes_query_params():
+    """GET kwargs should be passed to Client.get() as query string params."""
+    svc = _make_service()
+    svc._client.get = MagicMock(return_value=[{"fqn": "test"}])
+    svc.get("/order/eco/availableConfiguration", planCode="24sk10")
+    args, kwargs = svc._client.get.call_args
+    assert args[0] == "/order/eco/availableConfiguration"
+    assert kwargs == {"planCode": "24sk10"}
+
+
+def test_delete_uses_client_delete():
+    """DELETE should route to Client.delete(), not Client.call()."""
+    svc = _make_service()
+    svc._client.delete = MagicMock(return_value=None)
+    svc.delete("/order/cart/C1")
+    svc._client.delete.assert_called_once_with("/order/cart/C1")
+
+
+def test_put_uses_client_put():
+    """PUT should route to Client.put()."""
+    svc = _make_service()
+    svc._client.put = MagicMock(return_value={"ok": True})
+    svc.put("/some/path", field="value")
+    svc._client.put.assert_called_once_with("/some/path", field="value")

@@ -93,13 +93,29 @@ class OVHService:
     def _call(self, method: str, path: str, **kwargs) -> Any:
         """Central dispatch: invoke the SDK and translate `APIError` → `OVHServiceError`.
 
+        Routes to the SDK's verb-specific methods (`get`/`post`/`put`/`delete`)
+        rather than `call()` directly, because the verb wrappers handle kwargs
+        correctly: GET/DELETE kwargs become query string params, while
+        POST/PUT kwargs become the JSON body. `call()` only accepts a `data`
+        positional arg and would raise `TypeError` on any kwargs.
+
         The original `APIError` is chained via `from e` so the full traceback
         is preserved in server logs.
         """
         if not self._client:
             raise OVHServiceError("OVH API not configured. Please set credentials.")
         try:
-            return self._client.call(method, path, **kwargs)
+            verb = method.upper()
+            if verb == "GET":
+                return self._client.get(path, **kwargs)
+            elif verb == "POST":
+                return self._client.post(path, **kwargs)
+            elif verb == "PUT":
+                return self._client.put(path, **kwargs)
+            elif verb == "DELETE":
+                return self._client.delete(path, **kwargs)
+            else:
+                raise ValueError(f"Unsupported HTTP method: {method}")
         except APIError as e:
             status = None
             if e.response is not None:
