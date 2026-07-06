@@ -100,6 +100,26 @@ async def get_availability(
         raise_ovh_http_error(e)
 
 
+@router.get("/stock")
+async def get_stock(
+    plan_code: str = Query(..., min_length=1, max_length=64, description="Server plan code"),
+) -> list[dict[str, Any]]:
+    """Return live stock levels per RAM+storage combo for a plan.
+
+    Queries ``/dedicated/server/datacenter/availabilities`` and returns a
+    list of ``{fqn, memory, storage, datacenters: [{datacenter, availability}]}``
+    entries. The frontend uses this to show which configs are actually in
+    stock before the user attempts an order.
+    """
+    service = get_ovh_service()
+    if not service.is_configured():
+        raise HTTPException(status_code=503, detail="OVH API not configured")
+    try:
+        return await asyncio.to_thread(service.get_stock, plan_code)
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+
+
 @router.get("/plans")
 async def get_plans(
     country: str | None = Query(default=None),

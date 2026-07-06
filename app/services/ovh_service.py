@@ -254,31 +254,22 @@ class OVHService:
         """
         return self.get("/order/eco/availableConfiguration", planCode=plan_code)
 
-    def check_config_availability(
-        self, plan_code: str, memory: str | None = None, storage: str | None = None
-    ) -> list[str]:
-        """Return the list of datacenters where a specific config is in stock.
+    def get_stock(self, plan_code: str) -> list[dict[str, Any]]:
+        """Return live stock levels per RAM+storage combo for a plan.
 
-        Queries ``/dedicated/server/datacenter/availabilities`` and filters
-        by memory/storage addon codes. Returns DC codes (e.g. ``['vin']``)
-        where ``availability`` is not ``'unavailable'``. Empty list means
-        the config is out of stock everywhere.
+        Queries ``/dedicated/server/datacenter/availabilities`` and returns
+        the raw entries. Each entry has ``fqn``, ``memory``, ``storage``,
+        and ``datacenters: [{datacenter, availability}]`` where
+        ``availability`` is ``'unavailable'`` or a freshness tag like
+        ``'1H-low'``, ``'24H'``, etc.
+
+        The frontend uses this to show which configs are in stock before
+        the user attempts an order - OVH returns a confusing 500 at
+        checkout if the selected combo is out of stock.
         """
-        avail = self.get(
+        return self.get(
             "/dedicated/server/datacenter/availabilities", planCode=plan_code
         )
-        for entry in avail:
-            if (
-                entry.get("planCode") == plan_code
-                and (not memory or entry.get("memory") == memory)
-                and (not storage or entry.get("storage") == storage)
-            ):
-                return [
-                    dc.get("datacenter")
-                    for dc in entry.get("datacenters", [])
-                    if dc.get("availability") != "unavailable"
-                ]
-        return []
 
     def get_plan_price(self, plan_code: str, subsidiary: str | None = None) -> int | None:
         """Look up the default monthly price (raw integer, in microcents) for a plan.

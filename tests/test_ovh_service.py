@@ -397,9 +397,9 @@ def test_get_plan_datacenters_returns_empty_for_unknown_plan():
     assert svc.get_plan_datacenters("nope") == []
 
 
-def test_check_config_availability_returns_available_dcs():
-    """check_config_availability should return only DCs where the config
-    is in stock (availability != 'unavailable')."""
+def test_get_stock_returns_raw_entries():
+    """get_stock should return the raw availability entries from OVH,
+    including per-DC availability status for each RAM+storage combo."""
     svc = _make_service()
     fake_avail = [
         {
@@ -424,21 +424,14 @@ def test_check_config_availability_returns_available_dcs():
         },
     ]
     svc._client.get = MagicMock(return_value=fake_avail)
-
-    # Out-of-stock config
-    dcs = svc.check_config_availability(
-        "24sys012-v1-us", "ram-32g-ecc-2666", "softraid-2x4000sa"
-    )
-    assert dcs == []
-
-    # In-stock config
-    dcs = svc.check_config_availability(
-        "24sys012-v1-us", "ram-32g-ecc-2666", "softraid-2x1920nvme"
-    )
-    assert dcs == ["vin"]
+    result = svc.get_stock("24sys012-v1-us")
+    assert len(result) == 2
+    assert result[0]["memory"] == "ram-32g-ecc-2666"
+    assert result[0]["storage"] == "softraid-2x4000sa"
+    assert result[1]["datacenters"][1]["availability"] == "1H-low"
 
 
-def test_check_config_availability_returns_empty_for_unknown_config():
+def test_get_stock_returns_empty_for_unknown_plan():
     svc = _make_service()
     svc._client.get = MagicMock(return_value=[])
-    assert svc.check_config_availability("nope", "ram", "storage") == []
+    assert svc.get_stock("nope") == []

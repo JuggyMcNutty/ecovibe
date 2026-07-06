@@ -954,6 +954,7 @@ function renderCatalogDetail(plan) {
                 updateFqnPreview();
                 updateTotalPrice();
                 syncOrderForm(fam.name, addon);
+                updateStockDisplay();
             });
 
             itemsContainer.appendChild(card);
@@ -973,16 +974,80 @@ function renderCatalogDetail(plan) {
     // Initial total price calc
     updateTotalPrice();
 
-    // Available datacenters
-    const configs = plan.configurations || [];
-    const dcConfig = configs.find(c => c.name === 'dedicated_datacenter');
-    if (dcConfig && dcConfig.values && dcConfig.values.length) {
-        const dcList = dcConfig.values.map(dc => el('span', { class: 'inline-block bg-gray-700 text-gray-300 text-xs px-2 py-1 rounded mr-1 mb-1', text: humanizeDatacenter(dc) }));
-        container.appendChild(el('div', { class: 'mb-4' }, [
-            el('p', { class: 'text-gray-400 text-sm font-bold mb-1', text: 'Available Datacenters' }),
-            el('div', {}, dcList),
-        ]));
+    // Live stock section - replaces the old static "Available Datacenters"
+    // list. Fetches /dedicated/server/datacenter/availabilities and shows
+    // which DCs have stock for the currently selected RAM+storage combo.
+    // Updates dynamically as the user changes selections.
+    const stockSection = el('div', { class: 'mb-4', id: 'stock-section' }, [
+        el('p', { class: 'text-gray-400 text-sm font-bold mb-1', text: 'Live Stock' }),
+        el('p', { class: 'text-gray-500 text-xs', text: 'Checking availability...' }),
+    ]);
+    container.appendChild(stockSection);
+
+    // Store stock data for lookups when addons change
+    let stockData = [];
+    // Map addon full code -> short code (strip region suffix) for matching
+    // e.g. 'ram-32g-ecc-2666-24sys-us' -> 'ram-32g-ecc-2666'
+    function addonShort(code) {
+        if (!code) return '';
+        const segs = code.split('-');
+        return segs.length > 2 ? segs.slice(0, -2).join('-') : code;
     }
+
+    function updateStockDisplay() {
+        const sec = document.getElementById('stock-section');
+        if (!sec) return;
+        if (!stockData.length) {
+            sec.innerHTML = '';
+            sec.appendChild(el('p', { class: 'text-gray-400 text-sm font-bold mb-1', text: 'Live Stock' }));
+            sec.appendChild(el('p', { class: 'text-gray-500 text-xs', text: 'Stock data unavailable.' }));
+            return;
+        }
+        const memShort = addonShort(selectedAddons.memory);
+        const storShort = addonShort(selectedAddons.storage);
+        // Find the matching entry in stock data
+        const match = stockData.find(e =>
+            (!memShort || e.memory === memShort) &&
+            (!storShort || e.storage === storShort)
+        );
+        sec.innerHTML = '';
+        sec.appendChild(el('p', { class: 'text-gray-400 text-sm font-bold mb-1', text: 'Live Stock' }));
+        if (!match) {
+            sec.appendChild(el('p', { class: 'text-gray-500 text-xs', text: 'No stock data for this configuration.' }));
+            return;
+        }
+        const dcs = (match.datacenters || []);
+        const available = dcs.filter(d => d.availability !== 'unavailable');
+        if (available.length === 0) {
+            sec.appendChild(el('p', { class: 'text-red-400 text-xs font-bold', text: 'Out of stock in all datacenters' }));
+        } else {
+            for (const dc of available) {
+                const badge = el('span', {
+                    class: 'inline-block bg-green-700/30 text-green-400 text-xs px-2 py-1 rounded mr-1 mb-1',
+                    text: `${humanizeDatacenter(dc.datacenter)} (${dc.availability})`,
+                });
+                sec.appendChild(badge);
+            }
+        }
+        // Also show unavailable DCs in muted style
+        const unavailable = dcs.filter(d => d.availability === 'unavailable');
+        if (unavailable.length) {
+            for (const dc of unavailable) {
+                sec.appendChild(el('span', {
+                    class: 'inline-block bg-gray-700 text-gray-600 text-xs px-2 py-1 rounded mr-1 mb-1 line-through',
+                    text: humanizeDatacenter(dc.datacenter),
+                }));
+            }
+        }
+    }
+
+    // Fetch stock data asynchronously (don't block rendering)
+    apiRequest('GET', `/catalog/stock?plan_code=${encodeURIComponent(plan.planCode)}`)
+        .then(data => {
+            stockData = data || [];
+            updateStockDisplay();
+        })
+        .catch(() => { /* stock section stays "unavailable" */ });
 
     // OS options
     const osConfig = configs.find(c => c.name === 'dedicated_os');
