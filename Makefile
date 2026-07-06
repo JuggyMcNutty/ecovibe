@@ -1,4 +1,4 @@
-.PHONY: install dev test lint run clean
+.PHONY: install dev test lint run clean css
 
 install:
 	pip install -r requirements.txt
@@ -11,6 +11,9 @@ test:
 
 lint:
 	ruff check app/ tests/ run.py
+
+css:
+	tailwindcss --input static/css/input.css --output static/css/app.css --minify
 
 run:
 	python run.py

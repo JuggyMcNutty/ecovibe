@@ -1,0 +1,11 @@
+@import "tailwindcss";
+
+@source "../../templates/index.html";
+@source "../../static/js/app.js";
+
+/* Disable animations for users who prefer reduced motion */
+@media (prefers-reduced-motion: reduce) {
+    .animate-pulse, .animate-spin {
+        animation: none !important;
+    }
+}
