@@ -46,6 +46,7 @@ pip install -r requirements-dev.txt
 - **Sound alerts** - audio notification (requires a user gesture first, e.g. clicking "Start Monitor")
 - **1-10 second polling** configurable interval (persisted across restarts)
 - **One-click Rush Order** when stock is detected
+- **Alert pause/resume** - disable alerts without deleting them
 
 ### Sniper Mode (auto-order)
 - Arm an alert with a saved checkout profile
@@ -54,10 +55,15 @@ pip install -r requirements-dev.txt
 - Status endpoint shows armed alerts and last results
 
 ### Server Catalog
-- Browse ECO server catalog
-- **Search & filter** plans by name/code, sort by price/name
+- Browse ECO server catalog with full CPU and hardware specifications
+- **CPU details** extracted from OVH product blobs: model, cores/threads, frequency, boost, benchmark score
+- **Hardware badges**: chassis size, SLA, anti-DDoS, server range (Kimsufi/Rise/SYS/LE)
+- **Setup/installation fees** surfaced alongside monthly pricing
+- **Search & filter** plans by name/code, sort by price/name/CPU score
+- **Region filter** - only show plans orderable on your configured endpoint
 - Filter by country/subsidiary (IE, FR, DE, GB, ES, PL, IT, PT, CZ, FI)
 - View configurations, pricing, and availability
+- **Addon labels** use OVH's official invoiceName (e.g. "2x SSD NVMe 512GB Datacenter Class Soft RAID")
 - Quick-add servers to watchlist (click or keyboard)
 
 ### Checkout
@@ -66,16 +72,19 @@ pip install -r requirements-dev.txt
 - Configure RAM, storage, bandwidth options
 - Set region (Europe/Canada/US), operating system, and billing duration
 - Auto-pay and waive retraction options
-- **Max price cap** - refuse checkout if price exceeds threshold
+- **Max price cap** - refuse checkout if price exceeds threshold (enforced in both catalog and rush order flows)
+- **Region mismatch guard** - prevents ordering cross-region plans (e.g. EU plan on US endpoint)
 
 ### Historical Insights
-- **Restock patterns** - stock events are logged to SQLite; view hourly aggregation to find the best times to monitor
-- **Price history** - track price changes per plan over time
-- **Order tracking** - recently placed orders with status
+- **Restock patterns** - stock events are logged to SQLite; view hourly bar chart aggregation to find the best times to monitor
+- **Price history** - track price changes per plan over time with manual refresh
+- **Order tracking** - recently placed orders with live status refresh from OVH
+- **Stock events** - recent availability/unavailability events per plan
 
 ### Persistence
 - Alerts, poll-interval setting, checkout profiles, stock events, price history, and orders are persisted to SQLite (`ovh-flash-monitor.db`)
 - Alerts and profiles survive process restarts
+- DB path resolves to an absolute path anchored to the project root (CWD-independent)
 
 ## Configuration
 
@@ -87,7 +96,7 @@ environment variables:
 |----------|---------|-------------|
 | `OVH_USE_CACHE` | `false` | Enable in-memory catalog caching |
 | `OVH_CACHE_TTL` | `300` | Cache TTL in seconds |
-| `OVH_DB_PATH` | `ovh-flash-monitor.db` | SQLite database path for persistence + credentials |
+| `OVH_DB_PATH` | `<project>/ovh-flash-monitor.db` | SQLite database path (defaults to project root) |
 | `OVH_CORS_ORIGINS` | `[]` | Comma-separated allowed CORS origins |
 | `OVH_TELEGRAM_BOT_TOKEN` | - | Telegram bot token for notifications |
 | `OVH_TELEGRAM_CHAT_ID` | - | Telegram chat ID to receive alerts |
@@ -143,7 +152,7 @@ and use the corresponding API console to create your application and token:
 ```
 # Catalog
 GET  /api/catalog?country=IE                - Fetch full server catalog
-GET  /api/catalog/plans?country=IE         - List available plans
+GET  /api/catalog/plans?country=IE         - List plans + addon prices + product specs
 GET  /api/catalog/availability?plan_code=XX - Check plan availability
 
 # Monitor
@@ -171,8 +180,8 @@ POST /api/cart/{id}/config                   - Set item configuration
 GET  /api/cart/{id}/summary                  - Order summary
 
 # Checkout
-POST /api/checkout/{cart_id}                 - Place order from existing cart (body: {auto_pay, waive_retractation})
 POST /api/checkout/rush                      - One-shot rush order (builds cart, tries DCs in order, checks out)
+POST /api/checkout/{cart_id}                 - Place order from existing cart (body: {auto_pay, waive_retractation})
 
 # Checkout Profiles
 GET    /api/profiles                         - List saved profiles
@@ -213,14 +222,17 @@ GET  /api/health                                - Service health + config status
 ## Development
 
 ```bash
-# Run tests
-pytest
+# Run tests (must use PYTHONPATH=. since app/ is not installed)
+PYTHONPATH=. .venv/bin/pytest
 
 # Lint
-ruff check app/ tests/ run.py
+.venv/bin/ruff check app/ tests/ run.py
+
+# Rebuild + minify CSS (uses standalone Tailwind binary)
+/tmp/tailwindcss --input static/css/input.css --output static/css/app.css --minify
 
 # Run in dev mode
-uvicorn app.main:app --reload
+.venv/bin/uvicorn app.main:app --reload
 ```
 
 ## Project Structure
@@ -232,31 +244,35 @@ ovh-gui/
 │   ├── main.py              # FastAPI app + lifespan
 │   ├── config.py            # Environment/config (pydantic-settings)
 │   ├── api/                 # Route handlers
-│   │   ├── catalog.py       # Catalog endpoints
+│   │   ├── catalog.py       # Catalog endpoints + product spec extraction
 │   │   ├── monitor.py       # SSE stock streaming + poll-interval
-│   │   ├── alert.py         # Alert CRUD + profile assignment
-│   │   ├── cart.py          # Cart lifecycle
-│   │   ├── checkout.py      # Checkout + one-shot rush order (multi-DC fallback)
+│   │   ├── alert.py         # Alert CRUD + enable/disable + profile assignment
+│   │   ├── cart.py          # Cart lifecycle (legacy)
+│   │   ├── checkout.py      # Rush order (one-shot) + legacy cart checkout
 │   │   ├── profiles.py      # Saved checkout profile CRUD
 │   │   ├── sniper.py        # Sniper arm/disarm/status
 │   │   ├── insights.py      # History, patterns, price, orders
 │   │   ├── setup.py         # Setup wizard (save/test OVH credentials)
+│   │   ├── account.py       # OVH account + payment methods + defaults
 │   │   └── errors.py        # OVH->HTTP error mapping
 │   ├── models/schemas.py    # Pydantic request/response models
 │   └── services/
-│       ├── ovh_service.py   # OVH API wrapper
+│       ├── ovh_service.py   # OVH API wrapper (singleton)
 │       ├── monitor.py       # Stock monitoring + background poller + SniperService
 │       ├── notifier.py      # Telegram/Discord/Slack/email fan-out
 │       ├── storage.py       # SQLite persistence (alerts, profiles, events, prices, orders)
 │       └── cache.py         # In-memory TTL cache
-├── static/js/app.js         # Frontend SPA
-├── templates/index.html    # UI with TailwindCSS
-├── tests/                   # pytest suite
+├── static/js/app.js         # Frontend SPA (vanilla JS, ~2300 lines)
+├── static/css/input.css     # Tailwind v4 source
+├── static/css/app.css       # Built/minified (do not edit)
+├── templates/index.html    # SPA shell with cache-busted asset refs
+├── tests/                   # pytest suite (57 tests, uses TestClient)
 ├── requirements.txt         # Runtime dependencies
 ├── requirements-dev.txt     # Dev dependencies (ruff, pytest, httpx)
 ├── pyproject.toml           # Project metadata + tool config
 ├── run.py                   # Entry point
 ├── Makefile                 # install/dev/test/lint/run/clean targets
+├── AGENTS.md                # AI session reference
 └── README.md
 ```
 
