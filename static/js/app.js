@@ -410,6 +410,71 @@ function renderCatalogList() {
     });
 }
 
+// --- Human-readable addon label parsers ---
+
+function humanizeAddon(code) {
+    if (!code) return 'Unknown';
+    const lower = code.toLowerCase();
+    if (lower.startsWith('ram-')) return humanizeRam(code);
+    if (lower.startsWith('softraid-') || lower.startsWith('noraid-')) return humanizeStorage(code);
+    if (lower.startsWith('bandwidth-')) return humanizeBandwidth(code);
+    return code;
+}
+
+function humanizeRam(code) {
+    // ram-{size}g-{type}-{speed}-{product}-{region}
+    // e.g. ram-32g-ecc-2400-24risegame01-eu → "32 GB ECC @ 2400 MHz"
+    //      ram-64g-noecc-2133-25skle04-us → "64 GB non-ECC @ 2133 MHz"
+    const m = code.match(/^ram-(\d+)g-(ecc|noecc)-(\d+)-/i);
+    if (m) {
+        const size = m[1];
+        const type = m[2].toLowerCase() === 'noecc' ? 'non-ECC' : 'ECC';
+        const speed = m[3];
+        return `${size} GB ${type} @ ${speed} MHz`;
+    }
+    return code;
+}
+
+function humanizeStorage(code) {
+    // softraid-{count}x{size}{type}-{product}-{region}
+    // noraid-{count}x{size}{type}-{product}-{region}
+    // e.g. softraid-2x480ssd-24sk60b-eu → "2× 480 GB SSD (SoftRAID)"
+    //      noraid-1x120ssd-25skb01-eu → "1× 120 GB SSD (No RAID)"
+    //      softraid-2x512nvme-... → "2× 512 GB NVMe"
+    //      softraid-2x2000sa-... → "2× 2000 GB SATA HDD (SoftRAID)"
+    const isRaid = code.toLowerCase().startsWith('softraid');
+    const m = code.match(/^(?:softraid|noraid)-(\d+)x(\d+)(ssd|nvme|sa)-/i);
+    if (m) {
+        const count = m[1];
+        const size = m[2];
+        let typeLabel;
+        switch (m[3].toLowerCase()) {
+            case 'ssd': typeLabel = 'SSD'; break;
+            case 'nvme': typeLabel = 'NVMe'; break;
+            case 'sa': typeLabel = 'SATA HDD'; break;
+            default: typeLabel = m[3].toUpperCase();
+        }
+        const raidLabel = isRaid ? 'SoftRAID' : 'No RAID';
+        return `${count}× ${size} GB ${typeLabel} (${raidLabel})`;
+    }
+    return code;
+}
+
+function humanizeBandwidth(code) {
+    // bandwidth-{speed}-{optional: unguaranteed}-{product}-{region}
+    // e.g. bandwidth-500-25sk-eu → "500 Mbps"
+    //      bandwidth-1000-rise-game-eu → "1 Gbps"
+    //      bandwidth-300-unguaranteed-25skle-us → "300 Mbps (unguaranteed)"
+    const m = code.match(/^bandwidth-(\d+)(?:-(unguaranteed))?-/i);
+    if (m) {
+        const speed = parseInt(m[1], 10);
+        const speedLabel = speed >= 1000 ? `${speed / 1000} Gbps` : `${speed} Mbps`;
+        const unguaranteed = m[2] ? ' (unguaranteed)' : '';
+        return `${speedLabel}${unguaranteed}`;
+    }
+    return code;
+}
+
 function renderCatalogDetail(plan) {
     state.selectedPlanCode = plan.planCode;
     const container = document.getElementById('catalog-detail');
@@ -455,20 +520,25 @@ function renderCatalogDetail(plan) {
     // Hardware specs from addonFamilies
     const families = plan.addonFamilies || [];
     const specsSection = el('div', { class: 'space-y-3 mb-4' });
-    specsSection.appendChild(el('h3', { class: 'font-bold text-gray-400 text-sm uppercase', text: 'Configuration Options' }));
+    specsSection.appendChild(el('h3', { class: 'font-bold text-gray-400 text-sm uppercase mb-2', text: 'Configuration Options' }));
+
+    const famIcons = { memory: 'M', storage: 'S', bandwidth: 'B' };
 
     for (const fam of families) {
         const famName = fam.name.charAt(0).toUpperCase() + fam.name.slice(1);
         const items = (fam.addons || []).map(addon => {
             const isDefault = addon === fam.default;
-            return el('li', { class: 'flex items-center gap-2' }, [
-                el('span', { class: isDefault ? 'text-green-400' : 'text-gray-300', text: addon }),
-                isDefault ? el('span', { class: 'text-green-500 text-xs', text: '(default)' }) : null,
+            const label = humanizeAddon(addon);
+            return el('div', {
+                class: `flex items-center justify-between rounded px-3 py-2 ${isDefault ? 'bg-green-900/30 border border-green-700' : 'bg-gray-700'}`
+            }, [
+                el('span', { class: isDefault ? 'text-green-300' : 'text-gray-300', text: label }),
+                isDefault ? el('span', { class: 'text-green-500 text-xs font-bold', text: 'DEFAULT' }) : null,
             ]);
         });
         specsSection.appendChild(el('div', {}, [
-            el('p', { class: 'text-gray-400 text-sm font-bold', text: `${famName}${fam.mandatory ? ' *' : ''}` }),
-            el('ul', { class: 'text-xs space-y-1 ml-2' }, items),
+            el('p', { class: 'text-gray-400 text-sm font-bold mb-1', text: `${famName}${fam.mandatory ? ' *' : ''}` }),
+            el('div', { class: 'space-y-1' }, items),
         ]));
     }
     if (!families.length) {
