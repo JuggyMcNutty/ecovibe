@@ -469,20 +469,30 @@ function humanizeAddon(code) {
     if (!code) return 'Unknown';
     const lower = code.toLowerCase();
     if (lower.startsWith('ram-')) return humanizeRam(code);
+    if (lower.startsWith('hybridsoftraid-')) return humanizeHybridStorage(code);
     if (lower.startsWith('softraid-') || lower.startsWith('noraid-')) return humanizeStorage(code);
     if (lower.startsWith('bandwidth-')) return humanizeBandwidth(code);
     if (lower.startsWith('vrack-')) return humanizeVrack(code);
+    if (lower.startsWith('traffic-')) return humanizeTraffic(code);
     return code;
 }
 
 function humanizeRam(code) {
-    // ram-{size}g-{type}-{speed}-{product}-{region}
-    // e.g. ram-32g-ecc-2400-24risegame01-eu → "32 GB ECC @ 2400 MHz"
-    //      ram-64g-noecc-2133-25skle04-us → "64 GB non-ECC @ 2133 MHz"
-    const m = code.match(/^ram-(\d+)g-(ecc|noecc)-(\d+)-/i);
+    // ram-{size}g[-{type}]-{speed}-{product}-{region}
+    // Patterns seen in the wild:
+    //   ram-32g-ecc-2400-24risegame01-eu      → "32 GB ECC @ 2400 MHz"
+    //   ram-64g-noecc-2133-25skle04-us        → "64 GB non-ECC @ 2133 MHz"
+    //   ram-16g-24skstor01-us                 → "16 GB ECC @ 2133 MHz" (no type → ECC)
+    //   ram-128g-on-die-ecc-3600-25risel01-eu → "128 GB On-Die ECC @ 3600 MHz"
+    //   ram-128g-ecc-2933-24rise-ca            → "128 GB ECC @ 2933 MHz"
+    const m = code.match(/^ram-(\d+)g(?:-(on-die-ecc|ecc|noecc))?-(\d+)-/i);
     if (m) {
         const size = m[1];
-        const type = m[2].toLowerCase() === 'noecc' ? 'non-ECC' : 'ECC';
+        let type;
+        if (!m[2]) type = 'ECC';
+        else if (m[2].toLowerCase() === 'noecc') type = 'non-ECC';
+        else if (m[2].toLowerCase() === 'on-die-ecc') type = 'On-Die ECC';
+        else type = 'ECC';
         const speed = m[3];
         return `${size} GB ${type} @ ${speed} MHz`;
     }
@@ -494,7 +504,7 @@ function humanizeStorage(code) {
     // noraid-{count}x{size}{type}-{product}-{region}
     // e.g. softraid-2x480ssd-24sk60b-eu → "2× 480 GB SSD (SoftRAID)"
     //      noraid-1x120ssd-25skb01-eu → "1× 120 GB SSD (No RAID)"
-    //      softraid-2x512nvme-... → "2× 512 GB NVMe"
+    //      softraid-2x512nvme-... → "2× 512 GB NVMe (SoftRAID)"
     //      softraid-2x2000sa-... → "2× 2000 GB SATA HDD (SoftRAID)"
     const isRaid = code.toLowerCase().startsWith('softraid');
     const m = code.match(/^(?:softraid|noraid)-(\d+)x(\d+)(ssd|nvme|sa)-/i);
@@ -510,6 +520,37 @@ function humanizeStorage(code) {
         }
         const raidLabel = isRaid ? 'SoftRAID' : 'No RAID';
         return `${count}× ${size} GB ${typeLabel} (${raidLabel})`;
+    }
+    return code;
+}
+
+function humanizeHybridStorage(code) {
+    // hybridsoftraid-{count}x{size}{type}-{count}x{size}{type}-{product}-{region}
+    // Mixed NVMe + HDD in soft RAID. Each disk group is {count}x{size}{type}.
+    // e.g. hybridsoftraid-4x4000sa-1x500nvme-24skstor-us
+    //      → "4× 4000 GB SATA HDD + 1× 500 GB NVMe (Hybrid SoftRAID)"
+    const m = code.match(/^hybridsoftraid-((?:\d+x\d+(?:ssd|nvme|sa)-?)+)-/i);
+    if (m) {
+        const diskGroup = m[1];
+        // Parse all disk segments: {count}x{size}{type}
+        const diskRe = /(\d+)x(\d+)(ssd|nvme|sa)/gi;
+        let disk;
+        const disks = [];
+        while ((disk = diskRe.exec(diskGroup)) !== null) {
+            const count = disk[1];
+            const size = disk[2];
+            let typeLabel;
+            switch (disk[3].toLowerCase()) {
+                case 'ssd': typeLabel = 'SSD'; break;
+                case 'nvme': typeLabel = 'NVMe'; break;
+                case 'sa': typeLabel = 'SATA HDD'; break;
+                default: typeLabel = disk[3].toUpperCase();
+            }
+            disks.push(`${count}× ${size} GB ${typeLabel}`);
+        }
+        if (disks.length) {
+            return `${disks.join(' + ')} (Hybrid SoftRAID)`;
+        }
     }
     return code;
 }
@@ -552,6 +593,34 @@ function humanizeVrack(code) {
             return `vRack ${fmt(min)}-${fmt(max)} (burstable)`;
         }
         return `vRack ${fmt(min)}`;
+    }
+    return code;
+}
+
+function humanizeTraffic(code) {
+    // traffic-{quota}-{speed}[-burst{burstspeed}]-{product}-{region}
+    // e.g. traffic-unlimited-500-24sys-apac-ca → "500 Mbps unlimited"
+    //      traffic-10tb-500-24sys-apac-ca → "500 Mbps · 10 TB quota"
+    //      traffic-25tb-250-burst1g-24risegame-apac-ca → "250 Mbps (burst 1Gbps) · 25 TB quota"
+    //      traffic-unlimited-250-burst1g-24risegame-sgp-ca → "250 Mbps (burst 1Gbps) unlimited"
+    const m = code.match(/^traffic-(unlimited|\d+tb)-(\d+)(?:-burst(\d+[gm]))?-/i);
+    if (m) {
+        const quota = m[1].toLowerCase();
+        const speed = parseInt(m[2], 10);
+        const burst = m[3];
+        const fmt = (v) => v >= 1000 ? `${v / 1000} Gbps` : `${v} Mbps`;
+        let label = fmt(speed);
+        if (burst) {
+            const burstNum = parseInt(burst, 10);
+            const burstLabel = burst.toLowerCase().endsWith('g') ? `${burstNum} Gbps` : `${burstNum} Mbps`;
+            label += ` (burst ${burstLabel})`;
+        }
+        if (quota === 'unlimited') {
+            label += ' unlimited';
+        } else {
+            label += ` · ${quota.toUpperCase()} quota`;
+        }
+        return label;
     }
     return code;
 }
