@@ -1195,13 +1195,15 @@ function renderCatalogDetail(plan) {
             // Guard against ordering a plan whose region suffix doesn't match
             // the configured OVH endpoint. OVH will reject the cart with a
             // connection error or 404 if the plan isn't available on that endpoint.
-            const planRegionSuffix = planRegion(plan.planCode).toLowerCase();
-            const endpointRegion = regionInfo.rushRegion;
-            const mismatch = planRegionSuffix && endpointRegion &&
-                !planRegionSuffix.includes(endpointRegion) &&
-                !endpointRegion.includes(planRegionSuffix);
+            // Compare the plan code's raw suffix (e.g. 'us') against the
+            // endpoint's region code (e.g. 'ovh-us' → 'us'), NOT against
+            // rushRegion which is the OVH config value ('united_states').
+            const planSuffix = (plan.planCode || '').split('-').pop().toLowerCase();
+            const endpointRegionCode = state.endpoint.replace('ovh-', '');
+            const mismatch = planSuffix && endpointRegionCode &&
+                planSuffix !== endpointRegionCode;
             if (mismatch) {
-                showError(`Plan ${plan.planCode} is for ${planRegionSuffix.toUpperCase()} but your endpoint is ${state.endpoint} (${endpointRegion}). Select a plan matching your region.`);
+                showError(`Plan ${plan.planCode} is for ${planSuffix.toUpperCase()} but your endpoint is ${state.endpoint}. Select a plan matching your region.`);
                 return;
             }
 
