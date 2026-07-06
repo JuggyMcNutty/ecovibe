@@ -9,7 +9,9 @@ logger = logging.getLogger(__name__)
 def get_base_path():
     if getattr(sys, 'frozen', False):
         return sys._MEIPASS
-    return os.path.dirname(os.path.abspath(__file__))
+    # When running from source, static/ and templates/ live at the project root
+    # (one level up from app/).
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 BASE_PATH = get_base_path()
 

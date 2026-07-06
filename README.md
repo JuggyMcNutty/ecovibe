@@ -44,26 +44,40 @@ pip install -r requirements-dev.txt
 ### Flash Sale Monitor
 - **Real-time stock tracking** via SSE (Server-Sent Events) with a single shared background poller
 - **Browser notifications** when desired configs become available
+- **Multi-channel notifications** (Telegram, Discord, Slack, email) — never miss a flash sale when away from the browser
 - **Sound alerts** - audio notification (requires a user gesture first, e.g. clicking "Start Monitor")
 - **1-10 second polling** configurable interval (persisted across restarts)
 - **One-click Rush Order** when stock is detected
 
+### Sniper Mode (auto-order)
+- Arm an alert with a saved checkout profile
+- When stock appears that matches the alert, the backend automatically fires the rush order
+- One-shot per arm (no duplicate orders); re-arm after each result
+- Status endpoint shows armed alerts and last results
+
 ### Server Catalog
 - Browse ECO server catalog
+- **Search & filter** plans by name/code, sort by price/name
 - Filter by country/subsidiary (IE, FR, DE, GB, ES, PL, IT, PT, CZ, FI)
 - View configurations, pricing, and availability
 - Quick-add servers to watchlist (click or keyboard)
 
 ### Checkout
-- Full cart management
+- **Saved checkout profiles** — pre-configure cart templates (RAM, storage, DCs, OS, duration, etc.)
+- **Multi-datacenter fallback** — try DCs in order (GRA→SBG→RBX→...) during rush order
 - Configure RAM, storage, bandwidth options
-- Set datacenter (GRA, SBG, RBX, BHS, FRA, WAW, LON, SGP, SYD, ERI) and region (Europe/Canada/US)
-- Select operating system and billing duration
+- Set region (Europe/Canada/US), operating system, and billing duration
 - Auto-pay and waive retraction options
+- **Max price cap** — refuse checkout if price exceeds threshold
+
+### Historical Insights
+- **Restock patterns** — stock events are logged to SQLite; view hourly aggregation to find the best times to monitor
+- **Price history** — track price changes per plan over time
+- **Order tracking** — recently placed orders with status
 
 ### Persistence
-- Alerts and poll-interval setting are persisted to SQLite (`ovh-flash-monitor.db`)
-- Alerts survive process restarts
+- Alerts, poll-interval setting, checkout profiles, stock events, price history, and orders are persisted to SQLite (`ovh-flash-monitor.db`)
+- Alerts and profiles survive process restarts
 
 ## Configuration
 
@@ -75,8 +89,18 @@ pip install -r requirements-dev.txt
 | `OVH_CONSUMER_KEY` | - | Your consumer key |
 | `OVH_USE_CACHE` | `false` | Enable in-memory catalog caching |
 | `OVH_CACHE_TTL` | `300` | Cache TTL in seconds |
-| `OVH_DB_PATH` | `ovh-flash-monitor.db` | SQLite database path for alert persistence |
+| `OVH_DB_PATH` | `ovh-flash-monitor.db` | SQLite database path for persistence |
 | `OVH_CORS_ORIGINS` | `[]` | Comma-separated allowed CORS origins |
+| `OVH_TELEGRAM_BOT_TOKEN` | - | Telegram bot token for notifications |
+| `OVH_TELEGRAM_CHAT_ID` | - | Telegram chat ID to receive alerts |
+| `OVH_DISCORD_WEBHOOK_URL` | - | Discord webhook URL for alerts |
+| `OVH_SLACK_WEBHOOK_URL` | - | Slack webhook URL for alerts |
+| `OVH_SMTP_HOST` | - | SMTP server host for email alerts |
+| `OVH_SMTP_PORT` | `587` | SMTP server port |
+| `OVH_SMTP_USERNAME` | - | SMTP username |
+| `OVH_SMTP_PASSWORD` | - | SMTP password |
+| `OVH_SMTP_FROM` | - | From address for email alerts |
+| `OVH_NOTIFY_EMAIL_TO` | - | Recipient for email alerts |
 
 See `.env.example` for a template.
 
@@ -166,8 +190,9 @@ GET    /api/alerts/{id}                     - Get a single alert
 DELETE /api/alerts/{id}                     - Remove alert
 PUT    /api/alerts/{id}/enable              - Enable alert
 PUT    /api/alerts/{id}/disable             - Disable alert
+PUT    /api/alerts/{id}/profile             - Assign checkout profile (for sniper mode)
 
-# Cart
+# Cart (legacy granular API; prefer /api/checkout/rush for one-shot)
 POST /api/cart                              - Create cart (body: {description})
 GET  /api/cart/{id}                         - Get cart details
 POST /api/cart/{id}/server                  - Add server item
@@ -176,7 +201,28 @@ POST /api/cart/{id}/config                   - Set item configuration
 GET  /api/cart/{id}/summary                  - Order summary
 
 # Checkout
-POST /api/checkout/{id}                     - Place order (body: {auto_pay, waive_retractation})
+POST /api/checkout/{cart_id}                 - Place order from existing cart (body: {auto_pay, waive_retractation})
+POST /api/checkout/rush                      - One-shot rush order (builds cart, tries DCs in order, checks out)
+
+# Checkout Profiles
+GET    /api/profiles                         - List saved profiles
+POST   /api/profiles                         - Create profile
+GET    /api/profiles/{id}                    - Get a profile
+PUT    /api/profiles/{id}                    - Update profile
+DELETE /api/profiles/{id}                    - Delete profile
+
+# Sniper Mode
+GET  /api/sniper/status                      - Show armed alerts + last results
+POST /api/sniper/arm                         - Arm alert with profile (body: {alert_id, profile_id})
+POST /api/sniper/disarm/{alert_id}           - Disarm an alert
+
+# Insights (historical data)
+GET  /api/insights/history/{plan_code}?days=N    - Recent stock events
+GET  /api/insights/patterns/{plan_code}          - Hourly restock count aggregation
+GET  /api/insights/price/{plan_code}             - Price history
+POST /api/insights/price/{plan_code}/refresh     - Fetch + log current price
+GET  /api/insights/orders                         - Recently placed orders
+GET  /api/insights/orders/{order_id}              - Fetch order status from OVH
 
 # Health
 GET  /health                                - Service health + config status
@@ -216,16 +262,20 @@ ovh-gui/
 │   ├── api/                 # Route handlers
 │   │   ├── catalog.py       # Catalog endpoints
 │   │   ├── monitor.py       # SSE stock streaming + poll-interval
-│   │   ├── alert.py         # Alert CRUD
+│   │   ├── alert.py         # Alert CRUD + profile assignment
 │   │   ├── cart.py          # Cart lifecycle
-│   │   ├── checkout.py      # Checkout endpoint
+│   │   ├── checkout.py      # Checkout + one-shot rush order (multi-DC fallback)
+│   │   ├── profiles.py      # Saved checkout profile CRUD
+│   │   ├── sniper.py        # Sniper arm/disarm/status
+│   │   ├── insights.py      # History, patterns, price, orders
 │   │   └── errors.py        # OVH->HTTP error mapping
 │   ├── models/schemas.py    # Pydantic request/response models
 │   └── services/
 │       ├── ovh_service.py   # OVH API wrapper
-│       ├── monitor.py       # Stock monitoring + background poller
-│       ├── cache.py         # In-memory TTL cache
-│       └── storage.py       # SQLite persistence
+│       ├── monitor.py       # Stock monitoring + background poller + SniperService
+│       ├── notifier.py      # Telegram/Discord/Slack/email fan-out
+│       ├── storage.py       # SQLite persistence (alerts, profiles, events, prices, orders)
+│       └── cache.py         # In-memory TTL cache
 ├── static/js/app.js         # Frontend SPA
 ├── templates/index.html    # UI with TailwindCSS
 ├── tests/                   # pytest suite

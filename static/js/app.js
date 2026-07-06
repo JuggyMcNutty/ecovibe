@@ -36,6 +36,7 @@ let state = {
     catalog: null,
     plans: [],
     alerts: [],
+    profiles: [],
     recentAlerts: [],
     currentStock: {},
     cart: null,
@@ -188,10 +189,35 @@ function renderPlanSelect() {
     });
 }
 
+function getFilteredPlans() {
+    const q = (document.getElementById('catalog-search')?.value || '').trim().toLowerCase();
+    const sort = document.getElementById('catalog-sort')?.value || 'default';
+    let plans = state.plans.slice();
+    if (q) {
+        plans = plans.filter(p =>
+            (p.invoiceName || '').toLowerCase().includes(q) ||
+            (p.planCode || '').toLowerCase().includes(q)
+        );
+    }
+    const priceOf = (p) => {
+        const mp = p.prices?.find(x => x.label === 'default')?.price;
+        return mp?.priceInUcents ?? Infinity;
+    };
+    if (sort === 'price-asc') plans.sort((a, b) => priceOf(a) - priceOf(b));
+    else if (sort === 'price-desc') plans.sort((a, b) => priceOf(b) - priceOf(a));
+    else if (sort === 'name') plans.sort((a, b) => (a.invoiceName || '').localeCompare(b.invoiceName || ''));
+    return plans;
+}
+
 function renderCatalogList() {
     const container = document.getElementById('catalog-plans');
     container.innerHTML = '';
-    state.plans.slice(0, 20).forEach(plan => {
+    const plans = getFilteredPlans().slice(0, 50);
+    if (plans.length === 0) {
+        container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No plans match your search.' }));
+        return;
+    }
+    plans.forEach(plan => {
         const mainPrice = plan.prices?.find(p => p.label === 'default')?.price;
         const priceText = mainPrice ? formatPrice(mainPrice.priceInUcents) : 'On request';
 
@@ -225,6 +251,7 @@ async function loadAlerts() {
         state.alerts = await apiRequest('GET', '/alerts') || [];
         renderAlertsList();
         renderMonitoredList();
+        renderSniperAlertSelect();
     } catch (e) {
         console.error('Failed to load alerts:', e);
     }
@@ -469,21 +496,8 @@ function showBrowserNotification(planCode, fqns) {
     }
 }
 
-function isCartStale() {
-    if (!state.cart || !state.cartCreatedAt) {
-        return false;
-    }
-    const ageMs = Date.now() - state.cartCreatedAt;
-    return ageMs > 10 * 60 * 1000;
-}
-
-async function ensureCart() {
-    if (state.cart && !isCartStale()) {
-        return state.cart;
-    }
-    state.cart = await apiRequest('POST', '/cart', { description: 'Rush Order' });
-    state.cartCreatedAt = Date.now();
-    return state.cart;
+function getSelectedDatacenters() {
+    return Array.from(document.querySelectorAll('.rush-dc:checked')).map(cb => cb.value);
 }
 
 async function rushOrder(e) {
@@ -497,7 +511,7 @@ async function rushOrder(e) {
         const ramAddon = document.getElementById('rush-ram').value.trim();
         const storageAddon = document.getElementById('rush-storage').value.trim();
         const bandwidthAddon = document.getElementById('rush-bandwidth').value.trim();
-        const datacenter = document.getElementById('rush-datacenter').value;
+        const datacenters = getSelectedDatacenters();
         const region = document.getElementById('rush-region').value;
         const osValue = document.getElementById('rush-os').value;
         const duration = document.getElementById('rush-duration').value;
@@ -508,38 +522,16 @@ async function rushOrder(e) {
             throw new Error('Plan code and FQN are required');
         }
 
-        let cart = await ensureCart();
-
-        const serverItem = await apiRequest('POST', `/cart/${cart.cartId}/server`, {
+        const result = await apiRequest('POST', '/checkout/rush', {
             plan_code: planCode,
+            fqn: fqn,
+            ram: ramAddon || null,
+            storage: storageAddon || null,
+            bandwidth: bandwidthAddon || null,
+            datacenters: datacenters,
+            region: region,
+            os: osValue,
             duration: duration,
-            quantity: 1
-        });
-        const itemId = serverItem.itemId;
-
-        const addons = [ramAddon, storageAddon, bandwidthAddon].filter(a => a);
-        for (const addon of addons) {
-            await apiRequest('POST', `/cart/${cart.cartId}/options`, {
-                item_id: itemId,
-                plan_code: addon,
-                duration: duration
-            });
-        }
-
-        const configs = [
-            { label: 'dedicated_datacenter', value: datacenter },
-            { label: 'region', value: region },
-            { label: 'dedicated_os', value: osValue }
-        ];
-        await Promise.all(configs.map(config =>
-            apiRequest('POST', `/cart/${cart.cartId}/config`, {
-                item_id: itemId,
-                label: config.label,
-                value: config.value
-            })
-        ));
-
-        const result = await apiRequest('POST', `/checkout/${cart.cartId}`, {
             auto_pay: autoPay,
             waive_retractation: waive
         });
@@ -555,12 +547,9 @@ async function rushOrder(e) {
 
         document.getElementById('stock-alerts-panel').classList.add('hidden');
         stopMonitoring();
+        await loadOrders();
 
     } catch (e) {
-        if (e.message && /not found|404|expired/i.test(e.message)) {
-            state.cart = null;
-            state.cartCreatedAt = null;
-        }
         showError(e.message);
     } finally {
         hideLoading();
@@ -630,6 +619,199 @@ function updateCredentialsView(region) {
     }
 }
 
+// ----- Saved checkout profiles -----
+
+async function loadProfiles() {
+    try {
+        const profiles = await apiRequest('GET', '/profiles') || [];
+        state.profiles = profiles;
+        renderProfileSelect();
+        renderSniperProfileSelect();
+    } catch (e) {
+        console.error('Failed to load profiles:', e);
+    }
+}
+
+function renderProfileSelect() {
+    const select = document.getElementById('profile-select');
+    if (!select) return;
+    select.innerHTML = '';
+    select.appendChild(el('option', { value: '', text: 'Select profile...' }));
+    (state.profiles || []).forEach(p => {
+        select.appendChild(el('option', { value: p.id, text: p.name }));
+    });
+}
+
+function renderSniperProfileSelect() {
+    const select = document.getElementById('sniper-profile-select');
+    if (!select) return;
+    const current = select.value;
+    select.innerHTML = '';
+    select.appendChild(el('option', { value: '', text: 'Select profile...' }));
+    (state.profiles || []).forEach(p => {
+        select.appendChild(el('option', { value: p.id, text: p.name }));
+    });
+    if (current) select.value = current;
+}
+
+async function loadProfileIntoForm(profileId) {
+    if (!profileId) return;
+    const profile = state.profiles?.find(p => p.id === profileId);
+    if (!profile) return;
+    document.getElementById('rush-plan-code').value = profile.plan_code || '';
+    document.getElementById('rush-fqn').value = profile.fqn || '';
+    if (profile.ram) document.getElementById('rush-ram').value = profile.ram;
+    if (profile.storage) document.getElementById('rush-storage').value = profile.storage;
+    if (profile.bandwidth) document.getElementById('rush-bandwidth').value = profile.bandwidth;
+    document.querySelectorAll('.rush-dc').forEach(cb => {
+        cb.checked = (profile.datacenters || '').split(',').map(s => s.trim()).includes(cb.value);
+    });
+    if (profile.region) document.getElementById('rush-region').value = profile.region;
+    if (profile.os) document.getElementById('rush-os').value = profile.os;
+    if (profile.duration) document.getElementById('rush-duration').value = profile.duration;
+    document.getElementById('rush-auto-pay').checked = !!profile.auto_pay;
+    document.getElementById('rush-waive').checked = !!profile.waive_retractation;
+}
+
+async function saveProfile() {
+    const name = document.getElementById('profile-name').value.trim();
+    if (!name) {
+        showError('Profile name is required');
+        return;
+    }
+    const profile = {
+        name,
+        plan_code: document.getElementById('rush-plan-code').value.trim(),
+        fqn: document.getElementById('rush-fqn').value.trim(),
+        ram: document.getElementById('rush-ram').value.trim() || null,
+        storage: document.getElementById('rush-storage').value.trim() || null,
+        bandwidth: document.getElementById('rush-bandwidth').value.trim() || null,
+        datacenters: getSelectedDatacenters().join(','),
+        region: document.getElementById('rush-region').value,
+        os: document.getElementById('rush-os').value,
+        duration: document.getElementById('rush-duration').value,
+        auto_pay: document.getElementById('rush-auto-pay').checked,
+        waive_retractation: document.getElementById('rush-waive').checked,
+    };
+    try {
+        await apiRequest('POST', '/profiles', profile);
+        document.getElementById('profile-name').value = '';
+        await loadProfiles();
+    } catch (e) {
+        showError(e.message);
+    }
+}
+
+async function deleteProfile() {
+    const id = document.getElementById('profile-select').value;
+    if (!id) return;
+    try {
+        await apiRequest('DELETE', `/profiles/${encodeURIComponent(id)}`);
+        await loadProfiles();
+    } catch (e) {
+        showError(e.message);
+    }
+}
+
+// ----- Sniper mode -----
+
+function renderSniperAlertSelect() {
+    const select = document.getElementById('sniper-alert-select');
+    if (!select) return;
+    const current = select.value;
+    select.innerHTML = '';
+    select.appendChild(el('option', { value: '', text: 'Select alert...' }));
+    (state.alerts || []).forEach(a => {
+        select.appendChild(el('option', { value: a.id, text: `${a.plan_code} (${a.fqn_pattern})` }));
+    });
+    if (current) select.value = current;
+}
+
+async function armSniper() {
+    const alertId = document.getElementById('sniper-alert-select').value;
+    const profileId = document.getElementById('sniper-profile-select').value;
+    if (!alertId || !profileId) {
+        showError('Select both an alert and a profile');
+        return;
+    }
+    try {
+        await apiRequest('POST', '/sniper/arm', { alert_id: alertId, profile_id: profileId });
+        await loadSniperStatus();
+    } catch (e) {
+        showError(e.message);
+    }
+}
+
+async function disarmSniper() {
+    const alertId = document.getElementById('sniper-alert-select').value;
+    if (!alertId) return;
+    try {
+        await apiRequest('POST', `/sniper/disarm/${encodeURIComponent(alertId)}`);
+        await loadSniperStatus();
+    } catch (e) {
+        showError(e.message);
+    }
+}
+
+async function loadSniperStatus() {
+    const container = document.getElementById('sniper-status');
+    if (!container) return;
+    try {
+        const status = await apiRequest('GET', '/sniper/status');
+        if (!status) return;
+        const armed = status.armed || [];
+        const results = status.results || {};
+        if (armed.length === 0 && Object.keys(results).length === 0) {
+            container.textContent = 'No sniper armed.';
+            return;
+        }
+        container.innerHTML = '';
+        armed.forEach(a => {
+            const text = `Armed: ${a.plan_code || a.alert_id} -> profile ${a.profile_id.slice(0, 8)}`;
+            container.appendChild(el('div', { class: 'text-yellow-400', text }));
+        });
+        for (const [aid, r] of Object.entries(results)) {
+            const cls = r.status === 'ordered' ? 'text-green-400' : 'text-red-400';
+            const text = `Result: ${aid.slice(0, 8)} - ${r.status}${r.order_id ? ` (#${r.order_id})` : ''}`;
+            container.appendChild(el('div', { class: cls, text }));
+        }
+    } catch (e) {
+        container.textContent = 'Failed to load sniper status';
+    }
+}
+
+// ----- Orders -----
+
+async function loadOrders() {
+    try {
+        const data = await apiRequest('GET', '/insights/orders');
+        renderOrders(data?.orders || []);
+    } catch (e) {
+        console.error('Failed to load orders:', e);
+    }
+}
+
+function renderOrders(orders) {
+    const container = document.getElementById('orders-list');
+    if (!container) return;
+    container.innerHTML = '';
+    if (!orders.length) {
+        container.appendChild(el('p', { class: 'text-gray-500', text: 'No orders placed' }));
+        return;
+    }
+    orders.slice(0, 10).forEach(o => {
+        const time = o.placed_at ? new Date(o.placed_at).toLocaleString() : '';
+        const id = o.order_id ? `#${o.order_id}` : '(pending)';
+        const status = o.status || 'unknown';
+        const head = el('div', {}, [
+            el('span', { class: 'text-blue-400 font-bold', text: `${o.plan_code} ${id}` }),
+            el('span', { class: 'text-gray-400 ml-2 text-xs', text: time }),
+        ]);
+        const st = el('span', { class: 'text-xs text-gray-400', text: `status: ${status}` });
+        container.appendChild(el('div', { class: 'bg-gray-700 rounded p-2' }, [head, st]));
+    });
+}
+
 async function init() {
     showView('loading');
     hideError();
@@ -652,6 +834,9 @@ async function init() {
         await loadAlerts();
         await loadCatalog();
         await loadPollInterval();
+        await loadProfiles();
+        await loadOrders();
+        await loadSniperStatus();
         showView('monitor');
     }
 
@@ -662,6 +847,9 @@ async function init() {
             await loadAlerts();
             await loadCatalog();
             await loadPollInterval();
+            await loadProfiles();
+            await loadOrders();
+            await loadSniperStatus();
             showView('monitor');
         } else {
             showError('Credentials not configured. Please follow the setup instructions.');
@@ -703,6 +891,9 @@ async function init() {
         loadCatalog(e.target.value);
     });
 
+    document.getElementById('catalog-search')?.addEventListener('input', renderCatalogList);
+    document.getElementById('catalog-sort')?.addEventListener('change', renderCatalogList);
+
     document.getElementById('rush-order-btn').addEventListener('click', () => {
         document.getElementById('rush-submit-btn').click();
     });
@@ -721,6 +912,17 @@ async function init() {
             unlockAudio();
         }
     });
+
+    // Saved profiles
+    document.getElementById('load-profile-btn')?.addEventListener('click', () => {
+        loadProfileIntoForm(document.getElementById('profile-select').value);
+    });
+    document.getElementById('save-profile-btn')?.addEventListener('click', saveProfile);
+    document.getElementById('delete-profile-btn')?.addEventListener('click', deleteProfile);
+
+    // Sniper mode
+    document.getElementById('sniper-arm-btn')?.addEventListener('click', armSniper);
+    document.getElementById('sniper-disarm-btn')?.addEventListener('click', disarmSniper);
 }
 
 document.addEventListener('DOMContentLoaded', init);

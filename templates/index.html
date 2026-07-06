@@ -180,20 +180,20 @@ export OVH_ENDPOINT="ovh-eu"</pre>
                                 </div>
                             </div>
                             <div class="grid grid-cols-1 sm:grid-cols-2 sm:grid-cols-4 gap-4">
-                                <div>
-                                    <label class="block text-sm text-gray-400 mb-1" for="rush-datacenter">Datacenter</label>
-                                    <select id="rush-datacenter" class="w-full bg-gray-700 px-3 py-2 rounded">
-                                        <option value="gra">GRA (Gravelines)</option>
-                                        <option value="sbg">SBG (Strasbourg)</option>
-                                        <option value="rbx">RBX (Roubaix)</option>
-                                        <option value="bhs">BHS (Beauharnois)</option>
-                                        <option value="fra">FRA (Frankfurt)</option>
-                                        <option value="waw">WAW (Warsaw)</option>
-                                        <option value="lon">LON (London)</option>
-                                        <option value="sgp">SGP (Singapore)</option>
-                                        <option value="syd">SYD (Sydney)</option>
-                                        <option value="eri">ERI (Érije)</option>
-                                    </select>
+                                <div class="sm:col-span-2">
+                                    <label class="block text-sm text-gray-400 mb-1">Datacenters (try in order)</label>
+                                    <div id="rush-datacenters" class="grid grid-cols-2 sm:grid-cols-5 gap-2 text-sm">
+                                        <label class="flex items-center gap-1"><input type="checkbox" value="gra" class="rush-dc"> GRA</label>
+                                        <label class="flex items-center gap-1"><input type="checkbox" value="sbg" class="rush-dc"> SBG</label>
+                                        <label class="flex items-center gap-1"><input type="checkbox" value="rbx" class="rush-dc"> RBX</label>
+                                        <label class="flex items-center gap-1"><input type="checkbox" value="bhs" class="rush-dc"> BHS</label>
+                                        <label class="flex items-center gap-1"><input type="checkbox" value="fra" class="rush-dc"> FRA</label>
+                                        <label class="flex items-center gap-1"><input type="checkbox" value="waw" class="rush-dc"> WAW</label>
+                                        <label class="flex items-center gap-1"><input type="checkbox" value="lon" class="rush-dc"> LON</label>
+                                        <label class="flex items-center gap-1"><input type="checkbox" value="sgp" class="rush-dc"> SGP</label>
+                                        <label class="flex items-center gap-1"><input type="checkbox" value="syd" class="rush-dc"> SYD</label>
+                                        <label class="flex items-center gap-1"><input type="checkbox" value="eri" class="rush-dc"> ERI</label>
+                                    </div>
                                 </div>
                                 <div>
                                     <label class="block text-sm text-gray-400 mb-1" for="rush-region">Region</label>
@@ -241,12 +241,43 @@ export OVH_ENDPOINT="ovh-eu"</pre>
                             </button>
                         </form>
                     </div>
+
+                    <div class="bg-gray-800 rounded-lg p-4">
+                        <h2 class="text-xl font-bold mb-4">Checkout Profiles &amp; Sniper</h2>
+                        <div class="space-y-3">
+                            <div class="flex gap-2">
+                                <select id="profile-select" class="flex-1 bg-gray-700 px-3 py-2 rounded">
+                                    <option value="">Select profile...</option>
+                                </select>
+                                <button id="load-profile-btn" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded">Load</button>
+                                <button id="save-profile-btn" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded">Save</button>
+                                <button id="delete-profile-btn" class="bg-red-700 hover:bg-red-600 px-4 py-2 rounded">Del</button>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <input type="text" id="profile-name" placeholder="Profile name" class="flex-1 bg-gray-700 px-3 py-2 rounded">
+                            </div>
+                            <div class="border-t border-gray-700 pt-3">
+                                <label class="block text-sm text-gray-400 mb-1" for="sniper-alert-select">Sniper: auto-order on alert</label>
+                                <div class="flex gap-2">
+                                    <select id="sniper-alert-select" class="flex-1 bg-gray-700 px-3 py-2 rounded">
+                                        <option value="">Select alert...</option>
+                                    </select>
+                                    <select id="sniper-profile-select" class="flex-1 bg-gray-700 px-3 py-2 rounded">
+                                        <option value="">Select profile...</option>
+                                    </select>
+                                    <button id="sniper-arm-btn" class="bg-yellow-600 hover:bg-yellow-700 px-4 py-2 rounded">Arm</button>
+                                    <button id="sniper-disarm-btn" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded">Disarm</button>
+                                </div>
+                                <div id="sniper-status" class="mt-2 text-sm text-gray-400"></div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="space-y-4">
                     <div class="bg-gray-800 rounded-lg p-4">
                         <h2 class="text-xl font-bold mb-4">Catalog Browser</h2>
-                        <div class="flex gap-2 mb-4">
+                        <div class="flex gap-2 mb-2">
                             <select id="catalog-country" class="flex-1 bg-gray-700 px-3 py-2 rounded">
                                 <option value="IE">IE - Ireland</option>
                                 <option value="FR">FR - France</option>
@@ -262,6 +293,16 @@ export OVH_ENDPOINT="ovh-eu"</pre>
                             <button id="load-catalog-btn" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded">
                                 Load
                             </button>
+                        </div>
+                        <div class="flex gap-2 mb-3">
+                            <input type="text" id="catalog-search" placeholder="Search plan name or code..."
+                                   class="flex-1 bg-gray-700 px-3 py-1 rounded text-sm">
+                            <select id="catalog-sort" class="bg-gray-700 px-2 py-1 rounded text-sm">
+                                <option value="default">Default</option>
+                                <option value="price-asc">Price: low to high</option>
+                                <option value="price-desc">Price: high to low</option>
+                                <option value="name">Name</option>
+                            </select>
                         </div>
                         <div id="catalog-plans" class="space-y-2 max-h-64 overflow-y-auto">
                             <p class="text-gray-500 text-sm">Load catalog to see available plans</p>
@@ -279,6 +320,13 @@ export OVH_ENDPOINT="ovh-eu"</pre>
                         <h2 class="text-xl font-bold mb-4">Recent Alerts</h2>
                         <div id="recent-alerts" class="space-y-2 text-sm">
                             <p class="text-gray-500">No recent alerts</p>
+                        </div>
+                    </div>
+
+                    <div class="bg-gray-800 rounded-lg p-4">
+                        <h2 class="text-xl font-bold mb-4">Recent Orders</h2>
+                        <div id="orders-list" class="space-y-2 text-sm">
+                            <p class="text-gray-500">No orders placed</p>
                         </div>
                     </div>
                 </div>
