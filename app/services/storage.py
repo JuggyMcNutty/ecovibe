@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 
 def _iso(dt: datetime | None) -> str | None:
     """Serialise a datetime to ISO 8601 (or None)."""
+    if dt is None:
+        return None
+    return dt.isoformat()
 
 
 def _parse_iso(s: str | None) -> datetime | None:
