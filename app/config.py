@@ -4,15 +4,30 @@ OVH credentials are stored in the DB (via the setup wizard), not env vars.
 Non-secret settings like cache TTL, DB path, notifier config, etc. come
 from env vars prefixed with OVH_.
 """
+import os
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Project root (two levels up from this file: app/config.py -> app/ -> root).
+# Used to resolve the default DB path so it doesn't depend on the CWD.
+BASE_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 SUPPORTED_ENDPOINTS: dict[str, str] = {
     "ovh-eu": "OVHcloud Europe (IE, FR, DE, GB, ES, PL...)",
     "ovh-us": "OVHcloud US (US based services)",
     "ovh-ca": "OVHcloud Canada (CA based services)",
 }
+
+
+def _default_db_path() -> str:
+    """Return an absolute path for the DB, anchored to the project root.
+
+    Without this, the relative path 'ovh-flash-monitor.db' resolves
+    relative to the CWD, so running from a different directory creates
+    a new empty DB and the user must re-enter credentials.
+    """
+    return os.path.join(BASE_PATH, "ovh-flash-monitor.db")
 
 
 class Settings(BaseSettings):
@@ -27,8 +42,8 @@ class Settings(BaseSettings):
     use_cache: bool = False
     cache_ttl: int = 300
 
-    # Persistence
-    db_path: str = "ovh-flash-monitor.db"
+    # Persistence — absolute path so CWD doesn't matter
+    db_path: str = _default_db_path()
 
     # CORS
     cors_origins: list[str] = []
