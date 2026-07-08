@@ -64,10 +64,17 @@ not on PATH; use the absolute path above.
      cache on the next request. `CachedStaticFiles` in `main.py`
      serves any `/static/...?v=` request with
      `Cache-Control: public, max-age=31536000, immutable`.
-   - Commit with a short descriptive message matching the existing
-     style (see `git log --oneline`). Use prefixes like `Fix:`,
-     `Add`, `Catalog:`, `Humanize`, etc. Make one logical commit per
-     change; split bug fixes from features.
+   - **Commit after changes**: use git to commit logical units with a
+     short descriptive message matching the existing style (see
+     `git log --oneline`). Use prefixes like `Fix:`, `Add`,
+     `Catalog:`, `Humanize`, etc. Make one logical commit per change;
+     split bug fixes from features. Run, from the project root:
+     ```bash
+     git add <files>          # stage only the intended files
+     git commit -m "<message>" # concise, single line
+     ```
+     Before committing, inspect `git status` and `git diff`; stage
+     only intended files and never commit secrets.
 3. **Do not commit unless the user asks**. The user explicitly
    requests commits in this repo.
 
