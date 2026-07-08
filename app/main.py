@@ -41,6 +41,9 @@ def create_app():
         setup,
         sniper,
     )
+    from app.api import (
+        settings as settings_api,
+    )
     from app.config import get_settings
 
     app = FastAPI(
@@ -72,6 +75,7 @@ def create_app():
     app.include_router(profiles.router)
     app.include_router(sniper.router)
     app.include_router(setup.router)
+    app.include_router(settings_api.router)
     app.include_router(account.router)
 
     @app.get("/", response_class=HTMLResponse)

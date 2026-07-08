@@ -53,6 +53,7 @@ let state = {
     addonPrices: {},
     productSpecs: {},
     stockByPlan: {},
+    notifSettingsLoaded: false,
 };
 
 let audioContext = null;
@@ -1463,6 +1464,8 @@ function switchTab(tabId) {
     if (billingTab) billingTab.classList.toggle('hidden', tabId !== 'billing-tab');
     const insightsTab = document.getElementById('insights-tab');
     if (insightsTab) insightsTab.classList.toggle('hidden', tabId !== 'insights-tab');
+    const settingsTab = document.getElementById('settings-tab');
+    if (settingsTab) settingsTab.classList.toggle('hidden', tabId !== 'settings-tab');
     // Lazy-load billing data when switching to that tab
     if (tabId === 'billing-tab' && !state.billingLoaded) {
         loadBillingInfo();
@@ -1471,6 +1474,10 @@ function switchTab(tabId) {
     if (tabId === 'insights-tab') {
         populateInsightsPlanSelect();
     }
+    // Lazy-load notification settings when switching to settings tab
+    if (tabId === 'settings-tab' && !state.notifSettingsLoaded) {
+        loadNotificationSettings();
+    }
 }
 
 // Billing & account info
@@ -1478,6 +1485,61 @@ function switchTab(tabId) {
 async function loadBillingInfo() {
     await Promise.all([loadAccountInfo(), loadPaymentMethods(), loadCheckoutDefaults()]);
     state.billingLoaded = true;
+}
+
+// Notification settings
+
+async function loadNotificationSettings() {
+    try {
+        const data = await apiRequest('GET', '/settings/notifications');
+        const s = data?.settings || {};
+        const setVal = (id, val) => {
+            const el2 = document.getElementById(id);
+            if (el2) el2.value = val || '';
+        };
+        setVal('notif-telegram-token', s.telegram_bot_token);
+        setVal('notif-telegram-chat-id', s.telegram_chat_id);
+        setVal('notif-discord-webhook', s.discord_webhook_url);
+        setVal('notif-slack-webhook', s.slack_webhook_url);
+        setVal('notif-smtp-host', s.smtp_host);
+        setVal('notif-smtp-port', s.smtp_port || 587);
+        setVal('notif-smtp-username', s.smtp_username);
+        setVal('notif-smtp-password', s.smtp_password);
+        setVal('notif-smtp-from', s.smtp_from);
+        setVal('notif-smtp-to', s.notify_email_to);
+        const channels = data?.configured || [];
+        const status = document.getElementById('notif-status');
+        if (status) {
+            status.textContent = channels.length
+                ? `Active: ${channels.join(', ')}`
+                : 'No channels configured';
+        }
+        state.notifSettingsLoaded = true;
+    } catch (e) {
+        console.error('Failed to load notification settings:', e);
+    }
+}
+
+async function saveNotificationSettings() {
+    try {
+        const body = {
+            telegram_bot_token: document.getElementById('notif-telegram-token').value,
+            telegram_chat_id: document.getElementById('notif-telegram-chat-id').value,
+            discord_webhook_url: document.getElementById('notif-discord-webhook').value,
+            slack_webhook_url: document.getElementById('notif-slack-webhook').value,
+            smtp_host: document.getElementById('notif-smtp-host').value,
+            smtp_port: parseInt(document.getElementById('notif-smtp-port').value) || 587,
+            smtp_username: document.getElementById('notif-smtp-username').value,
+            smtp_password: document.getElementById('notif-smtp-password').value,
+            smtp_from: document.getElementById('notif-smtp-from').value,
+            notify_email_to: document.getElementById('notif-smtp-to').value,
+        };
+        await apiRequest('PUT', '/settings/notifications', body);
+        showToast('Notification settings saved.');
+        await loadNotificationSettings();
+    } catch (e) {
+        showError(e.message);
+    }
 }
 
 async function loadAccountInfo() {
@@ -2556,6 +2618,8 @@ async function init() {
 
     // Checkout defaults form
     document.getElementById('checkout-defaults-form')?.addEventListener('submit', saveCheckoutDefaults);
+
+    document.getElementById('notif-save-btn')?.addEventListener('click', saveNotificationSettings);
 
     document.getElementById('rush-order-btn').addEventListener('click', () => {
         document.getElementById('rush-submit-btn').click();
