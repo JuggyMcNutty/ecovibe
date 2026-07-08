@@ -449,6 +449,7 @@ function getFilteredPlans() {
     const q = (document.getElementById('catalog-search')?.value || '').trim().toLowerCase();
     const sort = document.getElementById('catalog-sort')?.value || 'default';
     const regionFilter = document.getElementById('catalog-region-filter')?.checked;
+    const stockFirst = document.getElementById('catalog-stock-first')?.checked;
     let plans = state.plans.slice();
     if (regionFilter) {
         plans = plans.filter(p => planMatchesEndpoint(p.planCode, state.endpoint));
@@ -472,6 +473,13 @@ function getFilteredPlans() {
             return ps.cpu?.score ?? 0;
         };
         plans.sort((a, b) => sort === 'score-desc' ? scoreOf(b) - scoreOf(a) : scoreOf(a) - scoreOf(b));
+    }
+    // Stock-first: push in-stock plans to the top as a stable primary sort.
+    // Applied after the secondary sort so in-stock plans are grouped together
+    // and sorted by the user's chosen criteria within each group.
+    if (stockFirst) {
+        const stockRank = (p) => p._inStock === false ? 1 : 0;
+        plans.sort((a, b) => stockRank(a) - stockRank(b));
     }
     return plans;
 }
@@ -2506,6 +2514,7 @@ async function init() {
     document.getElementById('catalog-search')?.addEventListener('input', renderCatalogList);
     document.getElementById('catalog-sort')?.addEventListener('change', renderCatalogList);
     document.getElementById('catalog-region-filter')?.addEventListener('change', renderCatalogList);
+    document.getElementById('catalog-stock-first')?.addEventListener('change', renderCatalogList);
 
     document.getElementById('catalog-autorefresh')?.addEventListener('change', (e) => {
         if (e.target.checked) {
