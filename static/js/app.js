@@ -514,10 +514,17 @@ function renderCatalogList() {
             text: priceText,
         });
 
+        const isSelected = state.selectedPlanCode === plan.planCode;
         const div = el('div', {
-            class: inStock
-                ? 'bg-gray-700 rounded p-2 text-sm flex justify-between items-center cursor-pointer hover:bg-gray-600'
-                : 'bg-gray-700/50 rounded p-2 text-sm flex justify-between items-center cursor-pointer hover:bg-gray-600 opacity-60',
+            class: [
+                'rounded p-2 text-sm flex justify-between items-center cursor-pointer transition-colors',
+                inStock ? 'hover:bg-gray-600' : 'hover:bg-gray-600 opacity-60',
+                isSelected
+                    ? 'bg-blue-600/40 border border-blue-500'
+                    : inStock
+                        ? 'bg-gray-700'
+                        : 'bg-gray-700/50',
+            ].join(' '),
             role: 'button',
             tabindex: '0'
         }, [left, price]);
@@ -525,6 +532,16 @@ function renderCatalogList() {
         const selectPlan = () => {
             document.getElementById('plan-select').value = plan.planCode;
             renderCatalogDetail(plan);
+            // Re-render the list to update the highlight on the newly
+            // selected row. This is cheap (100 rows max) and keeps the
+            // highlight in sync without a full catalog refetch.
+            const prev = container.querySelector('.bg-blue-600\\/40');
+            if (prev) {
+                prev.classList.remove('bg-blue-600/40', 'border', 'border-blue-500');
+                prev.classList.add(inStock ? 'bg-gray-700' : 'bg-gray-700/50');
+            }
+            div.classList.remove(inStock ? 'bg-gray-700' : 'bg-gray-700/50');
+            div.classList.add('bg-blue-600/40', 'border', 'border-blue-500');
         };
         div.addEventListener('click', selectPlan);
         div.addEventListener('keydown', (e) => {
