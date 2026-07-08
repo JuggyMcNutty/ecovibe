@@ -327,7 +327,7 @@ async function refreshStockForAllPlans() {
                 stockByPlan[pc] = (data || []).some(entry => {
                     if (memShort && !addonCodesMatch(memShort, entry.memory)) return false;
                     if (storShort && !addonCodesMatch(storShort, entry.storage)) return false;
-                    return (entry.datacenters || []).some(dc => dc.availability !== 'unavailable');
+                    return (entry.datacenters || []).some(dc => dc.availability !== 'unavailable' && dc.availability !== 'comingSoon');
                 });
             } catch (e) {
                 console.warn(`Stock fetch failed for ${pc}, assuming in-stock:`, e);
@@ -1066,6 +1066,9 @@ function renderCatalogDetail(plan) {
     // Initial total price calc
     updateTotalPrice();
 
+    // Plan-level configuration schema (used for OS options + order form DC list)
+    const configs = plan.configurations || [];
+
     // Live stock section - replaces the old static "Available Datacenters"
     // list. Fetches /dedicated/server/datacenter/availabilities and shows
     // which DCs have stock for the currently selected RAM+storage combo.
@@ -1102,14 +1105,22 @@ function renderCatalogDetail(plan) {
             return;
         }
         const dcs = (match.datacenters || []);
-        const available = dcs.filter(d => d.availability !== 'unavailable');
-        if (available.length === 0) {
+        const available = dcs.filter(d => d.availability !== 'unavailable' && d.availability !== 'comingSoon');
+        const comingSoon = dcs.filter(d => d.availability === 'comingSoon');
+        if (available.length === 0 && comingSoon.length === 0) {
             sec.appendChild(el('p', { class: 'text-red-400 text-xs font-bold', text: 'Out of stock in all datacenters' }));
         } else {
             for (const dc of available) {
                 const badge = el('span', {
                     class: 'inline-block bg-green-700/30 text-green-400 text-xs px-2 py-1 rounded mr-1 mb-1',
                     text: `${humanizeDatacenter(dc.datacenter)} (${dc.availability})`,
+                });
+                sec.appendChild(badge);
+            }
+            for (const dc of comingSoon) {
+                const badge = el('span', {
+                    class: 'inline-block bg-yellow-700/30 text-yellow-400 text-xs px-2 py-1 rounded mr-1 mb-1',
+                    text: `${humanizeDatacenter(dc.datacenter)} (coming soon)`,
                 });
                 sec.appendChild(badge);
             }
