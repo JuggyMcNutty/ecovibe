@@ -759,7 +759,17 @@ function normalizeAddonCode(code) {
 
 function addonCodesMatch(a, b) {
     if (!a || !b) return true;
-    return normalizeAddonCode(a) === normalizeAddonCode(b);
+    const na = normalizeAddonCode(a);
+    const nb = normalizeAddonCode(b);
+    if (na === nb) return true;
+    // Catalog addon codes are often truncated versions of the stock API
+    // codes. e.g. catalog 'ram-16g' vs stock 'ram-16g-ecc-2133', or
+    // catalog 'ram-32g-ecc-2666' vs stock 'ram-32g-ecc-2666'. Match if
+    // one is a prefix of the other (on a segment boundary).
+    const shorter = na.length < nb.length ? na : nb;
+    const longer = na.length < nb.length ? nb : na;
+    if (longer.startsWith(shorter + '-') || longer === shorter) return true;
+    return false;
 }
 
 function renderCatalogDetail(plan) {
