@@ -2522,6 +2522,10 @@ async function init() {
 
     if (!configured) {
         await loadExistingCredentials();
+        // First-start: only show the OVH credentials wizard,
+        // hide notification settings + back button.
+        document.getElementById('notif-settings-block')?.classList.add('hidden');
+        document.getElementById('credentials-back-block')?.classList.add('hidden');
         showView('credentials');
     } else {
         document.getElementById('settings-btn').classList.remove('hidden');
@@ -2543,6 +2547,9 @@ async function init() {
     });
 
     document.getElementById('settings-btn').addEventListener('click', () => {
+        // Settings view: show notification settings + back button
+        document.getElementById('notif-settings-block')?.classList.remove('hidden');
+        document.getElementById('credentials-back-block')?.classList.remove('hidden');
         showView('credentials');
         loadExistingCredentials();
         loadNotificationSettings();
