@@ -233,9 +233,11 @@ async function loadCatalog(country) {
             const p = state.plans.find(x => x.planCode === state.selectedPlanCode);
             if (p) renderCatalogDetail(p);
         }
-        // Fetch stock levels for all plans (non-blocking) and re-render
-        // the list with in-stock/out-of-stock badges when done.
-        refreshStockForAllPlans().then(() => renderCatalogList()).catch(() => {});
+        // Fetch stock levels for all plans and re-render with badges.
+        // Awaited so the loading overlay stays visible until stock data
+        // is ready — otherwise the list shows without OOS badges briefly.
+        await refreshStockForAllPlans();
+        renderCatalogList();
     } catch (e) {
         showError(e.message);
     } finally {
