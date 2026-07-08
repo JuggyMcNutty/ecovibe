@@ -1125,8 +1125,11 @@ function renderCatalogDetail(plan) {
         const dcs = (match.datacenters || []);
         const available = dcs.filter(d => d.availability !== 'unavailable' && d.availability !== 'comingSoon');
         const comingSoon = dcs.filter(d => d.availability === 'comingSoon');
+        const unavailable = dcs.filter(d => d.availability === 'unavailable');
         if (available.length === 0 && comingSoon.length === 0) {
             sec.appendChild(el('p', { class: 'text-red-400 text-xs font-bold', text: 'Out of stock in all datacenters' }));
+        } else if (available.length === 0) {
+            sec.appendChild(el('p', { class: 'text-yellow-400 text-xs font-bold', text: 'Coming soon — not yet orderable' }));
         } else {
             for (const dc of available) {
                 const badge = el('span', {
@@ -1137,14 +1140,13 @@ function renderCatalogDetail(plan) {
             }
             for (const dc of comingSoon) {
                 const badge = el('span', {
-                    class: 'inline-block bg-yellow-700/30 text-yellow-400 text-xs px-2 py-1 rounded mr-1 mb-1',
-                    text: `${humanizeDatacenter(dc.datacenter)} (coming soon)`,
+                    class: 'inline-block bg-yellow-600/30 text-yellow-400 text-xs px-2 py-1 rounded mr-1 mb-1',
+                    text: `${humanizeDatacenter(dc.datacenter)} (soon)`,
                 });
                 sec.appendChild(badge);
             }
         }
-        // Also show unavailable DCs in muted style
-        const unavailable = dcs.filter(d => d.availability === 'unavailable');
+        // Show unavailable DCs in muted style
         if (unavailable.length) {
             for (const dc of unavailable) {
                 sec.appendChild(el('span', {
