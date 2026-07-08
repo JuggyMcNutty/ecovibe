@@ -3,10 +3,55 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from starlette.datastructures import Headers
+from starlette.responses import FileResponse, Response
+from starlette.staticfiles import NotModifiedResponse
+from starlette.types import Scope
+
+from app.utils.cache_buster import get_file_hash
+
 logger = logging.getLogger(__name__)
 
 # Project root (one level up from app/). Used to find static/ and templates/.
 BASE_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+templates = Jinja2Templates(directory=os.path.join(BASE_PATH, "templates"))
+
+
+class CachedStaticFiles(StaticFiles):
+    """StaticFiles that adds long-cache headers for cache-busted assets.
+
+    Requests carrying a ``?v=<hash>`` query string (produced by the
+    content-hash cache buster) are served with
+    ``Cache-Control: public, max-age=31536000, immutable`` so browsers
+    cache them for a year. Requests without ``v=`` fall back to the
+    default (no long-cache) behaviour.
+    """
+
+    _IMMUTABLE_CC = "public, max-age=31536000, immutable"
+
+    def file_response(
+        self,
+        full_path: str,
+        stat_result: os.stat_result,
+        scope: Scope,
+        status_code: int = 200,
+    ) -> Response:
+        response = FileResponse(
+            full_path, status_code=status_code, stat_result=stat_result
+        )
+        request_headers = Headers(scope=scope)
+        if self.is_not_modified(response.headers, request_headers):
+            return NotModifiedResponse(response.headers)
+        qs = (scope.get("query_string") or b"").decode("latin-1")
+        if "v=" in qs:
+            response.headers["Cache-Control"] = self._IMMUTABLE_CC
+        return response
 
 
 @asynccontextmanager
@@ -24,11 +69,6 @@ async def lifespan(app):
 
 def create_app():
     """Build the FastAPI app with all routers and middleware."""
-    from fastapi import FastAPI
-    from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import HTMLResponse
-    from fastapi.staticfiles import StaticFiles
-
     from app.api import (
         account,
         alert,
@@ -64,7 +104,7 @@ def create_app():
 
     static_path = os.path.join(BASE_PATH, "static")
     if os.path.exists(static_path):
-        app.mount("/static", StaticFiles(directory=static_path), name="static")
+        app.mount("/static", CachedStaticFiles(directory=static_path), name="static")
 
     app.include_router(catalog.router)
     app.include_router(cart.router)
@@ -79,18 +119,16 @@ def create_app():
     app.include_router(account.router)
 
     @app.get("/", response_class=HTMLResponse)
-    async def root() -> str:
-        """Serve the SPA frontend."""
-        template_path = os.path.join(BASE_PATH, "templates", "index.html")
-        if os.path.exists(template_path):
-            with open(template_path) as f:
-                return f.read()
-        return """
-        <html><body style="background:#1a1a2e;color:#eee;font-family:sans-serif;padding:2rem;">
-            <h1>OVH Flash Sale Monitor</h1>
-            <p>Application files not found. Please run from the project root directory.</p>
-        </body></html>
-        """
+    async def root(request: Request) -> Response:
+        """Serve the SPA frontend with content-hash cache busters."""
+        return templates.TemplateResponse(
+            request,
+            "index.html",
+            {
+                "css_hash": get_file_hash("static/css/app.css"),
+                "js_hash": get_file_hash("static/js/app.js"),
+            },
+        )
 
     @app.get("/api/health")
     async def health() -> dict:
