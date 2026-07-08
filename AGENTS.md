@@ -56,9 +56,14 @@ not on PATH; use the absolute path above.
    - If you changed `static/css/input.css` or any class names in
      `templates/index.html` / `static/js/app.js`: rebuild CSS with
      `/tmp/tailwindcss`.
-- Bump cache busters in `templates/index.html`:
-      - `app.css?v=N` (currently v=26)
-      - `app.js?v=N` (currently v=45)
+   - Cache busters are **automatic** — no manual `?v=N` bumping.
+     `templates/index.html` is a Jinja2 template rendered with
+     `{{ css_hash }}` / `{{ js_hash }}` (SHA256[:12] of file contents,
+     computed at runtime by `app/utils/cache_buster.py`, memoised
+     with `lru_cache`). Editing `app.css`/`app.js` invalidates the
+     cache on the next request. `CachedStaticFiles` in `main.py`
+     serves any `/static/...?v=` request with
+     `Cache-Control: public, max-age=31536000, immutable`.
    - Commit with a short descriptive message matching the existing
      style (see `git log --oneline`). Use prefixes like `Fix:`,
      `Add`, `Catalog:`, `Humanize`, etc. Make one logical commit per
@@ -86,6 +91,8 @@ app/
 │   ├── account.py       # OVH account + payment methods + defaults
 │   └── errors.py        # OVH→HTTP error mapping
 ├── models/schemas.py    # Pydantic request/response models
+├── utils/
+│   └── cache_buster.py  # Content-hash cache busting for static assets
 └── services/
     ├── ovh_service.py    # OVH SDK wrapper (singleton)
     ├── monitor.py       # Background poller + SSE fan-out + SniperService
@@ -133,7 +140,8 @@ tests/                   # pytest suite (69 tests, uses TestClient)
   functions are only a fallback when no price entry exists.
 - **Frontend**: no framework, no build step for JS. `app.js` is a
   ~2300-line vanilla SPA using a custom `el()` DOM helper. Cache
-  busting is via `?v=N` query strings on `<link>` and `<script>`.
+  busting is automatic via content-hash query strings
+  (`?v=<sha256[:12]>`) injected by `app/utils/cache_buster.py`.
 - **CSS**: Tailwind v4 with `@source` directives in
   `static/css/input.css` pointing at `templates/index.html` and
   `static/js/app.js` for class detection. Output is minified to
@@ -153,8 +161,8 @@ tests/                   # pytest suite (69 tests, uses TestClient)
   the catalog "Order Now" form AND the monitor tab's rush form.
 - **Route order** in `checkout.py`: `/rush` before `/{cart_id}` or
   FastAPI's wildcard match shadows the static route.
-- **Cache busters** (`?v=N`) in `templates/index.html` must be
-  bumped on every JS/CSS change or browsers serve stale assets.
+- **Cache busters** are automatic (content-hash based, see
+  `app/utils/cache_buster.py`); no manual `?v=N` bumping is needed.
 - **Logging**: uvicorn's default config filters out logs from
   non-uvicorn loggers (even WARNING level). Use `print(...,
   file=sys.stderr)` for debug tracing that must appear in the
