@@ -325,11 +325,12 @@ async function refreshStockForAllPlans() {
                 const storShort = addonShortCode(defaultStor);
                 // Only consider the default combo as "in stock"
                 stockByPlan[pc] = (data || []).some(entry => {
-                    if (memShort && !codesMatch(memShort, entry.memory)) return false;
-                    if (storShort && !codesMatch(storShort, entry.storage)) return false;
+                    if (memShort && !addonCodesMatch(memShort, entry.memory)) return false;
+                    if (storShort && !addonCodesMatch(storShort, entry.storage)) return false;
                     return (entry.datacenters || []).some(dc => dc.availability !== 'unavailable');
                 });
-            } catch {
+            } catch (e) {
+                console.warn(`Stock fetch failed for ${pc}, assuming in-stock:`, e);
                 stockByPlan[pc] = true;
             }
         }
