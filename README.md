@@ -56,6 +56,11 @@ pip install -r requirements-dev.txt
 
 ### Server Catalog
 - Browse ECO server catalog with full CPU and hardware specifications
+- **Live stock levels** - real-time availability per RAM+storage combo, fetched from OVH's datacenter availabilities API
+- **Out-of-stock badges** - plans whose included (free) config is out of stock are dimmed with a red OOS badge
+- **In stock first** sort filter - pushes orderable plans to the top of the list
+- **Selected plan highlight** - clicking a plan highlights it in the list for easy tracking
+- **Loading overlay** - semi-transparent overlay with spinner during catalog/stock loads
 - **CPU details** extracted from OVH product blobs: model, cores/threads, frequency, boost, benchmark score
 - **Hardware badges**: chassis size, SLA, anti-DDoS, server range (Kimsufi/Rise/SYS/LE)
 - **Setup/installation fees** surfaced alongside monthly pricing
@@ -81,16 +86,28 @@ pip install -r requirements-dev.txt
 - **Order tracking** - recently placed orders with live status refresh from OVH
 - **Stock events** - recent availability/unavailability events per plan
 
+### Notification Channels
+- **Telegram** - stock alerts via Telegram bot
+- **Discord** - rich embed alerts via webhook
+- **Slack** - alerts via incoming webhook
+- **Email/SMTP** - HTML email alerts with STARTTLS
+- Configured via the Settings button (top-right header) - stored in the DB, secrets masked
+- Environment variables serve as fallback for initial setup
+
 ### Persistence
 - Alerts, poll-interval setting, checkout profiles, stock events, price history, and orders are persisted to SQLite (`ovh-flash-monitor.db`)
-- Alerts and profiles survive process restarts
+- Alert and profiles survive process restarts
+- Notification settings persisted to DB `settings` table with `notifier_` prefix
 - DB path resolves to an absolute path anchored to the project root (CWD-independent)
 
 ## Configuration
 
 OVH API credentials are configured via the browser setup wizard on first
-startup and stored in the SQLite database. Non-secret configuration uses
-environment variables:
+startup and stored in the SQLite database. Notification channel settings
+(Telegram, Discord, Slack, SMTP) are also configured via the browser
+(Settings button in the header) and stored in the DB; env vars serve as
+fallback for initial setup. Non-secret configuration uses environment
+variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -98,16 +115,16 @@ environment variables:
 | `OVH_CACHE_TTL` | `300` | Cache TTL in seconds |
 | `OVH_DB_PATH` | `<project>/ovh-flash-monitor.db` | SQLite database path (defaults to project root) |
 | `OVH_CORS_ORIGINS` | `[]` | Comma-separated allowed CORS origins |
-| `OVH_TELEGRAM_BOT_TOKEN` | - | Telegram bot token for notifications |
-| `OVH_TELEGRAM_CHAT_ID` | - | Telegram chat ID to receive alerts |
-| `OVH_DISCORD_WEBHOOK_URL` | - | Discord webhook URL for alerts |
-| `OVH_SLACK_WEBHOOK_URL` | - | Slack webhook URL for alerts |
-| `OVH_SMTP_HOST` | - | SMTP server host for email alerts |
-| `OVH_SMTP_PORT` | `587` | SMTP server port |
-| `OVH_SMTP_USERNAME` | - | SMTP username |
-| `OVH_SMTP_PASSWORD` | - | SMTP password |
-| `OVH_SMTP_FROM` | - | From address for email alerts |
-| `OVH_NOTIFY_EMAIL_TO` | - | Recipient for email alerts |
+| `OVH_TELEGRAM_BOT_TOKEN` | - | Telegram bot token (fallback for DB settings) |
+| `OVH_TELEGRAM_CHAT_ID` | - | Telegram chat ID (fallback for DB settings) |
+| `OVH_DISCORD_WEBHOOK_URL` | - | Discord webhook URL (fallback for DB settings) |
+| `OVH_SLACK_WEBHOOK_URL` | - | Slack webhook URL (fallback for DB settings) |
+| `OVH_SMTP_HOST` | - | SMTP host (fallback for DB settings) |
+| `OVH_SMTP_PORT` | `587` | SMTP port (fallback for DB settings) |
+| `OVH_SMTP_USERNAME` | - | SMTP username (fallback for DB settings) |
+| `OVH_SMTP_PASSWORD` | - | SMTP password (fallback for DB settings) |
+| `OVH_SMTP_FROM` | - | From address (fallback for DB settings) |
+| `OVH_NOTIFY_EMAIL_TO` | - | Recipient (fallback for DB settings) |
 
 See `.env.example` for a template.
 
@@ -154,6 +171,7 @@ and use the corresponding API console to create your application and token:
 GET  /api/catalog?country=IE                - Fetch full server catalog
 GET  /api/catalog/plans?country=IE         - List plans + addon prices + product specs
 GET  /api/catalog/availability?plan_code=XX - Check plan availability
+GET  /api/catalog/stock?plan_code=XX       - Live stock levels per RAM+storage combo
 
 # Monitor
 GET  /api/monitor/stream                    - SSE real-time stock updates
@@ -209,6 +227,10 @@ POST   /api/setup/credentials                    - Save OVH credentials to datab
 POST   /api/setup/test                           - Test credentials via GET /me on OVH
 DELETE /api/setup/credentials                    - Delete stored credentials
 
+# Notification Settings
+GET    /api/settings/notifications               - Get notifier config (secrets masked) + active channels
+PUT    /api/settings/notifications               - Save notifier config (masked values preserved)
+
 # Account & Billing
 GET  /api/account/me                             - OVH account info (name, nichandle, email)
 GET  /api/account/payment-methods                - Available payment methods on the account
@@ -253,6 +275,7 @@ ovh-gui/
 │   │   ├── sniper.py        # Sniper arm/disarm/status
 │   │   ├── insights.py      # History, patterns, price, orders
 │   │   ├── setup.py         # Setup wizard (save/test OVH credentials)
+│   │   ├── settings.py      # Notification channel settings (Telegram/Discord/Slack/SMTP)
 │   │   ├── account.py       # OVH account + payment methods + defaults
 │   │   └── errors.py        # OVH->HTTP error mapping
 │   ├── models/schemas.py    # Pydantic request/response models
@@ -262,11 +285,11 @@ ovh-gui/
 │       ├── notifier.py      # Telegram/Discord/Slack/email fan-out
 │       ├── storage.py       # SQLite persistence (alerts, profiles, events, prices, orders)
 │       └── cache.py         # In-memory TTL cache
-├── static/js/app.js         # Frontend SPA (vanilla JS, ~2300 lines)
+├── static/js/app.js         # Frontend SPA (vanilla JS, ~2600 lines)
 ├── static/css/input.css     # Tailwind v4 source
 ├── static/css/app.css       # Built/minified (do not edit)
 ├── templates/index.html    # SPA shell with cache-busted asset refs
-├── tests/                   # pytest suite (57 tests, uses TestClient)
+├── tests/                   # pytest suite (69 tests, uses TestClient)
 ├── requirements.txt         # Runtime dependencies
 ├── requirements-dev.txt     # Dev dependencies (ruff, pytest, httpx)
 ├── pyproject.toml           # Project metadata + tool config

@@ -56,9 +56,9 @@ not on PATH; use the absolute path above.
    - If you changed `static/css/input.css` or any class names in
      `templates/index.html` / `static/js/app.js`: rebuild CSS with
      `/tmp/tailwindcss`.
-   - Bump cache busters in `templates/index.html`:
-     - `app.css?v=N` (currently v=17)
-     - `app.js?v=N` (currently v=28)
+- Bump cache busters in `templates/index.html`:
+      - `app.css?v=N` (currently v=26)
+      - `app.js?v=N` (currently v=45)
    - Commit with a short descriptive message matching the existing
      style (see `git log --oneline`). Use prefixes like `Fix:`,
      `Add`, `Catalog:`, `Humanize`, etc. Make one logical commit per
@@ -82,6 +82,7 @@ app/
 │   ├── sniper.py        # Arm/disarm auto-order
 │   ├── insights.py      # History, patterns, price, orders
 │   ├── setup.py         # Credentials wizard
+│   ├── settings.py      # Notification channel settings (Telegram/Discord/Slack/SMTP)
 │   ├── account.py       # OVH account + payment methods + defaults
 │   └── errors.py        # OVH→HTTP error mapping
 ├── models/schemas.py    # Pydantic request/response models
@@ -91,11 +92,11 @@ app/
     ├── notifier.py      # Telegram/Discord/Slack/email fan-out
     ├── storage.py       # SQLite persistence (singleton)
     └── cache.py         # In-memory TTL cache
-static/js/app.js         # Frontend SPA (vanilla JS, ~2300 lines)
+static/js/app.js         # Frontend SPA (vanilla JS, ~2600 lines)
 static/css/input.css     # Tailwind source
 static/css/app.css       # Built/minified (do not edit — rebuild from input.css)
 templates/index.html     # SPA shell with cache-busted asset refs
-tests/                   # pytest suite (57 tests, uses TestClient)
+tests/                   # pytest suite (69 tests, uses TestClient)
 ```
 
 ## Key conventions
@@ -169,3 +170,36 @@ tests/                   # pytest suite (57 tests, uses TestClient)
   SDK caches the delta forever, so clock drift (NTP step,
   suspend/resume) otherwise permanently breaks every signature and
   OVH reports the signature mismatch as an invalid application key.
+- **Cart configuration endpoint**: the EU-only
+  `/order/cart/{cartId}/eco/configuration` path 404s on ovh-us with
+  "Got an invalid (or empty) URL". Use `/order/cart/{cartId}/item/{itemId}/configuration`
+  instead (works on both EU and US). The `itemId` goes in the URL path,
+  not the POST body.
+- **Region config value**: OVH US expects `region=united_states`, NOT
+  `us`. The `OVH_REGIONS` map in `app.js` maps each endpoint to its
+  correct OVH region config value (`europe`, `united_states`, `canada`).
+- **Live stock**: `/dedicated/server/datacenter/availabilities?planCode=X`
+  returns per-DC availability for each RAM+storage combo. Availability
+  values are `unavailable`, `comingSoon`, `1H-low`, `1H-high`, `72H`,
+  etc. `comingSoon` is NOT orderable — treat as out-of-stock for the
+  catalog OOS badge but show DC names in the detail panel so users can
+  set up monitors.
+- **Stock matching**: catalog addon codes and stock API codes use
+  inconsistent naming. `addonShortCode()` strips the region suffix,
+  `normalizeAddonCode()` rounds capacity numbers (512→500), and
+  `addonCodesMatch()` also checks prefix match (catalog `ram-16g`
+  matches stock `ram-16g-ecc-2133`).
+- **OOS badge**: the catalog list badge checks only the included (free)
+  memory+storage combo (`fam.default` from `addonFamilies`), not all
+  combos. A plan is OOS if its default config is unavailable in all DCs.
+- **Notifier settings**: stored in the DB `settings` table with
+  `notifier_` prefix (e.g. `notifier_telegram_bot_token`). The notifier
+  reads from DB first, then env vars. Secrets (bot tokens, SMTP
+  passwords) are masked on GET. Masked values (containing `...`) are
+  preserved on PUT so users don't re-enter them.
+- **500 retry**: `OVHService._call` retries once on 500/502/503/504
+  after a 0.5s backoff — OVH returns transient 500s that succeed on
+  retry.
+- **Settings UI**: notification settings live in the credentials-view
+  (accessed via the Settings button in the header), NOT as a tab. A
+  back button returns to the monitor view.
