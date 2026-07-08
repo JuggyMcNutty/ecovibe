@@ -7,13 +7,13 @@ dev:
 	pip install -r requirements-dev.txt
 
 test:
-	pytest
+	PYTHONPATH=. .venv/bin/pytest
 
 lint:
-	ruff check app/ tests/ run.py
+	.venv/bin/ruff check app/ tests/ run.py
 
 css:
-	tailwindcss --input static/css/input.css --output static/css/app.css --minify
+	/tmp/tailwindcss --input static/css/input.css --output static/css/app.css --minify
 
 run:
 	python run.py
