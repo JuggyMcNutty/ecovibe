@@ -1128,9 +1128,10 @@ function renderCatalogDetail(plan) {
         const unavailable = dcs.filter(d => d.availability === 'unavailable');
         if (available.length === 0 && comingSoon.length === 0) {
             sec.appendChild(el('p', { class: 'text-red-400 text-xs font-bold', text: 'Out of stock in all datacenters' }));
-        } else if (available.length === 0) {
-            sec.appendChild(el('p', { class: 'text-yellow-400 text-xs font-bold', text: 'Coming soon — not yet orderable' }));
         } else {
+            if (available.length === 0) {
+                sec.appendChild(el('p', { class: 'text-yellow-400 text-xs font-bold mb-1', text: 'Coming soon — not yet orderable' }));
+            }
             for (const dc of available) {
                 const badge = el('span', {
                     class: 'inline-block bg-green-700/30 text-green-400 text-xs px-2 py-1 rounded mr-1 mb-1',
