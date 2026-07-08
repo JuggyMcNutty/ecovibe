@@ -100,11 +100,11 @@ function showView(viewName) {
 }
 
 function showLoading() {
-    document.getElementById('loading-view').classList.remove('hidden');
+    document.getElementById('loading-overlay').classList.remove('hidden');
 }
 
 function hideLoading() {
-    document.getElementById('loading-view').classList.add('hidden');
+    document.getElementById('loading-overlay').classList.add('hidden');
 }
 
 function showError(message) {
