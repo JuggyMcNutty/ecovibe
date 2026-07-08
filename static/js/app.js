@@ -1464,8 +1464,6 @@ function switchTab(tabId) {
     if (billingTab) billingTab.classList.toggle('hidden', tabId !== 'billing-tab');
     const insightsTab = document.getElementById('insights-tab');
     if (insightsTab) insightsTab.classList.toggle('hidden', tabId !== 'insights-tab');
-    const settingsTab = document.getElementById('settings-tab');
-    if (settingsTab) settingsTab.classList.toggle('hidden', tabId !== 'settings-tab');
     // Lazy-load billing data when switching to that tab
     if (tabId === 'billing-tab' && !state.billingLoaded) {
         loadBillingInfo();
@@ -1473,10 +1471,6 @@ function switchTab(tabId) {
     // Refresh insights plan dropdown when switching to that tab
     if (tabId === 'insights-tab') {
         populateInsightsPlanSelect();
-    }
-    // Lazy-load notification settings when switching to settings tab
-    if (tabId === 'settings-tab' && !state.notifSettingsLoaded) {
-        loadNotificationSettings();
     }
 }
 
@@ -2551,6 +2545,11 @@ async function init() {
     document.getElementById('settings-btn').addEventListener('click', () => {
         showView('credentials');
         loadExistingCredentials();
+        loadNotificationSettings();
+    });
+
+    document.getElementById('back-from-settings-btn')?.addEventListener('click', () => {
+        showView('monitor');
     });
 
     // Tab switching
