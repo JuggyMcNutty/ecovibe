@@ -314,25 +314,79 @@ const SUBSIDIARIES_BY_ENDPOINT = {
     'ovh-ca': ['CA'],
 };
 
+// All subsidiaries the catalog can be browsed in, with their billing
+// currency. Offered regardless of the active account's region so a CA
+// account can view USD pricing, etc. The actual rendered price currency
+// comes from OVH's formattedPrice; this label is a convenience hint.
+const CATALOG_SUBSIDIARIES = {
+    'US': 'USD',
+    'CA': 'CAD',
+    'IE': 'EUR',
+    'FR': 'EUR',
+    'DE': 'EUR',
+    'GB': 'GBP',
+    'ES': 'EUR',
+    'IT': 'EUR',
+    'PT': 'EUR',
+    'PL': 'PLN',
+    'CZ': 'EUR',
+    'FI': 'EUR',
+};
+
 function defaultSubsidiaryForEndpoint(endpoint) {
     const list = SUBSIDIARIES_BY_ENDPOINT[endpoint] || SUBSIDIARIES_BY_ENDPOINT['ovh-eu'];
     return list[0];
 }
 
+function getPreferredSubsidiary() {
+    try {
+        return localStorage.getItem('ovh-catalog-subsidiary') || null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function setPreferredSubsidiary(code) {
+    try {
+        if (code) localStorage.setItem('ovh-catalog-subsidiary', code);
+    } catch (e) {
+        // localStorage may be unavailable (private mode); ignore.
+    }
+}
+
 function populateCatalogCountries() {
     const select = document.getElementById('catalog-country');
     if (!select) return;
-    const list = SUBSIDIARIES_BY_ENDPOINT[state.endpoint] || SUBSIDIARIES_BY_ENDPOINT['ovh-eu'];
+    // Order: USD first (main goal), then the rest alphabetically by code.
+    const codes = Object.keys(CATALOG_SUBSIDIARIES).sort((a, b) => {
+        if (a === 'US') return -1;
+        if (b === 'US') return 1;
+        return a.localeCompare(b);
+    });
+    const preferred = getPreferredSubsidiary();
+    const native = defaultSubsidiaryForEndpoint(state.endpoint);
+    const selected = (preferred && CATALOG_SUBSIDIARIES[preferred]) ? preferred : native;
     select.innerHTML = '';
-    list.forEach(code => {
-        select.appendChild(el('option', { value: code, text: code }));
+    codes.forEach(code => {
+        const cur = CATALOG_SUBSIDIARIES[code];
+        const opt = el('option', { value: code, text: `${code} (${cur})` });
+        if (code === selected) opt.selected = true;
+        select.appendChild(opt);
     });
 }
 
 async function loadCatalog(country) {
     showLoading();
+    // Read the selector's current value when no explicit country is given
+    // (so the persisted/native default chosen in populateCatalogCountries
+    // is honoured).
+    if (!country) {
+        const sel = document.getElementById('catalog-country');
+        country = sel ? sel.value : null;
+    }
     const subsidiary = country || defaultSubsidiaryForEndpoint(state.endpoint);
     state.catalogCountry = subsidiary;
+    if (subsidiary) setPreferredSubsidiary(subsidiary);
     try {
         const url = subsidiary
             ? `/catalog/plans?country=${encodeURIComponent(subsidiary)}`
