@@ -6,29 +6,27 @@ import pytest
 from app.services.ovh_service import OVHService, OVHServiceError
 
 
-def _make_service():
+def _make_service(endpoint="ovh-eu"):
     """Build an OVHService with a mocked client and dummy credentials.
 
-    Credentials are stored in a mock storage (since they now come from the
-    database, not env vars).
+    Credentials are passed directly to the constructor (decoupled from
+    storage), and the ovh.Client is mocked so no network call is made.
     """
-    fake_creds = {
-        "endpoint": "ovh-eu",
-        "application_key": "ak",
-        "application_secret": "as",
-        "consumer_key": "ck",
-    }
-    with patch("app.services.ovh_service.ovh.Client") as MockClient, \
-         patch.object(OVHService, "_load_credentials", staticmethod(lambda: fake_creds)):
+    with patch("app.services.ovh_service.ovh.Client") as MockClient:
         MockClient.return_value = MagicMock()
-        svc = OVHService(use_cache=False)
+        svc = OVHService(
+            endpoint=endpoint,
+            application_key="ak",
+            application_secret="as",
+            consumer_key="ck",
+            use_cache=False,
+        )
     return svc
 
 
 def test_not_configured_raises():
-    with patch.object(OVHService, "_load_credentials", staticmethod(lambda: None)), \
-         patch("app.services.ovh_service.ovh.Client"):
-        svc = OVHService(use_cache=False)
+    with patch("app.services.ovh_service.ovh.Client"):
+        svc = OVHService("ovh-eu", "", "", "", use_cache=False)
         assert not svc.is_configured()
         with pytest.raises(OVHServiceError):
             svc.get("/anything")
@@ -81,16 +79,15 @@ def test_create_cart_passes_description():
 def test_create_cart_us_endpoint_passes_us_subsidiary():
     """OVH US requires ovhSubsidiary=US at cart creation or all
     subsequent cart calls return 404 'Invalid Cart ID'."""
-    fake_creds = {
-        "endpoint": "ovh-us",
-        "application_key": "ak",
-        "application_secret": "as",
-        "consumer_key": "ck",
-    }
-    with patch("app.services.ovh_service.ovh.Client") as MockClient, \
-         patch.object(OVHService, "_load_credentials", staticmethod(lambda: fake_creds)):
+    with patch("app.services.ovh_service.ovh.Client") as MockClient:
         MockClient.return_value = MagicMock()
-        svc = OVHService(use_cache=False)
+        svc = OVHService(
+            endpoint="ovh-us",
+            application_key="ak",
+            application_secret="as",
+            consumer_key="ck",
+            use_cache=False,
+        )
     svc._client.post = MagicMock(return_value={"cartId": "C-US"})
     svc.create_cart(description="rush")
     args, kwargs = svc._client.post.call_args
@@ -173,9 +170,9 @@ def test_reconfigure_rebuilds_client():
     """reconfigure() should rebuild the client with new credentials."""
     svc = _make_service()
     assert svc.is_configured()
-    # Simulate credentials being deleted
-    with patch.object(OVHService, "_load_credentials", staticmethod(lambda: None)):
-        svc.reconfigure()
+    # Simulate credentials being deleted by reconfiguring with empties
+    with patch("app.services.ovh_service.ovh.Client"):
+        svc.reconfigure("ovh-eu", "", "", "")
     assert not svc.is_configured()
 
 

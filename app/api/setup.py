@@ -76,8 +76,21 @@ async def save_credentials(request: CredentialsRequest) -> CredentialsResponse:
         application_secret=request.application_secret,
         consumer_key=request.consumer_key,
     )
+    # Bridge to multi-account model: ensure an account exists and is active
+    # so the service registry resolves it. (Legacy endpoint, replaced by
+    # /api/accounts in a later commit.)
+    active_id = storage.get_active_account_id()
+    acct_id = storage.save_account(
+        account_id=active_id,
+        label=request.endpoint,
+        endpoint=request.endpoint,
+        application_key=request.application_key,
+        application_secret=request.application_secret,
+        consumer_key=request.consumer_key,
+    )
+    storage.set_active_account_id(acct_id)
 
-    # Reset the singleton so the new credentials take effect immediately.
+    # Reset the registry so the new credentials take effect immediately.
     reset_ovh_service()
 
     logger.info("OVH credentials saved for endpoint: %s", request.endpoint)
@@ -118,6 +131,8 @@ async def delete_credentials() -> dict:
     """Delete all stored credentials and reset the OVH client."""
     storage = get_storage()
     storage.clear_credentials()
+    # Bridge: clear the active account so the registry reports unconfigured.
+    storage.set_active_account_id(None)
     reset_ovh_service()
     logger.info("OVH credentials deleted")
     return {"status": "deleted"}

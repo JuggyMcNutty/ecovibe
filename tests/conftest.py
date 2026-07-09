@@ -12,7 +12,7 @@ def isolated_state(tmp_path, monkeypatch):
     cache_mod._cache = None
 
     import app.services.ovh_service as ovh_mod
-    ovh_mod._ovh_service = None
+    ovh_mod.reset_all_services()
 
     import app.services.storage as storage_mod
     storage_mod._storage = None

@@ -33,17 +33,26 @@ class OVHServiceError(Exception):
 
 
 class OVHService:
-    """Wraps an ovh.Client. Credentials come from the DB, not env vars.
+    """Wraps an ovh.Client built directly from supplied credentials.
 
-    Call reconfigure() after saving new credentials to rebuild the client
-    without restarting.
+    Construction is decoupled from storage: callers (the registry or
+    tests) pass the credentials + endpoint in. Call ``reconfigure()`` to
+    rebuild the client after a credential update.
     """
 
-    def __init__(self, use_cache: bool | None = None) -> None:
+    def __init__(
+        self,
+        endpoint: str,
+        application_key: str,
+        application_secret: str,
+        consumer_key: str,
+        account_id: str | None = None,
+        use_cache: bool | None = None,
+    ) -> None:
         settings = get_settings()
         self._use_cache = settings.use_cache if use_cache is None else use_cache
-        self._client: ovh.Client | None = None
-        self._endpoint: str = settings.endpoint
+        self._endpoint: str = endpoint or settings.endpoint
+        self._account_id = account_id
         # Serialises all ovh.Client calls. The shared ovh.Client bundles a
         # requests.Session and a lazily-cached server-time delta that are
         # NOT safe under concurrent access (the monitor poller, rush orders
@@ -52,56 +61,54 @@ class OVHService:
         # race on the shared cookie jar, and a stale time_delta makes every
         # signature wrong so OVH replies "This application key is invalid".
         self._lock = threading.Lock()
-        self._setup_client()
+        self._client: ovh.Client | None = None
+        self._build_client(application_key, application_secret, consumer_key)
 
-    def _setup_client(self) -> None:
-        """Build the OVH client from DB-stored credentials."""
-        creds = self._load_credentials()
-        if not creds:
-            logger.info("No OVH credentials found in database - run the setup wizard.")
-            return
-
+    def _build_client(
+        self, application_key: str, application_secret: str, consumer_key: str
+    ) -> None:
+        """Construct the ovh.Client, or leave it None if creds are incomplete."""
         missing = [
             name
             for name, val in (
-                ("application_key", creds.get("application_key")),
-                ("application_secret", creds.get("application_secret")),
-                ("consumer_key", creds.get("consumer_key")),
+                ("application_key", application_key),
+                ("application_secret", application_secret),
+                ("consumer_key", consumer_key),
             )
             if not val
         ]
         if missing:
-            logger.warning("OVH client not initialised: missing: %s", ", ".join(missing))
+            if application_key or application_secret or consumer_key:
+                logger.warning(
+                    "OVH client not initialised (account=%s): missing: %s",
+                    self._account_id, ", ".join(missing),
+                )
             return
-
-        self._endpoint = creds.get("endpoint", get_settings().endpoint)
         self._client = ovh.Client(
             endpoint=self._endpoint,
-            application_key=creds["application_key"],
-            application_secret=creds["application_secret"],
-            consumer_key=creds["consumer_key"],
+            application_key=application_key,
+            application_secret=application_secret,
+            consumer_key=consumer_key,
         )
-        logger.info("OVH client ready for endpoint: %s", self._endpoint)
+        logger.info("OVH client ready for endpoint: %s (account=%s)",
+                    self._endpoint, self._account_id)
 
-    @staticmethod
-    def _load_credentials() -> dict[str, str] | None:
-        """Fetch credentials from the DB, or None if not configured."""
-        try:
-            from app.services.storage import get_storage
-            storage = get_storage()
-            return storage.load_credentials()
-        except Exception:
-            logger.warning("could not load credentials from storage", exc_info=True)
-            return None
+    @property
+    def account_id(self) -> str | None:
+        return self._account_id
 
-    def reconfigure(self) -> None:
-        """Rebuild the OVH client after credentials have been saved/updated.
-
-        Called by the setup wizard after POST /api/setup/credentials.
-        """
+    def reconfigure(
+        self,
+        endpoint: str,
+        application_key: str,
+        application_secret: str,
+        consumer_key: str,
+    ) -> None:
+        """Rebuild the OVH client after credentials have been saved/updated."""
         with self._lock:
             self._client = None
-            self._setup_client()
+            self._endpoint = endpoint or self._endpoint
+            self._build_client(application_key, application_secret, consumer_key)
 
     @property
     def endpoint(self) -> str:
@@ -409,25 +416,88 @@ class OVHService:
         self.delete(f"/order/cart/{cart_id}")
 
 
-# Module-level singleton. The first call constructs the service; later calls
-# reuse it. Call `reset_ovh_service()` to force a rebuild after credentials
-# are saved/updated (the setup wizard does this).
-_ovh_service: OVHService | None = None
+# ----- per-account service registry -----
+#
+# Replaces the old module singleton. Each account id maps to a cached
+# OVHService (with its own ovh.Client + threading.Lock). A module-level
+# lock guards the registry dict itself; each service's own lock guards
+# its shared ovh.Client.
+#
+# ``get_ovh_service(account_id=None)`` resolves the active account when
+# no id is given, so legacy callers that ignore account_id keep working
+# during the multi-account rollout.
+
+_services: dict[str, OVHService] = {}
+_registry_lock = threading.Lock()
+_unconfigured: OVHService | None = None
 
 
-def get_ovh_service(use_cache: bool | None = None) -> OVHService:
-    """Return the shared OVHService singleton, creating it on first use."""
-    global _ovh_service
-    if _ovh_service is None:
-        _ovh_service = OVHService(use_cache=use_cache)
-    return _ovh_service
+def _build_for_account(account_id: str) -> OVHService | None:
+    """Construct an OVHService from the stored account, or None if missing."""
+    from app.services.storage import get_storage
+    acct = get_storage().get_account(account_id)
+    if acct is None:
+        return None
+    return OVHService(
+        endpoint=acct["endpoint"],
+        application_key=acct["application_key"],
+        application_secret=acct["application_secret"],
+        consumer_key=acct["consumer_key"],
+        account_id=acct["id"],
+    )
 
 
-def reset_ovh_service() -> None:
-    """Discard the current OVHService singleton so the next call rebuilds it.
+def _unconfigured_service() -> OVHService:
+    """Return a shared not-configured service (no client)."""
+    global _unconfigured
+    if _unconfigured is None:
+        _unconfigured = OVHService(get_settings().endpoint, "", "", "")
+    return _unconfigured
 
-    Called after credentials are saved/updated via the setup wizard so the
-    new credentials take effect without a process restart.
+
+def get_ovh_service(account_id: str | None = None) -> OVHService:
+    """Return the OVHService for an account.
+
+    If ``account_id`` is None, the active account is used (legacy-friendly).
+    Returns a not-configured service (``is_configured() is False``) when
+    there is no active account or the account has been deleted.
     """
-    global _ovh_service
-    _ovh_service = None
+    if account_id is None:
+        from app.services.storage import get_storage
+        account_id = get_storage().get_active_account_id()
+    if account_id is None:
+        return _unconfigured_service()
+    with _registry_lock:
+        svc = _services.get(account_id)
+        if svc is None:
+            svc = _build_for_account(account_id)
+            if svc is None:
+                return _unconfigured_service()
+            _services[account_id] = svc
+        return svc
+
+
+def get_active_ovh_service() -> OVHService:
+    """Return the OVHService for the currently active account."""
+    return get_ovh_service(None)
+
+
+def reset_ovh_service(account_id: str | None = None) -> None:
+    """Drop a cached service so the next call rebuilds it from storage.
+
+    With no argument, clears the whole registry (e.g. after a credential
+    change whose account id is unknown to the caller). Safe to call when
+    nothing is cached.
+    """
+    with _registry_lock:
+        if account_id is None:
+            _services.clear()
+        else:
+            _services.pop(account_id, None)
+        global _unconfigured
+        _unconfigured = None
+
+
+def reset_all_services() -> None:
+    """Clear the entire registry (used by tests)."""
+    reset_ovh_service(None)
