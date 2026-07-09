@@ -25,7 +25,8 @@
                     <input type="checkbox" id="sound-toggle" class="w-5 h-5" checked>
                     <span>Sound</span>
                 </label>
-                <button id="settings-btn" class="bg-gray-700 hover:bg-gray-600 px-3 py-2 rounded-lg text-sm hidden" title="Edit OVH credentials">
+                <select id="account-select" class="bg-gray-700 px-3 py-2 rounded-lg text-sm hidden" title="Switch active OVH account"></select>
+                <button id="settings-btn" class="bg-gray-700 hover:bg-gray-600 px-3 py-2 rounded-lg text-sm hidden" title="Manage OVH accounts">
                     Settings
                 </button>
             </div>
@@ -53,9 +54,20 @@
         </div>
 
         <div id="credentials-view" class="hidden">
+            <!-- Account list (manage mode only) -->
+            <div id="account-list-block" class="bg-gray-800 rounded-lg p-6 max-w-2xl mx-auto mb-6 hidden">
+                <h2 class="text-2xl font-bold mb-4 text-blue-400">OVH Accounts</h2>
+                <div id="account-list" class="space-y-2"></div>
+            </div>
+
             <div class="bg-gray-800 rounded-lg p-6 max-w-2xl mx-auto">
-                <h2 class="text-2xl font-bold mb-4 text-yellow-400" id="setup-title">Setup Required</h2>
-                <p class="text-gray-300 mb-6" id="setup-description">Configure your OVH API credentials to use the flash sale monitor. Credentials are stored in the local database.</p>
+                <h2 class="text-2xl font-bold mb-4 text-yellow-400" id="setup-title">Add OVH Account</h2>
+                <p class="text-gray-300 mb-6" id="setup-description">Add an OVH API account to monitor flash sales and place orders. Credentials are stored in the local database.</p>
+
+                <div class="mb-4">
+                    <label class="block text-sm text-gray-400 mb-2" for="cred-label">Account Label</label>
+                    <input type="text" id="cred-label" class="w-full bg-gray-700 px-3 py-2 rounded" placeholder="e.g. EU personal" autocomplete="off">
+                </div>
 
                 <div class="mb-4">
                     <label class="block text-sm text-gray-400 mb-2" for="ovh-region-select">Select Your OVH Region</label>
@@ -104,15 +116,19 @@
                 <div class="flex gap-3 mt-6">
                     <button id="save-credentials-btn"
                             class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg">
-                        Save &amp; Test
+                        Save Account
                     </button>
                     <button id="delete-credentials-btn"
                             class="hidden bg-red-700 hover:bg-red-600 text-white px-6 py-2 rounded-lg">
-                        Delete Credentials
+                        Delete Account
                     </button>
                     <button id="skip-credentials-btn"
                             class="bg-gray-700 hover:bg-gray-600 text-white px-6 py-2 rounded-lg">
                         Skip
+                    </button>
+                    <button id="add-account-btn"
+                            class="hidden bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg">
+                        + Add New Account
                     </button>
                 </div>
             </div>
