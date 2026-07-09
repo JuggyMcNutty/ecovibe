@@ -147,11 +147,16 @@ async def get_plans(
                 "setup_price": 0,
                 "setup_formattedPrice": "",
                 "invoiceName": addon.get("invoiceName", ""),
+                "currencyCode": "",
             }
             found = False
             for pr in addon.get("pricings", []):
                 if pr.get("mode") != "default":
                     continue
+                # Carry the catalog's currency code (e.g. "EUR"/"USD"/"CAD")
+                # so the frontend can convert prices for display.
+                if not entry["currencyCode"] and pr.get("currencyCode"):
+                    entry["currencyCode"] = pr["currencyCode"]
                 # Monthly recurring price (interval=1, intervalUnit='month')
                 if (
                     pr.get("interval") == 1
