@@ -24,6 +24,24 @@ OVH API. Python 3.10+, single-process, SQLite persistence.
   with `os.environ` and save to a temp DB to test catalog/checkout
   flows (see `app/services/storage.py` for the save flow).
 
+## Security
+
+- **No in-app authentication.** The app is a single-user tool; it relies
+  on a reverse proxy (Caddy/nginx with HTTP Basic Auth) for access
+  control when exposed publicly. See README.md > Deployment.
+- **Localhost-only by default.** `python run.py` binds `127.0.0.1`
+  (configurable via `OVH_HOST`/`OVH_PORT`). Set `OVH_HOST=0.0.0.0`
+  only behind a reverse proxy.
+- **CSRF middleware** (`CsrfMiddleware` in `app/main.py`): state-changing
+  requests (`POST`/`PUT`/`PATCH`/`DELETE`) to `/api/*` are blocked unless
+  they carry `X-Requested-With: XMLHttpRequest` OR have a same-origin
+  `Origin`/`Referer`. Requests with no `Origin`/`Referer` (curl, scripts,
+  TestClient) are allowed. The SPA's `apiRequest()` in `static/js/app.js`
+  sends the `X-Requested-With` header on every call. Tests live in
+  `tests/test_security.py`. Basic Auth credentials are auto-attached by
+  browsers on cross-origin requests, so this middleware is required even
+  behind a proxy.
+
 ## Commands
 
 ```bash

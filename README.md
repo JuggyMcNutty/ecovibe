@@ -32,6 +32,63 @@ For development (includes tests + linting):
 pip install -r requirements-dev.txt
 ```
 
+## Deployment
+
+By default the server binds to `127.0.0.1` (localhost only) so it is
+never publicly reachable by accident. To expose it — for example behind
+a reverse proxy with HTTP Basic Auth — set `OVH_HOST=0.0.0.0`:
+
+```bash
+OVH_HOST=0.0.0.0 python run.py
+```
+
+The app has built-in CSRF protection: state-changing requests
+(`POST`/`PUT`/`DELETE`/`PATCH`) to `/api/*` must carry the
+`X-Requested-With: XMLHttpRequest` header or have a same-origin
+`Origin`/`Referer`. The SPA sends this header automatically; a malicious
+third-party page cannot forge it without triggering a CORS preflight
+(which the default empty CORS policy blocks). Authentication itself is
+handled by the reverse proxy layer below.
+
+### Caddy
+
+```Caddyfile
+flash.example.com {
+    basicauth {
+        # Generate with: caddy hash-password
+        admin $2a$14$...
+    }
+    reverse_proxy 127.0.0.1:8000
+}
+```
+
+### nginx
+
+```nginx
+server {
+    listen 80;
+    server_name flash.example.com;
+
+    auth_basic "OVH Flash Sale Monitor";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        # SSE: disable buffering, raise timeout for /api/monitor/stream
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+    }
+}
+```
+
+Generate the `.htpasswd` file with `htpasswd -c /etc/nginx/.htpasswd admin`.
+
+> **Note**: Basic Auth credentials are cached per-origin by the browser
+> and sent automatically on cross-origin requests, which is why the
+> in-app CSRF middleware is required even behind a proxy.
+
 ## Requirements
 
 - **Python 3.10+**
@@ -111,6 +168,8 @@ variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `OVH_HOST` | `127.0.0.1` | Server bind address (use `0.0.0.0` behind a reverse proxy) |
+| `OVH_PORT` | `8000` | Server bind port |
 | `OVH_USE_CACHE` | `false` | Enable in-memory catalog caching |
 | `OVH_CACHE_TTL` | `300` | Cache TTL in seconds |
 | `OVH_DB_PATH` | `<project>/ovh-flash-monitor.db` | SQLite database path (defaults to project root) |
