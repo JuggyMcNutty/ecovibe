@@ -194,9 +194,13 @@ async def rush_checkout(request: RushOrderRequest) -> dict[str, Any]:
         except OVHServiceError:
             price = None
         if price is not None and price > request.max_price:
+            cur = service.default_currency_code()
             raise HTTPException(
                 status_code=409,
-                detail=f"Price {price/1_000_000:.2f} exceeds max {request.max_price/1_000_000:.2f}",
+                detail=(
+                    f"Price {price / 100_000_000:.2f} {cur} exceeds "
+                    f"max {request.max_price / 100_000_000:.2f} {cur}"
+                ),
             )
 
     try:

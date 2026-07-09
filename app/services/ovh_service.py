@@ -228,6 +228,21 @@ class OVHService:
             return "CA"
         return "IE"
 
+    # Subsidiary → ISO 4217 currency code. OVH's catalog prices are denominated
+    # in the subsidiary's currency; used to label prices/error messages.
+    _SUBSIDIARY_CURRENCY = {
+        "IE": "EUR", "FR": "EUR", "DE": "EUR", "ES": "EUR", "PL": "EUR",
+        "IT": "EUR", "PT": "EUR", "CZ": "EUR", "FI": "EUR",
+        "GB": "GBP",
+        "US": "USD",
+        "CA": "CAD",
+    }
+
+    def default_currency_code(self, subsidiary: str | None = None) -> str:
+        """Return the ISO currency code for a subsidiary (default: the endpoint's)."""
+        sub = subsidiary or self._default_subsidiary()
+        return self._SUBSIDIARY_CURRENCY.get(sub, "EUR")
+
     def fetch_catalog(
         self, subsidiary: str | None = None, force: bool = False
     ) -> dict[str, Any]:

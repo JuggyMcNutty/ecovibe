@@ -538,7 +538,6 @@ class Storage:
             {
                 "plan_code": r["plan_code"],
                 "price_in_ucents": r["price_in_ucents"],
-                "price_eur": r["price_in_ucents"] / 1_000_000,
                 "timestamp": r["timestamp"],
             }
             for r in rows

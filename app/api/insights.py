@@ -65,7 +65,7 @@ async def refresh_price(
         raise HTTPException(status_code=404, detail="Plan not found in catalog")
     storage = get_storage()
     storage.log_price(plan_code, price_ucents, datetime.now(timezone.utc))
-    return {"plan_code": plan_code, "price_in_ucents": price_ucents, "price_eur": price_ucents / 1_000_000}
+    return {"plan_code": plan_code, "price_in_ucents": price_ucents}
 
 
 @router.get("/orders")
