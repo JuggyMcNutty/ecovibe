@@ -147,7 +147,10 @@ function updateConnectionStatus(connected) {
 async function apiRequest(method, path, body = null) {
     const options = {
         method,
-        headers: { 'Content-Type': 'application/json' }
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+        }
     };
     if (body !== null) {
         options.body = JSON.stringify(body);

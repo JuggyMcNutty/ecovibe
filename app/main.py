@@ -2,13 +2,16 @@
 import logging
 import os
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.datastructures import Headers
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import HTTPConnection
 from starlette.responses import FileResponse, Response
 from starlette.staticfiles import NotModifiedResponse
 from starlette.types import Scope
@@ -21,6 +24,63 @@ logger = logging.getLogger(__name__)
 BASE_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 templates = Jinja2Templates(directory=os.path.join(BASE_PATH, "templates"))
+
+# Methods that can change state and must be protected from CSRF.
+_UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _same_origin(request: HTTPConnection) -> bool:
+    """True if the request's Origin or Referer matches the request Host."""
+    host = request.headers.get("host", "")
+    if not host:
+        return False
+    for header in ("origin", "referer"):
+        val = request.headers.get(header)
+        if not val:
+            continue
+        parsed = urlparse(val)
+        # Compare netloc (host:port); treat scheme mismatch as unsafe.
+        if parsed.netloc == host:
+            return True
+    return False
+
+
+class CsrfMiddleware(BaseHTTPMiddleware):
+    """Reject cross-origin state-changing requests to /api/*.
+
+    A request to an /api/* path using POST/PUT/PATCH/DELETE is blocked
+    unless one of the following holds:
+      1. It carries the ``X-Requested-With: XMLHttpRequest`` header
+         (custom headers force a CORS preflight, which the default
+         empty CORS policy blocks for cross-origin callers).
+      2. Its ``Origin`` or ``Referer`` host matches the request Host
+         (same-site form/fetch submissions).
+      3. Both ``Origin`` and ``Referer`` are absent (non-browser clients
+         such as curl, the Starlette TestClient, or scripts).
+
+    Requests that carry a cross-origin ``Origin``/``Referer`` but no
+    ``X-Requested-With`` header are blocked. GET/HEAD/OPTIONS and
+    non-/api/ paths (the SPA shell, /static/*) are always allowed.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        method = request.method.upper()
+        if path.startswith("/api/") and method in _UNSAFE_METHODS:
+            xrw = request.headers.get("x-requested-with", "")
+            origin = request.headers.get("origin")
+            referer = request.headers.get("referer")
+            has_origin_or_referer = bool(origin or referer)
+            if xrw != "XMLHttpRequest" and has_origin_or_referer and not _same_origin(request):
+                logger.warning(
+                    "CSRF block: %s %s (xrw=%r origin=%r referer=%r)",
+                    method, path, xrw, origin, referer,
+                )
+                return JSONResponse(
+                    {"detail": "Cross-origin requests not allowed"},
+                    status_code=403,
+                )
+        return await call_next(request)
 
 
 class CachedStaticFiles(StaticFiles):
@@ -95,6 +155,10 @@ def create_app():
 
     settings = get_settings()
 
+    # CSRF protection runs before route handlers. Registered before CORS
+    # so cross-origin preflight/result checks are evaluated first.
+    app.add_middleware(CsrfMiddleware)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -150,4 +214,7 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    from app.config import get_settings
+
+    _settings = get_settings()
+    uvicorn.run(app, host=_settings.host, port=_settings.port)
