@@ -80,20 +80,19 @@
 
                 <div class="space-y-4">
                     <div class="bg-gray-700 rounded p-4">
-                        <h3 class="font-bold text-blue-400 mb-2">Step 1: Create OVH Application</h3>
-                        <a id="create-app-link" href="https://eu.api.ovh.com/createApp/" target="_blank" rel="noopener"
-                           class="text-blue-400 hover:underline">https://eu.api.ovh.com/createApp/</a>
-                    </div>
-
-                    <div class="bg-gray-700 rounded p-4">
-                        <h3 class="font-bold text-blue-400 mb-2">Step 2: Create API Token</h3>
-                        <a id="create-token-link" href="https://eu.api.ovh.com/createToken/" target="_blank" rel="noopener"
-                           class="text-blue-400 hover:underline">https://eu.api.ovh.com/createToken/</a>
-                        <p class="text-sm text-yellow-400 mt-2">Required: GET/PUT/POST/DELETE on /order/* and GET on /me</p>
+                        <h3 class="font-bold text-blue-400 mb-2">Step 1: Create an API Key</h3>
+                        <p class="text-sm text-gray-300 mb-2">
+                            Log in to your OVHcloud Manager, go to
+                            <strong>Account settings &rarr; Security &rarr; API keys</strong>,
+                            and create a new API key. You'll get three values:
+                            Application Key, Application Secret, and Consumer Key.
+                        </p>
+                        <a id="create-api-key-link" href="https://www.ovh.com/manager/" target="_blank" rel="noopener"
+                           class="text-blue-400 hover:underline">Open OVHcloud Manager</a>
                     </div>
 
                     <div class="bg-gray-700 rounded p-4 space-y-3">
-                        <h3 class="font-bold text-blue-400 mb-2">Step 3: Enter Your Credentials</h3>
+                        <h3 class="font-bold text-blue-400 mb-2">Step 2: Enter Your Credentials</h3>
                         <div>
                             <label class="block text-sm text-gray-400 mb-1" for="cred-app-key">Application Key</label>
                             <input type="text" id="cred-app-key" class="w-full bg-gray-900 px-3 py-2 rounded font-mono text-sm"

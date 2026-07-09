@@ -190,36 +190,31 @@ See `.env.example` for a template.
 ## Region-Specific Setup
 
 OVH credentials are region-specific. Select your region in the setup wizard
-and use the corresponding API console to create your application and token:
+and use the corresponding OVHcloud Manager to create an API key:
 
 ### United States (ovh-us)
 - API Base: `https://api.us.ovhcloud.com/v1`
-- Create App: `https://api.us.ovhcloud.com/createApp/`
-- Create Token: `https://api.us.ovhcloud.com/createToken/`
+- Manager: `https://us.ovhcloud.com/manager/` (Account settings → Security → API keys)
 
 ### Europe (ovh-eu)
 - API Base: `https://eu.api.ovh.com/v1`
-- Create App: `https://eu.api.ovh.com/createApp/`
-- Create Token: `https://eu.api.ovh.com/createToken/`
+- Manager: `https://www.ovh.com/manager/` (Account settings → Security → API keys)
 
 ### Canada (ovh-ca)
 - API Base: `https://ca.api.ovh.com/v1`
-- Create App: `https://ca.api.ovh.com/createApp/`
-- Create Token: `https://ca.api.ovh.com/createToken/`
+- Manager: `https://ca.ovh.com/manager/` (Account settings → Security → API keys)
 
 ## Getting OVH Credentials
 
-1. **Create Application** - Visit your region's API console (links above).
+1. **Open the OVHcloud Manager** for your region (links above).
 
-2. **Create Token** - Visit the token creation page for your region.
+2. **Create an API key** — navigate to your account settings, then
+   Security → API keys, and create a new key. You'll receive three
+   values: Application Key, Application Secret, and Consumer Key.
 
-3. **Required Permissions**:
-   - GET/PUT/POST/DELETE on `/order/*`
-   - GET on `/me`
-
-4. **Enter in Setup Wizard** - Open http://localhost:8000, select your
-   region, and paste the three keys into the setup form. Click "Save & Test"
-   to verify the connection.
+3. **Enter in Setup Wizard** — Open http://localhost:8000, select your
+   region, and paste the three keys into the setup form. Click "Save
+   Account" to verify the connection.
 
 **Note:** Credentials are region-specific. US credentials only work with `ovh-us`, EU credentials only work with `ovh-eu`.
 

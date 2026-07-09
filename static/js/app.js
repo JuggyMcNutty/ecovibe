@@ -5,22 +5,19 @@ const API_BASE = '/api';
 const OVH_REGIONS = {
     'ovh-eu': {
         name: 'Europe',
-        createAppUrl: 'https://eu.api.ovh.com/createApp/',
-        createTokenUrl: 'https://eu.api.ovh.com/createToken/',
+        managerUrl: 'https://www.ovh.com/manager/',
         apiEndpoint: 'https://eu.api.ovh.com/v1',
         rushRegion: 'europe'
     },
     'ovh-us': {
         name: 'United States',
-        createAppUrl: 'https://api.us.ovhcloud.com/createApp/',
-        createTokenUrl: 'https://api.us.ovhcloud.com/createToken/',
+        managerUrl: 'https://us.ovhcloud.com/manager/',
         apiEndpoint: 'https://api.us.ovhcloud.com/v1',
         rushRegion: 'united_states'
     },
     'ovh-ca': {
         name: 'Canada',
-        createAppUrl: 'https://ca.api.ovh.com/createApp/',
-        createTokenUrl: 'https://ca.api.ovh.com/createToken/',
+        managerUrl: 'https://ca.ovh.com/manager/',
         apiEndpoint: 'https://ca.api.ovh.com/v1',
         rushRegion: 'canada'
     }
@@ -2149,10 +2146,11 @@ function playAlertSound() {
 
 function updateCredentialsView(region) {
     const regionInfo = OVH_REGIONS[region] || OVH_REGIONS['ovh-eu'];
-    document.getElementById('create-app-link').href = regionInfo.createAppUrl;
-    document.getElementById('create-app-link').textContent = regionInfo.createAppUrl;
-    document.getElementById('create-token-link').href = regionInfo.createTokenUrl;
-    document.getElementById('create-token-link').textContent = regionInfo.createTokenUrl;
+    const link = document.getElementById('create-api-key-link');
+    if (link) {
+        link.href = regionInfo.managerUrl;
+        link.textContent = `Open ${regionInfo.name} OVHcloud Manager`;
+    }
 
     const rushRegion = document.getElementById('rush-region');
     if (rushRegion) {
