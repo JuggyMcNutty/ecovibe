@@ -449,7 +449,7 @@
             <div id="catalog-tab" class="">
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     <div class="bg-gray-800 rounded-lg p-4">
-                        <div class="flex gap-2 mb-2 items-center">
+                        <div class="flex gap-2 mb-2 items-center flex-wrap">
                             <label class="text-sm text-gray-400" for="currency-select">Currency</label>
                             <select id="currency-select" class="bg-gray-700 px-3 py-2 rounded text-sm">
                                 <option value="EUR">EUR €</option>
@@ -457,6 +457,10 @@
                                 <option value="GBP">GBP £</option>
                                 <option value="CAD">CAD $</option>
                             </select>
+                            <label class="flex items-center gap-1 cursor-pointer text-sm">
+                                <input type="checkbox" id="price-mode-ovh" class="w-4 h-4">
+                                <span>OVH native prices</span>
+                            </label>
                             <span id="currency-status" class="text-xs text-gray-500"></span>
                         </div>
                         <div class="flex gap-2 mb-3">

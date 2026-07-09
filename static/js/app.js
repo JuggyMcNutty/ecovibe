@@ -58,9 +58,13 @@ let state = {
     // catalog's native currency regardless). catalogCurrency is the ISO code
     // the active catalog is denominated in; displayCurrency is what the user
     // sees. fxRates is the cached Frankfurter/ECB payload (EUR-base).
+    // priceMode: 'fx' = convert via ECB rates; 'ovh' = fetch the catalog
+    // from a subsidiary matching the selected currency so OVH's real
+    // prices are shown directly (no FX conversion).
     catalogCurrency: 'EUR',
     displayCurrency: 'EUR',
     fxRates: null,
+    priceMode: 'fx',
     _currencyUserSet: false,
 };
 
@@ -69,6 +73,16 @@ let state = {
 // symbols/positioning per locale.
 const CURRENCY_SYMBOLS = { EUR: '€', USD: '$', GBP: '£', CAD: 'C$' };
 const SUPPORTED_CURRENCIES = ['EUR', 'USD', 'GBP', 'CAD'];
+
+// Maps a display currency to the OVH subsidiary whose catalog is
+// natively priced in that currency. Used in 'ovh' price mode so the
+// user sees OVH's real prices rather than FX-converted estimates.
+const CURRENCY_SUBSIDIARY = {
+    EUR: 'IE',
+    USD: 'US',
+    GBP: 'GB',
+    CAD: 'CA',
+};
 
 function formatCurrency(amount, code = state.displayCurrency) {
     if (typeof amount !== 'number' || !isFinite(amount)) return 'On request';
@@ -93,6 +107,10 @@ function loadFxRates() {
 function updateCurrencyStatus() {
     const el = document.getElementById('currency-status');
     if (!el) return;
+    if (state.priceMode === 'ovh') {
+        el.textContent = 'OVH native prices';
+        return;
+    }
     if (state.displayCurrency === state.catalogCurrency) {
         el.textContent = '';
         return;
@@ -100,7 +118,7 @@ function updateCurrencyStatus() {
     if (!state.fxRates) {
         el.textContent = '(rates unavailable — showing native prices)';
     } else {
-        el.textContent = `· ${state.fxRates.date || ''}`;
+        el.textContent = `· FX ${state.fxRates.date || ''}`;
     }
 }
 
@@ -401,9 +419,19 @@ function populateCatalogCountries() {
     // Kept as a no-op so existing call sites don't need updating.
 }
 
+function catalogSubsidiaryForCurrency() {
+    // In 'ovh' mode, fetch from the subsidiary that natively prices in
+    // the display currency so OVH's real prices are shown. In 'fx' mode,
+    // use the active account's default subsidiary.
+    if (state.priceMode === 'ovh') {
+        return CURRENCY_SUBSIDIARY[state.displayCurrency] || defaultSubsidiaryForEndpoint(state.endpoint);
+    }
+    return defaultSubsidiaryForEndpoint(state.endpoint);
+}
+
 async function loadCatalog(country) {
     showLoading();
-    const subsidiary = country || defaultSubsidiaryForEndpoint(state.endpoint);
+    const subsidiary = country || catalogSubsidiaryForCurrency();
     state.catalogCountry = subsidiary;
     try {
         const url = subsidiary
@@ -444,20 +472,30 @@ async function loadCatalog(country) {
 }
 
 function detectCatalogCurrency() {
+    // In 'ovh' mode we fetched from the subsidiary matching the display
+    // currency, so the catalog currency should match.
+    if (state.priceMode === 'ovh') {
+        state.catalogCurrency = state.displayCurrency;
+        updateMaxPriceLabel();
+        updateCurrencyStatus();
+        return;
+    }
     // Prefer currencyCode from addon prices (set by the backend from OVH's
     // pricing data); fall back to the first plan's pricing currencyCode.
     for (const code in state.addonPrices) {
         const cc = state.addonPrices[code]?.currencyCode;
-        if (cc) { state.catalogCurrency = cc; updateMaxPriceLabel(); return; }
+        if (cc) { state.catalogCurrency = cc; updateMaxPriceLabel(); updateCurrencyStatus(); return; }
     }
     for (const plan of state.plans) {
         const mp = getPlanMonthlyPrice(plan);
         if (mp?.currencyCode) {
             state.catalogCurrency = mp.currencyCode;
             updateMaxPriceLabel();
+            updateCurrencyStatus();
             return;
         }
     }
+    updateCurrencyStatus();
 }
 
 function updateMaxPriceLabel() {
@@ -2844,22 +2882,46 @@ async function init() {
     document.getElementById('currency-select')?.addEventListener('change', (e) => {
         state.displayCurrency = e.target.value;
         state._currencyUserSet = true;
-        updateCurrencyStatus();
-        // Re-render with the new display currency. If rates are needed and
-        // not yet loaded, fetch them first.
-        if (state.displayCurrency !== state.catalogCurrency && !state.fxRates) {
-            loadFxRates().then(() => {
+        if (state.priceMode === 'ovh') {
+            // Re-fetch the catalog from the subsidiary matching the new
+            // currency so OVH's real prices are shown.
+            loadCatalog();
+        } else {
+            updateCurrencyStatus();
+            // Re-render with the new display currency. If rates are needed and
+            // not yet loaded, fetch them first.
+            if (state.displayCurrency !== state.catalogCurrency && !state.fxRates) {
+                loadFxRates().then(() => {
+                    renderCatalogList();
+                    if (state.selectedPlanCode) {
+                        const p = state.plans.find(x => x.planCode === state.selectedPlanCode);
+                        if (p) renderCatalogDetail(p);
+                    }
+                });
+            } else {
                 renderCatalogList();
                 if (state.selectedPlanCode) {
                     const p = state.plans.find(x => x.planCode === state.selectedPlanCode);
                     if (p) renderCatalogDetail(p);
                 }
-            });
+            }
+        }
+    });
+
+    document.getElementById('price-mode-ovh')?.addEventListener('change', (e) => {
+        state.priceMode = e.target.checked ? 'ovh' : 'fx';
+        // In OVH mode we fetch the catalog from the subsidiary matching the
+        // display currency; in FX mode we use the active account's default.
+        // Either way, re-fetch + re-render.
+        if (state.priceMode === 'ovh') {
+            loadCatalog();
         } else {
-            renderCatalogList();
-            if (state.selectedPlanCode) {
-                const p = state.plans.find(x => x.planCode === state.selectedPlanCode);
-                if (p) renderCatalogDetail(p);
+            // Back to FX mode: reload the default catalog and ensure rates
+            // are available for conversion.
+            if (!state.fxRates) {
+                loadFxRates().then(() => loadCatalog());
+            } else {
+                loadCatalog();
             }
         }
     });
