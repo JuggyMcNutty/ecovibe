@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Query
 
 from app.api.errors import raise_ovh_http_error
-from app.services.ovh_service import OVHServiceError, get_ovh_service
+from app.services.ovh_service import OVHServiceError, get_active_ovh_service
 from app.services.storage import get_storage
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ async def refresh_price(
     country: str | None = Query(default=None, min_length=1, max_length=4),
 ) -> dict:
     """Fetch the current price for a plan from the catalog and log it."""
-    service = get_ovh_service()
+    service = get_active_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
     try:
@@ -78,7 +78,7 @@ async def list_orders(limit: int = Query(default=50, ge=1, le=500)) -> dict:
 @router.get("/orders/{order_id}")
 async def get_order_status(order_id: int) -> dict:
     """Fetch the current status of an order from OVH."""
-    service = get_ovh_service()
+    service = get_active_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
     try:

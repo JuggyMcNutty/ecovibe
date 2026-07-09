@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from app.api.errors import raise_ovh_http_error
 from app.models.schemas import CheckoutRequest
-from app.services.ovh_service import OVHServiceError, get_ovh_service
+from app.services.ovh_service import OVHServiceError, get_active_ovh_service
 from app.services.storage import get_storage
 
 logger = logging.getLogger(__name__)
@@ -183,7 +183,7 @@ async def rush_checkout(request: RushOrderRequest) -> dict[str, Any]:
     Enforces `max_price` if set (refuses checkout if the current catalog
     price exceeds the threshold). Logs the order to SQLite on success.
     """
-    service = get_ovh_service()
+    service = get_active_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
 
@@ -219,7 +219,7 @@ async def rush_checkout(request: RushOrderRequest) -> dict[str, Any]:
 @router.post("/{cart_id}")
 async def checkout(cart_id: str, request: CheckoutRequest) -> dict[str, Any]:
     """Legacy single-cart checkout (for pre-built carts)."""
-    service = get_ovh_service()
+    service = get_active_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
     try:

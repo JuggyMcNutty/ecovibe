@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from app.api.errors import raise_ovh_http_error
 from app.models.schemas import PollIntervalRequest
 from app.services.monitor import get_monitor_service
-from app.services.ovh_service import OVHServiceError, get_ovh_service
+from app.services.ovh_service import OVHServiceError, get_active_ovh_service
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ async def get_availability(plans: str = Query(default="")) -> dict[str, Any]:
     if not plans:
         return {"stocks": {}}
     plan_codes = [p.strip() for p in plans.split(",") if p.strip()]
-    svc = get_ovh_service()
+    svc = get_active_ovh_service()
     try:
         stocks: dict[str, list] = {}
         for plan_code in plan_codes:

@@ -12,7 +12,7 @@ from app.models.schemas import (
     AddServerRequest,
     CreateCartRequest,
 )
-from app.services.ovh_service import OVHServiceError, get_ovh_service
+from app.services.ovh_service import OVHServiceError, get_active_ovh_service
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ async def create_cart(request: CreateCartRequest) -> dict[str, Any]:
     If assignment fails, the orphaned cart is deleted to avoid leaving
     dangling carts on OVH's side.
     """
-    service = get_ovh_service()
+    service = get_active_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
     try:
@@ -48,7 +48,7 @@ async def create_cart(request: CreateCartRequest) -> dict[str, Any]:
 @router.get("/{cart_id}")
 async def get_cart(cart_id: str) -> dict[str, Any]:
     """Fetch the current state of a cart (items, prices, expiry)."""
-    service = get_ovh_service()
+    service = get_active_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
     try:
@@ -60,7 +60,7 @@ async def get_cart(cart_id: str) -> dict[str, Any]:
 @router.post("/{cart_id}/server")
 async def add_server(cart_id: str, request: AddServerRequest) -> dict[str, Any]:
     """Add an ECO server line item to the cart. Returns the item (with `itemId`)."""
-    service = get_ovh_service()
+    service = get_active_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
     try:
@@ -78,7 +78,7 @@ async def add_server(cart_id: str, request: AddServerRequest) -> dict[str, Any]:
 @router.post("/{cart_id}/options")
 async def add_option(cart_id: str, request: AddOptionRequest) -> dict[str, Any]:
     """Attach an option (RAM/storage/bandwidth upgrade) to a line item."""
-    service = get_ovh_service()
+    service = get_active_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
     try:
@@ -99,7 +99,7 @@ async def add_config(cart_id: str, request: AddConfigRequest) -> dict[str, Any]:
 
     Used for `dedicated_datacenter`, `region`, `dedicated_os`, etc.
     """
-    service = get_ovh_service()
+    service = get_active_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
     try:
@@ -118,7 +118,7 @@ async def add_config(cart_id: str, request: AddConfigRequest) -> dict[str, Any]:
 @router.get("/{cart_id}/summary")
 async def get_summary(cart_id: str) -> dict[str, Any]:
     """Fetch the checkout summary (totals, taxes, payment URL preview)."""
-    service = get_ovh_service()
+    service = get_active_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
     try:

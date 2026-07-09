@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from app.api.errors import raise_ovh_http_error
-from app.services.ovh_service import OVHServiceError, get_ovh_service
+from app.services.ovh_service import OVHServiceError, get_active_ovh_service
 
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
 
@@ -19,7 +19,7 @@ def _default_subsidiary() -> str:
       ovh-ca → CA
     Sending the wrong subsidiary (e.g. IE to ovh-us) returns HTTP 400.
     """
-    service = get_ovh_service()
+    service = get_active_ovh_service()
     return service._default_subsidiary()
 
 
@@ -74,7 +74,7 @@ async def get_catalog(
     force_refresh: bool = Query(default=False, description="Force cache refresh"),
 ) -> dict[str, Any]:
     """Return the full ECO catalog for a subsidiary (large payload)."""
-    service = get_ovh_service()
+    service = get_active_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
     subsidiary = country if country else _default_subsidiary()
@@ -91,7 +91,7 @@ async def get_availability(
     plan_code: str = Query(..., min_length=1, max_length=64, description="Server plan code (e.g., 24sk10)"),
 ) -> list[dict[str, Any]]:
     """Return the currently orderable FQN configurations for a plan."""
-    service = get_ovh_service()
+    service = get_active_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
     try:
@@ -111,7 +111,7 @@ async def get_stock(
     entries. The frontend uses this to show which configs are actually in
     stock before the user attempts an order.
     """
-    service = get_ovh_service()
+    service = get_active_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
     try:
@@ -125,7 +125,7 @@ async def get_plans(
     country: str | None = Query(default=None),
 ) -> dict[str, Any]:
     """Return plans + addon pricing from the catalog."""
-    service = get_ovh_service()
+    service = get_active_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
     subsidiary = country if country else _default_subsidiary()

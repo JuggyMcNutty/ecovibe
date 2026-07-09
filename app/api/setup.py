@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.services.ovh_service import OVHServiceError, get_ovh_service, reset_ovh_service
+from app.services.ovh_service import OVHServiceError, get_active_ovh_service, reset_ovh_service
 from app.services.storage import get_storage
 
 logger = logging.getLogger(__name__)
@@ -109,7 +109,7 @@ async def test_credentials() -> dict:
     Returns the account's nichandle and name if the credentials are valid.
     This endpoint requires credentials to be saved first.
     """
-    service = get_ovh_service()
+    service = get_active_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured. Save credentials first.")
     try:

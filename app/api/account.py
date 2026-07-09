@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.api.errors import raise_ovh_http_error
-from app.services.ovh_service import OVHServiceError, get_ovh_service
+from app.services.ovh_service import OVHServiceError, get_active_ovh_service
 from app.services.storage import get_storage
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ class CheckoutDefaults(BaseModel):
 @router.get("/me")
 async def get_me() -> dict:
     """Fetch the OVH account info (nichandle, name, email, currency, etc.)."""
-    service = get_ovh_service()
+    service = get_active_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
     try:
@@ -37,7 +37,7 @@ async def get_me() -> dict:
 @router.get("/payment-methods")
 async def get_payment_methods() -> dict:
     """List available payment methods on the OVH account."""
-    service = get_ovh_service()
+    service = get_active_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
     try:
