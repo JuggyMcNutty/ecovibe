@@ -447,8 +447,15 @@ class Storage:
         with self._lock:
             cur = self._conn.cursor()
             if account_id:
-                existing = self.get_account(account_id)
-                secret = application_secret or existing["application_secret"]
+                # Preserve the stored secret when the caller sends an empty
+                # one (masked-edit flow). Queried inline — NOT via
+                # self.get_account(), which would deadlock on self._lock.
+                cur.execute(
+                    "SELECT application_secret FROM accounts WHERE id = ?",
+                    (account_id,),
+                )
+                row = cur.fetchone()
+                secret = application_secret or (row["application_secret"] if row else "")
                 cur.execute(
                     "UPDATE accounts SET label=?, endpoint=?, application_key=?, "
                     "application_secret=?, consumer_key=? WHERE id=?",
@@ -482,11 +489,14 @@ class Storage:
     def set_active_account_id(self, account_id: str | None) -> None:
         with self._lock:
             cur = self._conn.cursor()
-            cur.execute(
-                "INSERT INTO settings (key, value) VALUES ('active_account_id', ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (account_id,),
-            )
+            if account_id is None:
+                cur.execute("DELETE FROM settings WHERE key = 'active_account_id'")
+            else:
+                cur.execute(
+                    "INSERT INTO settings (key, value) VALUES ('active_account_id', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (account_id,),
+                )
             self._conn.commit()
 
     # ----- stock events (restock history) -----

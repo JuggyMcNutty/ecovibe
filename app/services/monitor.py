@@ -406,15 +406,21 @@ class MonitorService:
     async def _poll_once(self) -> list[dict[str, Any]]:
         """One poll cycle. Returns diffs to broadcast to SSE clients."""
         changes: list[dict[str, Any]] = []
-        service = get_ovh_service()
-        if not service.is_configured():
-            return changes
 
         # Snapshot the distinct plan_codes we need to poll this cycle.
+        # Bail out before building the OVH service when there's nothing to
+        # poll — service construction does network I/O (endpoint/time fetch)
+        # so we avoid it entirely when idle.
         async with self._lock:
             plan_codes = sorted(
                 {a.plan_code for a in self._alerts.values() if a.enabled}
             )
+        if not plan_codes:
+            return changes
+
+        service = get_ovh_service()
+        if not service.is_configured():
+            return changes
 
         storage = self._storage_get()
 

@@ -131,6 +131,7 @@ def create_app():
     """Build the FastAPI app with all routers and middleware."""
     from app.api import (
         account,
+        accounts,
         alert,
         cart,
         catalog,
@@ -181,6 +182,7 @@ def create_app():
     app.include_router(setup.router)
     app.include_router(settings_api.router)
     app.include_router(account.router)
+    app.include_router(accounts.router)
 
     @app.get("/", response_class=HTMLResponse)
     async def root(request: Request) -> Response:
@@ -196,13 +198,18 @@ def create_app():
 
     @app.get("/api/health")
     async def health() -> dict:
-        """Liveness check. Returns whether OVH credentials are configured."""
-        from app.services.ovh_service import get_ovh_service
-        service = get_ovh_service()
+        """Liveness check. Returns active-account status."""
+        from app.services.ovh_service import get_active_ovh_service
+        from app.services.storage import get_storage
+        storage = get_storage()
+        active_id = storage.get_active_account_id()
+        service = get_active_ovh_service()
         return {
             "status": "ok",
-            "endpoint": service.endpoint,
             "configured": service.is_configured(),
+            "endpoint": service.endpoint,
+            "active_account_id": active_id,
+            "account_count": len(storage.list_accounts()),
         }
 
     return app
