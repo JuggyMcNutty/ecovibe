@@ -136,6 +136,7 @@ def create_app():
         cart,
         catalog,
         checkout,
+        currency,
         insights,
         monitor,
         profiles,
@@ -181,6 +182,7 @@ def create_app():
     app.include_router(settings_api.router)
     app.include_router(account.router)
     app.include_router(accounts.router)
+    app.include_router(currency.router)
 
     @app.get("/", response_class=HTMLResponse)
     async def root(request: Request) -> Response:

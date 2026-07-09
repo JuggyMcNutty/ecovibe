@@ -11,6 +11,9 @@ def isolated_state(tmp_path, monkeypatch):
     import app.services.cache as cache_mod
     cache_mod._cache = None
 
+    from app.services import currency as currency_mod
+    currency_mod.reset_cache()
+
     import app.services.ovh_service as ovh_mod
     ovh_mod.reset_all_services()
 
