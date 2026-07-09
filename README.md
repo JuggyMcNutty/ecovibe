@@ -121,9 +121,9 @@ Generate the `.htpasswd` file with `htpasswd -c /etc/nginx/.htpasswd admin`.
 - **CPU details** extracted from OVH product blobs: model, cores/threads, frequency, boost, benchmark score
 - **Hardware badges**: chassis size, SLA, anti-DDoS, server range (Kimsufi/Rise/SYS/LE)
 - **Setup/installation fees** surfaced alongside monthly pricing
+- **Currency selector** - view all prices in EUR/USD/GBP/CAD (display-only; converts via daily ECB rates, defaults to the account's billing currency)
 - **Search & filter** plans by name/code, sort by price/name/CPU score
 - **Region filter** - only show plans orderable on your configured endpoint
-- Filter by country/subsidiary (IE, FR, DE, GB, ES, PL, IT, PT, CZ, FI)
 - View configurations, pricing, and availability
 - **Addon labels** use OVH's official invoiceName (e.g. "2x SSD NVMe 512GB Datacenter Class Soft RAID")
 - Quick-add servers to watchlist (click or keyboard)
@@ -293,6 +293,9 @@ DELETE /api/accounts/{id}                        - Delete account (falls back ac
 POST   /api/accounts/{id}/test                   - Test account via GET /me
 GET    /api/accounts/active                      - Read active account id + masked preview
 PUT    /api/accounts/active                      - Switch active account (reloads monitor)
+
+# Currency (display conversion)
+GET  /api/currency/rates                          - ECB/Frankfurter FX rates (EUR-base, 24h cache)
 
 # Account & Billing
 GET  /api/account/me                             - OVH account info (name, nichandle, email)

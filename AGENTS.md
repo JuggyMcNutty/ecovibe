@@ -268,3 +268,17 @@ were created under (`account_id` column on each table).
 - **Settings UI**: notification settings live in the credentials-view
   (accessed via the Settings button in the header), NOT as a tab. A
   back button returns to the monitor view.
+- **Currency (display-only)**: a currency selector (EUR/USD/GBP/CAD)
+  converts prices for display via cached ECB/Frankfurter FX rates
+  (`app/services/currency.py`, 24h cache, EUR-base). It defaults to the
+  account's billing currency from `/me` and is a view preference (not
+  persisted). OVH charges in the catalog's native currency regardless.
+  The catalog's `currencyCode` is passed through in `addonPrices` so the
+  frontend can convert. When display==catalog currency, OVH's exact
+  `formattedPrice` is shown; otherwise raw microcents (÷10^8) are
+  converted via `convertMicrocents()` + `Intl.NumberFormat`. The old
+  per-country catalog dropdown was replaced by the currency selector.
+  `max_price` stays in the catalog's native currency (microcents) and is
+  labelled with the currency code; the budget-guard error message uses
+  the 10^8 divisor + currency code (the old 10^6 `price_eur` field was
+  removed — it was wrong by 100× and unused).
