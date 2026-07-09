@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     # Default endpoint before credentials are saved to DB
     endpoint: str = "ovh-eu"
 
+    # Server bind address. Defaults to localhost so `python run.py` is
+    # never publicly reachable by accident. Set OVH_HOST=0.0.0.0 to expose
+    # behind a reverse proxy (see README.md > Deployment).
+    host: str = "127.0.0.1"
+    port: int = 8000
+
     # Catalog cache
     use_cache: bool = False
     cache_ttl: int = 300
