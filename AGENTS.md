@@ -108,10 +108,10 @@ app/
 │   ├── alert.py         # Alert CRUD + enable/disable
 │   ├── checkout.py      # /api/checkout/rush (one-shot order) + legacy /{cart_id}
 │   ├── cart.py          # Granular cart lifecycle (legacy)
-│   ├── profiles.py      # Saved checkout profile CRUD
+│   ├── profiles.py      # Saved checkout profile CRUD (per-account)
 │   ├── sniper.py        # Arm/disarm auto-order
 │   ├── insights.py      # History, patterns, price, orders
-│   ├── setup.py         # Credentials wizard
+│   ├── accounts.py      # Multi-account CRUD + active switch + test
 │   ├── settings.py      # Notification channel settings (Telegram/Discord/Slack/SMTP)
 │   ├── account.py       # OVH account + payment methods + defaults
 │   └── errors.py        # OVH→HTTP error mapping
@@ -119,17 +119,49 @@ app/
 ├── utils/
 │   └── cache_buster.py  # Content-hash cache busting for static assets
 └── services/
-    ├── ovh_service.py    # OVH SDK wrapper (singleton)
+    ├── ovh_service.py    # OVH SDK wrapper (per-account registry)
     ├── monitor.py       # Background poller + SSE fan-out + SniperService
     ├── notifier.py      # Telegram/Discord/Slack/email fan-out
     ├── storage.py       # SQLite persistence (singleton)
     └── cache.py         # In-memory TTL cache
-static/js/app.js         # Frontend SPA (vanilla JS, ~2600 lines)
+static/js/app.js         # Frontend SPA (vanilla JS, ~2800 lines)
 static/css/input.css     # Tailwind source
 static/css/app.css       # Built/minified (do not edit — rebuild from input.css)
 templates/index.html     # SPA shell with cache-busted asset refs
-tests/                   # pytest suite (69 tests, uses TestClient)
+tests/                   # pytest suite (~91 tests, uses TestClient)
 ```
+
+## Multi-account model
+
+The app stores N OVH credential sets (one row per account in the
+`accounts` table) with a single **active account** id in `settings`.
+All catalog/monitor/checkout/billing operations run against the active
+account; alerts, profiles, and orders are scoped to the account they
+were created under (`account_id` column on each table).
+
+- **OVHService registry** (`ovh_service.py`): `_services: dict[str, OVHService]`
+  keyed by account_id, each a cached `OVHService(endpoint, ak, as, ck)`
+  with its own `ovh.Client` + `threading.Lock`. `get_active_ovh_service()`
+  resolves the active account; `get_ovh_service(account_id)` targets a
+  specific one (used by the sniper). `reset_ovh_service(account_id)` /
+  `reset_all_services()` invalidate the cache. OVHService takes creds in
+  its constructor (no DB read) — construct directly in tests.
+- **Active account**: stored in `settings.active_account_id`; cached by
+  the registry. Switching via `PUT /api/accounts/active` calls
+  `monitor.reload()` which clears in-memory alerts + stock cache and
+  re-reads the active account's alerts.
+- **Monitor**: polls the active account only (Decision 1A). The poller
+  early-returns when there are no enabled alerts, so idle polling does
+  no OVH network I/O. Multi-account simultaneous polling is a future
+  iteration; `_poll_once` is structured with a `_poll_account`-style
+  seam to make that jump cheap.
+- **Sniper**: fires under the alert's own `account_id`
+  (`get_ovh_service(alert.account_id)`), not the active one — so an
+  armed sniper keeps targeting the right region after a switch.
+- **Notifier + checkout_defaults**: global (not per-account).
+- **Migration**: on `init()`, if `accounts` is empty and the legacy
+  `credentials` table has rows, one account is created from them, set
+  active, and all data rows backfilled with its id. Idempotent.
 
 ## Key conventions
 

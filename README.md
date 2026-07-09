@@ -290,6 +290,15 @@ DELETE /api/setup/credentials                    - Delete stored credentials
 GET    /api/settings/notifications               - Get notifier config (secrets masked) + active channels
 PUT    /api/settings/notifications               - Save notifier config (masked values preserved)
 
+# Accounts (multi-region credentials)
+GET    /api/accounts                             - List accounts (secrets masked)
+POST   /api/accounts                             - Create account (first becomes active)
+PUT    /api/accounts/{id}                        - Update account (empty secret preserves stored)
+DELETE /api/accounts/{id}                        - Delete account (falls back active if needed)
+POST   /api/accounts/{id}/test                   - Test account via GET /me
+GET    /api/accounts/active                      - Read active account id + masked preview
+PUT    /api/accounts/active                      - Switch active account (reloads monitor)
+
 # Account & Billing
 GET  /api/account/me                             - OVH account info (name, nichandle, email)
 GET  /api/account/payment-methods                - Available payment methods on the account
@@ -297,8 +306,33 @@ GET  /api/account/checkout-defaults              - Default checkout preferences 
 PUT  /api/account/checkout-defaults              - Save default checkout preferences
 
 # Health
-GET  /api/health                                - Service health + config status
+GET  /api/health                                - Service health + active-account status
 ```
+
+## Multiple Accounts
+
+You can store credentials for several OVH accounts (different regions, or
+multiple accounts in the same region) and switch between them instantly.
+
+- **Add an account** via the setup wizard (first start) or the Settings
+  button → "Add New Account". Each account has a label, region, and the
+  three OVH API keys.
+- **Switch the active account** with the dropdown in the header. All
+  catalog, monitor, checkout, and billing operations run against the
+  active account. Switching reloads the monitor so it watches only the
+  active account's alerts and drops the previous account's stock cache.
+- **Data is account-scoped**: alerts, checkout profiles, and orders belong
+  to the account they were created under. Switching accounts shows only
+  that account's data. The sniper orders under the alert's own account
+  (not the currently active one), so an armed sniper keeps targeting the
+  right region even after you switch.
+- **Notifier settings are global** (shared across accounts) — alerts route
+  to your configured Telegram/Discord/Slack/email regardless of account.
+
+The first account created becomes active automatically. Deleting the
+active account falls back to another account, or returns to the setup
+wizard if none remain. Existing single-credential databases are migrated
+to an account automatically on first run.
 
 ## Development
 
@@ -330,16 +364,16 @@ ovh-gui/
 │   │   ├── alert.py         # Alert CRUD + enable/disable + profile assignment
 │   │   ├── cart.py          # Cart lifecycle (legacy)
 │   │   ├── checkout.py      # Rush order (one-shot) + legacy cart checkout
-│   │   ├── profiles.py      # Saved checkout profile CRUD
+│   │   ├── profiles.py      # Saved checkout profile CRUD (per-account)
 │   │   ├── sniper.py        # Sniper arm/disarm/status
 │   │   ├── insights.py      # History, patterns, price, orders
-│   │   ├── setup.py         # Setup wizard (save/test OVH credentials)
+│   │   ├── accounts.py      # Multi-account CRUD + active switch + test
 │   │   ├── settings.py      # Notification channel settings (Telegram/Discord/Slack/SMTP)
 │   │   ├── account.py       # OVH account + payment methods + defaults
 │   │   └── errors.py        # OVH->HTTP error mapping
 │   ├── models/schemas.py    # Pydantic request/response models
 │   └── services/
-│       ├── ovh_service.py   # OVH API wrapper (singleton)
+│       ├── ovh_service.py   # OVH API wrapper (per-account registry)
 │       ├── monitor.py       # Stock monitoring + background poller + SniperService
 │       ├── notifier.py      # Telegram/Discord/Slack/email fan-out
 │       ├── storage.py       # SQLite persistence (alerts, profiles, events, prices, orders)
