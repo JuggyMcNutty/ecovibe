@@ -4,6 +4,7 @@ import logging
 import os
 import sqlite3
 import threading
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -154,7 +155,90 @@ class Storage:
                 )
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS accounts (
+                    id TEXT PRIMARY KEY,
+                    label TEXT NOT NULL,
+                    endpoint TEXT NOT NULL,
+                    application_key TEXT NOT NULL,
+                    application_secret TEXT NOT NULL,
+                    consumer_key TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            # Best-effort column adds: account_id on data tables (multi-account).
+            for tbl in (
+                "alerts",
+                "checkout_profiles",
+                "orders",
+                "stock_events",
+                "price_history",
+            ):
+                try:
+                    cur.execute(
+                        f"ALTER TABLE {tbl} ADD COLUMN account_id TEXT"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+            # Migrate legacy single-credential set into an account row.
+            self._migrate_legacy_credentials(cur)
             self._conn.commit()
+
+    def _migrate_legacy_credentials(self, cur: sqlite3.Cursor) -> None:
+        """One-time migration: turn the old single-row `credentials` table
+        into an `accounts` row, set it active, and backfill `account_id` on
+        all existing data rows.
+
+        Runs on every init() but is a no-op once `accounts` is populated or
+        the legacy table is empty. Idempotent.
+        """
+        cur.execute("SELECT COUNT(*) AS n FROM accounts")
+        if cur.fetchone()["n"] > 0:
+            return  # already multi-account
+        cur.execute("SELECT key, value FROM credentials")
+        rows = cur.fetchall()
+        if not rows:
+            return  # fresh install, nothing to migrate
+        creds = {r["key"]: r["value"] for r in rows}
+        endpoint = creds.get("endpoint", get_settings().endpoint)
+        label = {
+            "ovh-eu": "Europe",
+            "ovh-us": "United States",
+            "ovh-ca": "Canada",
+        }.get(endpoint, endpoint)
+        acct_id = uuid.uuid4().hex
+        cur.execute(
+            "INSERT INTO accounts (id, label, endpoint, application_key, "
+            "application_secret, consumer_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                acct_id,
+                label,
+                endpoint,
+                creds.get("application_key", ""),
+                creds.get("application_secret", ""),
+                creds.get("consumer_key", ""),
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        cur.execute(
+            "INSERT INTO settings (key, value) VALUES ('active_account_id', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (acct_id,),
+        )
+        for tbl in (
+            "alerts",
+            "checkout_profiles",
+            "orders",
+            "stock_events",
+            "price_history",
+        ):
+            cur.execute(
+                f"UPDATE {tbl} SET account_id = ? WHERE account_id IS NULL",
+                (acct_id,),
+            )
+        logger.info("Migrated legacy credentials to account %s (%s)", acct_id, label)
 
     def close(self) -> None:
         with self._lock:
@@ -170,22 +254,24 @@ class Storage:
         enabled: bool,
         notified_at: datetime | None,
         auto_order_profile_id: str | None = None,
+        account_id: str | None = None,
     ) -> None:
         with self._lock:
             cur = self._conn.cursor()
             cur.execute(
                 """
-                INSERT INTO alerts (id, plan_code, fqn_pattern, enabled, notified_at, auto_order_profile_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO alerts (id, plan_code, fqn_pattern, enabled, notified_at, auto_order_profile_id, account_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     plan_code=excluded.plan_code,
                     fqn_pattern=excluded.fqn_pattern,
                     enabled=excluded.enabled,
                     notified_at=excluded.notified_at,
-                    auto_order_profile_id=excluded.auto_order_profile_id
+                    auto_order_profile_id=excluded.auto_order_profile_id,
+                    account_id=COALESCE(excluded.account_id, alerts.account_id)
                 """,
                 (id_, plan_code, fqn_pattern, int(enabled), _iso(notified_at),
-                 auto_order_profile_id, datetime.now(timezone.utc).isoformat()),
+                 auto_order_profile_id, account_id, datetime.now(timezone.utc).isoformat()),
             )
             self._conn.commit()
 
@@ -217,13 +303,20 @@ class Storage:
                         (_iso(notified_at), id_))
             self._conn.commit()
 
-    def load_alerts(self) -> list[dict[str, Any]]:
+    def load_alerts(self, account_id: str | None = None) -> list[dict[str, Any]]:
         with self._lock:
             cur = self._conn.cursor()
-            cur.execute(
-                "SELECT id, plan_code, fqn_pattern, enabled, notified_at, auto_order_profile_id "
-                "FROM alerts"
-            )
+            if account_id:
+                cur.execute(
+                    "SELECT id, plan_code, fqn_pattern, enabled, notified_at, "
+                    "auto_order_profile_id, account_id FROM alerts WHERE account_id = ?",
+                    (account_id,),
+                )
+            else:
+                cur.execute(
+                    "SELECT id, plan_code, fqn_pattern, enabled, notified_at, "
+                    "auto_order_profile_id, account_id FROM alerts"
+                )
             rows = cur.fetchall()
         return [
             {
@@ -233,6 +326,7 @@ class Storage:
                 "enabled": bool(r["enabled"]),
                 "notified_at": _parse_iso(r["notified_at"]),
                 "auto_order_profile_id": r["auto_order_profile_id"],
+                "account_id": r["account_id"],
             }
             for r in rows
         ]
@@ -310,16 +404,103 @@ class Storage:
             cur.execute("DELETE FROM credentials")
             self._conn.commit()
 
+    # ----- accounts (multi-region credentials) -----
+
+    def list_accounts(self) -> list[dict[str, Any]]:
+        """Return all stored accounts (raw secrets)."""
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                "SELECT id, label, endpoint, application_key, application_secret, "
+                "consumer_key, created_at FROM accounts ORDER BY created_at"
+            )
+            rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
+    def get_account(self, account_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                "SELECT id, label, endpoint, application_key, application_secret, "
+                "consumer_key, created_at FROM accounts WHERE id = ?",
+                (account_id,),
+            )
+            row = cur.fetchone()
+        return dict(row) if row else None
+
+    def save_account(
+        self,
+        account_id: str | None,
+        label: str,
+        endpoint: str,
+        application_key: str,
+        application_secret: str,
+        consumer_key: str,
+    ) -> str:
+        """Insert or update an account. Returns the account id.
+
+        If ``account_id`` is None a new id is generated. On update, empty
+        ``application_secret`` is preserved (so masked edits don't wipe the
+        stored secret).
+        """
+        aid = account_id or uuid.uuid4().hex
+        with self._lock:
+            cur = self._conn.cursor()
+            if account_id:
+                existing = self.get_account(account_id)
+                secret = application_secret or existing["application_secret"]
+                cur.execute(
+                    "UPDATE accounts SET label=?, endpoint=?, application_key=?, "
+                    "application_secret=?, consumer_key=? WHERE id=?",
+                    (label, endpoint, application_key, secret, consumer_key, aid),
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO accounts (id, label, endpoint, application_key, "
+                    "application_secret, consumer_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        aid, label, endpoint, application_key, application_secret,
+                        consumer_key, datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+            self._conn.commit()
+        return aid
+
+    def delete_account(self, account_id: str) -> None:
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+            self._conn.commit()
+
+    def get_active_account_id(self) -> str | None:
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute("SELECT value FROM settings WHERE key = 'active_account_id'")
+            row = cur.fetchone()
+        return row["value"] if row else None
+
+    def set_active_account_id(self, account_id: str | None) -> None:
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                "INSERT INTO settings (key, value) VALUES ('active_account_id', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (account_id,),
+            )
+            self._conn.commit()
+
     # ----- stock events (restock history) -----
 
     def log_stock_event(
-        self, plan_code: str, fqn: str, event_type: str, timestamp: datetime
+        self, plan_code: str, fqn: str, event_type: str, timestamp: datetime,
+        account_id: str | None = None,
     ) -> None:
         with self._lock:
             cur = self._conn.cursor()
             cur.execute(
-                "INSERT INTO stock_events (plan_code, fqn, event_type, timestamp) VALUES (?, ?, ?, ?)",
-                (plan_code, fqn, event_type, _iso(timestamp)),
+                "INSERT INTO stock_events (plan_code, fqn, event_type, timestamp, account_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (plan_code, fqn, event_type, _iso(timestamp), account_id),
             )
             self._conn.commit()
 
@@ -371,12 +552,14 @@ class Storage:
 
     # ----- price history -----
 
-    def log_price(self, plan_code: str, price_in_ucents: int, timestamp: datetime) -> None:
+    def log_price(self, plan_code: str, price_in_ucents: int, timestamp: datetime,
+                  account_id: str | None = None) -> None:
         with self._lock:
             cur = self._conn.cursor()
             cur.execute(
-                "INSERT INTO price_history (plan_code, price_in_ucents, timestamp) VALUES (?, ?, ?)",
-                (plan_code, price_in_ucents, _iso(timestamp)),
+                "INSERT INTO price_history (plan_code, price_in_ucents, timestamp, account_id) "
+                "VALUES (?, ?, ?, ?)",
+                (plan_code, price_in_ucents, _iso(timestamp), account_id),
             )
             self._conn.commit()
 
@@ -421,21 +604,23 @@ class Storage:
                 """
                 INSERT INTO checkout_profiles
                     (id, name, plan_code, fqn, ram, storage, bandwidth, datacenters,
-                     region, os, duration, auto_pay, waive_retractation, max_price, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     region, os, duration, auto_pay, waive_retractation, max_price, account_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     name=excluded.name, plan_code=excluded.plan_code, fqn=excluded.fqn,
                     ram=excluded.ram, storage=excluded.storage, bandwidth=excluded.bandwidth,
                     datacenters=excluded.datacenters, region=excluded.region, os=excluded.os,
                     duration=excluded.duration, auto_pay=excluded.auto_pay,
-                    waive_retractation=excluded.waive_retractation, max_price=excluded.max_price
+                    waive_retractation=excluded.waive_retractation, max_price=excluded.max_price,
+                    account_id=COALESCE(excluded.account_id, checkout_profiles.account_id)
                 """,
                 (
                     p["id"], p["name"], p["plan_code"], p["fqn"],
                     p.get("ram"), p.get("storage"), p.get("bandwidth"),
                     p.get("datacenters"), p["region"], p["os"], p["duration"],
                     int(p.get("auto_pay", False)), int(p.get("waive_retractation", False)),
-                    p.get("max_price"), p.get("created_at", _iso(datetime.now(timezone.utc))),
+                    p.get("max_price"), p.get("account_id"),
+                    p.get("created_at", _iso(datetime.now(timezone.utc))),
                 ),
             )
             self._conn.commit()
@@ -446,10 +631,16 @@ class Storage:
             cur.execute("DELETE FROM checkout_profiles WHERE id = ?", (profile_id,))
             self._conn.commit()
 
-    def load_profiles(self) -> list[dict[str, Any]]:
+    def load_profiles(self, account_id: str | None = None) -> list[dict[str, Any]]:
         with self._lock:
             cur = self._conn.cursor()
-            cur.execute("SELECT * FROM checkout_profiles ORDER BY name")
+            if account_id:
+                cur.execute(
+                    "SELECT * FROM checkout_profiles WHERE account_id = ? ORDER BY name",
+                    (account_id,),
+                )
+            else:
+                cur.execute("SELECT * FROM checkout_profiles ORDER BY name")
             rows = cur.fetchall()
         return [dict(r) for r in rows]
 
@@ -472,15 +663,16 @@ class Storage:
         status: str | None,
         url: str | None,
         placed_at: datetime,
+        account_id: str | None = None,
     ) -> None:
         with self._lock:
             cur = self._conn.cursor()
             cur.execute(
                 """
-                INSERT INTO orders (order_id, cart_id, plan_code, status, url, placed_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO orders (order_id, cart_id, plan_code, status, url, placed_at, account_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (order_id, cart_id, plan_code, status, url, _iso(placed_at)),
+                (order_id, cart_id, plan_code, status, url, _iso(placed_at), account_id),
             )
             self._conn.commit()
 
@@ -493,14 +685,21 @@ class Storage:
             )
             self._conn.commit()
 
-    def load_orders(self, limit: int = 50) -> list[dict[str, Any]]:
+    def load_orders(self, limit: int = 50, account_id: str | None = None) -> list[dict[str, Any]]:
         with self._lock:
             cur = self._conn.cursor()
-            cur.execute(
-                "SELECT order_id, cart_id, plan_code, status, url, placed_at "
-                "FROM orders ORDER BY placed_at DESC LIMIT ?",
-                (limit,),
-            )
+            if account_id:
+                cur.execute(
+                    "SELECT order_id, cart_id, plan_code, status, url, placed_at, account_id "
+                    "FROM orders WHERE account_id = ? ORDER BY placed_at DESC LIMIT ?",
+                    (account_id, limit),
+                )
+            else:
+                cur.execute(
+                    "SELECT order_id, cart_id, plan_code, status, url, placed_at, account_id "
+                    "FROM orders ORDER BY placed_at DESC LIMIT ?",
+                    (limit,),
+                )
             rows = cur.fetchall()
         return [dict(r) for r in rows]
 
