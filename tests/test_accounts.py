@@ -164,3 +164,75 @@ def test_active_route_not_shadowed_by_wildcard(client):
     # If shadowed, this would 404 ("Account 'active' not found")
     assert r.status_code == 200
     assert "active_account_id" in r.json()
+
+
+# ----- account-scoped data isolation -----
+
+XHR = {"X-Requested-With": "XMLHttpRequest"}
+
+
+def _switch(client, account_id):
+    r = client.put("/api/accounts/active", json={"account_id": account_id}, headers=XHR)
+    assert r.status_code == 200
+
+
+def _create_alert(client, plan_code):
+    r = client.post("/api/alerts", json={"plan_code": plan_code, "fqn_pattern": "*"}, headers=XHR)
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def test_alerts_scoped_to_active_account(client):
+    """An alert created under account A is not listed when B is active."""
+    a = _create_account(client, label="A")
+    b = _create_account(client, label="B", endpoint="ovh-us")
+    # A is active (first); create an alert under A.
+    _switch(client, a["id"])
+    alert_a = _create_alert(client, "24ska")
+    # Switch to B and create an alert under B.
+    _switch(client, b["id"])
+    alert_b = _create_alert(client, "24sk11")
+    ids_active_b = {x["id"] for x in client.get("/api/alerts").json()}
+    assert alert_b in ids_active_b
+    assert alert_a not in ids_active_b
+    # Switch back to A; only A's alert shows.
+    _switch(client, a["id"])
+    ids_active_a = {x["id"] for x in client.get("/api/alerts").json()}
+    assert alert_a in ids_active_a
+    assert alert_b not in ids_active_a
+
+
+def test_profiles_scoped_to_active_account(client):
+    """Profiles are created under + listed per the active account."""
+    a = _create_account(client, label="A")
+    b = _create_account(client, label="B", endpoint="ovh-us")
+    _switch(client, a["id"])
+    r = client.post("/api/profiles", json={
+        "name": "profA", "plan_code": "24ska", "fqn": "24ska.default",
+        "region": "europe", "os": "none_64.en", "duration": "P1M",
+    }, headers=XHR)
+    assert r.status_code == 201
+    _switch(client, b["id"])
+    client.post("/api/profiles", json={
+        "name": "profB", "plan_code": "24sk11", "fqn": "24sk11.default",
+        "region": "united_states", "os": "none_64.en", "duration": "P1M",
+    }, headers=XHR)
+    names_b = {p["name"] for p in client.get("/api/profiles").json()}
+    assert names_b == {"profB"}
+    _switch(client, a["id"])
+    names_a = {p["name"] for p in client.get("/api/profiles").json()}
+    assert names_a == {"profA"}
+
+
+def test_storage_load_alerts_filtered_by_account():
+    """Direct storage-level scoping check (no monitor in-memory state)."""
+    from app.services.storage import get_storage
+    s = get_storage()
+    s.upsert_alert("id-a", "24ska", "*", True, None, account_id="acct-a")
+    s.upsert_alert("id-b", "24sk11", "*", True, None, account_id="acct-b")
+    a_ids = {x["id"] for x in s.load_alerts(account_id="acct-a")}
+    b_ids = {x["id"] for x in s.load_alerts(account_id="acct-b")}
+    all_ids = {x["id"] for x in s.load_alerts()}
+    assert a_ids == {"id-a"}
+    assert b_ids == {"id-b"}
+    assert all_ids == {"id-a", "id-b"}

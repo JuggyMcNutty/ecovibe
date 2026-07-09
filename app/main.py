@@ -139,7 +139,6 @@ def create_app():
         insights,
         monitor,
         profiles,
-        setup,
         sniper,
     )
     from app.api import (
@@ -179,7 +178,6 @@ def create_app():
     app.include_router(insights.router)
     app.include_router(profiles.router)
     app.include_router(sniper.router)
-    app.include_router(setup.router)
     app.include_router(settings_api.router)
     app.include_router(account.router)
     app.include_router(accounts.router)

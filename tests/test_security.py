@@ -9,6 +9,16 @@ def _client():
     return TestClient(app)
 
 
+# Account-creation body used across the CSRF tests.
+_ACCT_BODY = {
+    "label": "x",
+    "endpoint": "ovh-eu",
+    "application_key": "ak",
+    "application_secret": "as",
+    "consumer_key": "ck",
+}
+
+
 def test_get_allowed_without_header():
     """GET /api/health must always pass — no CSRF check on safe methods."""
     r = _client().get("/api/health")
@@ -19,16 +29,11 @@ def test_post_allowed_with_xhr_header():
     """POST with X-Requested-With header is allowed (SPA pattern)."""
     c = _client()
     r = c.post(
-        "/api/setup/credentials",
-        json={
-            "endpoint": "ovh-eu",
-            "application_key": "ak",
-            "application_secret": "as",
-            "consumer_key": "ck",
-        },
+        "/api/accounts",
+        json=_ACCT_BODY,
         headers={"X-Requested-With": "XMLHttpRequest"},
     )
-    # Either 200 (saved) or 400 (validation) — both mean middleware allowed it.
+    # Either 201 (created) or 400 (validation) — both mean middleware allowed it.
     assert r.status_code != 403
 
 
@@ -36,13 +41,8 @@ def test_post_blocked_cross_origin():
     """POST with a cross-origin Origin header and no X-Requested-With → 403."""
     c = _client()
     r = c.post(
-        "/api/setup/credentials",
-        json={
-            "endpoint": "ovh-eu",
-            "application_key": "ak",
-            "application_secret": "as",
-            "consumer_key": "ck",
-        },
+        "/api/accounts",
+        json=_ACCT_BODY,
         headers={"Origin": "https://evil.example"},
     )
     assert r.status_code == 403
@@ -53,13 +53,8 @@ def test_post_blocked_cross_origin_referer():
     """POST with a cross-origin Referer and no X-Requested-With → 403."""
     c = _client()
     r = c.post(
-        "/api/setup/credentials",
-        json={
-            "endpoint": "ovh-eu",
-            "application_key": "ak",
-            "application_secret": "as",
-            "consumer_key": "ck",
-        },
+        "/api/accounts",
+        json=_ACCT_BODY,
         headers={"Referer": "https://evil.example/"},
     )
     assert r.status_code == 403
@@ -69,13 +64,8 @@ def test_post_allowed_same_origin():
     """POST with same-origin Origin header is allowed even without XHR header."""
     c = _client()
     r = c.post(
-        "/api/setup/credentials",
-        json={
-            "endpoint": "ovh-eu",
-            "application_key": "ak",
-            "application_secret": "as",
-            "consumer_key": "ck",
-        },
+        "/api/accounts",
+        json=_ACCT_BODY,
         headers={"Origin": "http://testserver"},
     )
     assert r.status_code != 403
@@ -88,34 +78,22 @@ def test_post_allowed_no_origin_no_referer():
     existing test suite passes without modification.
     """
     c = _client()
-    r = c.post(
-        "/api/setup/credentials",
-        json={
-            "endpoint": "ovh-eu",
-            "application_key": "ak",
-            "application_secret": "as",
-            "consumer_key": "ck",
-        },
-    )
+    r = c.post("/api/accounts", json=_ACCT_BODY)
     assert r.status_code != 403
 
 
 def test_delete_blocked_cross_origin():
     """DELETE with cross-origin Origin and no X-Requested-With → 403."""
     c = _client()
-    # Seed credentials so the delete target exists.
-    c.post(
-        "/api/setup/credentials",
-        json={
-            "endpoint": "ovh-eu",
-            "application_key": "ak",
-            "application_secret": "as",
-            "consumer_key": "ck",
-        },
+    # Seed an account so the delete target exists.
+    r = c.post(
+        "/api/accounts",
+        json=_ACCT_BODY,
         headers={"X-Requested-With": "XMLHttpRequest"},
     )
+    acct_id = r.json()["id"]
     r = c.delete(
-        "/api/setup/credentials",
+        f"/api/accounts/{acct_id}",
         headers={"Origin": "https://evil.example"},
     )
     assert r.status_code == 403
@@ -141,13 +119,8 @@ def test_xhr_header_overrides_cross_origin():
     """
     c = _client()
     r = c.post(
-        "/api/setup/credentials",
-        json={
-            "endpoint": "ovh-eu",
-            "application_key": "ak",
-            "application_secret": "as",
-            "consumer_key": "ck",
-        },
+        "/api/accounts",
+        json=_ACCT_BODY,
         headers={
             "X-Requested-With": "XMLHttpRequest",
             "Origin": "https://evil.example",
