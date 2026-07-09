@@ -54,7 +54,82 @@ let state = {
     productSpecs: {},
     stockByPlan: {},
     notifSettingsLoaded: false,
+    // Display-only currency conversion (visual only; OVH charges in the
+    // catalog's native currency regardless). catalogCurrency is the ISO code
+    // the active catalog is denominated in; displayCurrency is what the user
+    // sees. fxRates is the cached Frankfurter/ECB payload (EUR-base).
+    catalogCurrency: 'EUR',
+    displayCurrency: 'EUR',
+    fxRates: null,
+    _currencyUserSet: false,
 };
+
+// Currency symbols for the four supported display currencies. Used as a
+// fallback when Intl.NumberFormat isn't available; otherwise Intl handles
+// symbols/positioning per locale.
+const CURRENCY_SYMBOLS = { EUR: '€', USD: '$', GBP: '£', CAD: 'C$' };
+const SUPPORTED_CURRENCIES = ['EUR', 'USD', 'GBP', 'CAD'];
+
+function formatCurrency(amount, code = state.displayCurrency) {
+    if (typeof amount !== 'number' || !isFinite(amount)) return 'On request';
+    try {
+        return new Intl.NumberFormat(undefined, { style: 'currency', currency: code }).format(amount);
+    } catch (e) {
+        const sym = CURRENCY_SYMBOLS[code] || '';
+        return `${sym}${amount.toFixed(2)}`;
+    }
+}
+
+function loadFxRates() {
+    return apiRequest('GET', '/currency/rates').then(rates => {
+        state.fxRates = rates;
+        updateCurrencyStatus();
+    }).catch(() => {
+        state.fxRates = null;
+        updateCurrencyStatus();
+    });
+}
+
+function updateCurrencyStatus() {
+    const el = document.getElementById('currency-status');
+    if (!el) return;
+    if (state.displayCurrency === state.catalogCurrency) {
+        el.textContent = '';
+        return;
+    }
+    if (!state.fxRates) {
+        el.textContent = '(rates unavailable — showing native prices)';
+    } else {
+        el.textContent = `· ${state.fxRates.date || ''}`;
+    }
+}
+
+function convertMicrocents(microcents, fromCode = state.catalogCurrency, toCode = state.displayCurrency) {
+    // microcents (1 unit = 10^8 microcents) → currency units → FX → display units
+    const units = microcents / 100000000;
+    if (fromCode === toCode || !state.fxRates) return units; // no conversion
+    const rateMap = state.fxRates.rates || {};
+    const base = state.fxRates.base || 'EUR';
+    const fromRate = fromCode === base ? 1 : rateMap[fromCode];
+    const toRate = toCode === base ? 1 : rateMap[toCode];
+    if (!fromRate || !toRate) return units; // unknown: don't convert
+    return units * (toRate / fromRate);
+}
+
+function displayPrice(microcents, formattedPrice, fromCode = state.catalogCurrency) {
+    // Prefer OVH's exact formattedPrice when the display currency matches the
+    // catalog currency; otherwise convert raw microcents.
+    if (state.displayCurrency === fromCode && formattedPrice) return formattedPrice;
+    if (microcents == null) return 'On request';
+    return formatCurrency(convertMicrocents(microcents, fromCode, state.displayCurrency), state.displayCurrency);
+}
+
+function displayPriceUnits(microcents, fromCode = state.catalogCurrency) {
+    // Returns just the converted numeric units (for totals arithmetic display).
+    if (microcents == null) return 0;
+    return convertMicrocents(microcents, fromCode, state.displayCurrency);
+}
+
 
 let audioContext = null;
 let alertBuffer = null;
@@ -224,14 +299,16 @@ async function switchAccount(accountId) {
         const acct = state.accounts.find(a => a.id === accountId);
         if (acct) state.endpoint = acct.endpoint;
         // Reload all scoped data for the new account.
+        state._currencyUserSet = false;  // allow /me to re-default the currency
         populateCatalogCountries();
+        await loadFxRates();
+        await loadAccountInfo();
         await loadAlerts();
         await loadCatalog();
         await loadProfiles();
         await loadOrders();
         await loadSniperStatus();
         if (state.billingLoaded) {
-            loadAccountInfo();
             loadPaymentMethods();
             loadCheckoutDefaults();
         }
@@ -314,85 +391,26 @@ const SUBSIDIARIES_BY_ENDPOINT = {
     'ovh-ca': ['CA'],
 };
 
-// All subsidiaries the catalog can be browsed in, with their billing
-// currency. Offered regardless of the active account's region so a CA
-// account can view USD pricing, etc. The actual rendered price currency
-// comes from OVH's formattedPrice; this label is a convenience hint.
-const CATALOG_SUBSIDIARIES = {
-    'US': 'USD',
-    'CA': 'CAD',
-    'IE': 'EUR',
-    'FR': 'EUR',
-    'DE': 'EUR',
-    'GB': 'GBP',
-    'ES': 'EUR',
-    'IT': 'EUR',
-    'PT': 'EUR',
-    'PL': 'PLN',
-    'CZ': 'EUR',
-    'FI': 'EUR',
-};
-
 function defaultSubsidiaryForEndpoint(endpoint) {
     const list = SUBSIDIARIES_BY_ENDPOINT[endpoint] || SUBSIDIARIES_BY_ENDPOINT['ovh-eu'];
     return list[0];
 }
 
-function getPreferredSubsidiary() {
-    try {
-        return localStorage.getItem('ovh-catalog-subsidiary') || null;
-    } catch (e) {
-        return null;
-    }
-}
-
-function setPreferredSubsidiary(code) {
-    try {
-        if (code) localStorage.setItem('ovh-catalog-subsidiary', code);
-    } catch (e) {
-        // localStorage may be unavailable (private mode); ignore.
-    }
-}
-
 function populateCatalogCountries() {
-    const select = document.getElementById('catalog-country');
-    if (!select) return;
-    // Order: USD first (main goal), then the rest alphabetically by code.
-    const codes = Object.keys(CATALOG_SUBSIDIARIES).sort((a, b) => {
-        if (a === 'US') return -1;
-        if (b === 'US') return 1;
-        return a.localeCompare(b);
-    });
-    const preferred = getPreferredSubsidiary();
-    const native = defaultSubsidiaryForEndpoint(state.endpoint);
-    const selected = (preferred && CATALOG_SUBSIDIARIES[preferred]) ? preferred : native;
-    select.innerHTML = '';
-    codes.forEach(code => {
-        const cur = CATALOG_SUBSIDIARIES[code];
-        const opt = el('option', { value: code, text: `${code} (${cur})` });
-        if (code === selected) opt.selected = true;
-        select.appendChild(opt);
-    });
+    // The per-country dropdown was replaced by the currency selector.
+    // Kept as a no-op so existing call sites don't need updating.
 }
 
 async function loadCatalog(country) {
     showLoading();
-    // Read the selector's current value when no explicit country is given
-    // (so the persisted/native default chosen in populateCatalogCountries
-    // is honoured).
-    if (!country) {
-        const sel = document.getElementById('catalog-country');
-        country = sel ? sel.value : null;
-    }
     const subsidiary = country || defaultSubsidiaryForEndpoint(state.endpoint);
     state.catalogCountry = subsidiary;
-    if (subsidiary) setPreferredSubsidiary(subsidiary);
     try {
         const url = subsidiary
             ? `/catalog/plans?country=${encodeURIComponent(subsidiary)}`
             : '/catalog/plans';
         const resp = await apiRequest('GET', url);
-        // Response shape: {plans: [...], addonPrices: {code: {price, formattedPrice, invoiceName}}}
+        // Response shape: {plans: [...], addonPrices: {code: {price, formattedPrice, invoiceName, currencyCode}}}
         if (Array.isArray(resp)) {
             // Backwards compat: old API returned just the plans array
             state.plans = resp;
@@ -403,6 +421,10 @@ async function loadCatalog(country) {
             state.addonPrices = resp.addonPrices || {};
             state.productSpecs = resp.productSpecs || {};
         }
+        // Detect the catalog's native currency from the first addon price
+        // that carries a currencyCode (or from a plan's pricing).
+        detectCatalogCurrency();
+        // Re-render prices if the display currency differs from native.
         renderPlanSelect();
         renderCatalogList();
         if (state.selectedPlanCode) {
@@ -421,6 +443,28 @@ async function loadCatalog(country) {
     }
 }
 
+function detectCatalogCurrency() {
+    // Prefer currencyCode from addon prices (set by the backend from OVH's
+    // pricing data); fall back to the first plan's pricing currencyCode.
+    for (const code in state.addonPrices) {
+        const cc = state.addonPrices[code]?.currencyCode;
+        if (cc) { state.catalogCurrency = cc; updateMaxPriceLabel(); return; }
+    }
+    for (const plan of state.plans) {
+        const mp = getPlanMonthlyPrice(plan);
+        if (mp?.currencyCode) {
+            state.catalogCurrency = mp.currencyCode;
+            updateMaxPriceLabel();
+            return;
+        }
+    }
+}
+
+function updateMaxPriceLabel() {
+    const el = document.getElementById('max-price-currency');
+    if (el) el.textContent = `(${state.catalogCurrency})`;
+}
+
 async function refreshCatalogSilent() {
     if (!state.configured || !state.catalogCountry) return;
     try {
@@ -436,6 +480,7 @@ async function refreshCatalogSilent() {
             state.addonPrices = resp.addonPrices || {};
             state.productSpecs = resp.productSpecs || {};
         }
+        detectCatalogCurrency();
         // Carry over stock flags until the fresh fetch completes.
         for (const p of state.plans) {
             p._inStock = state.stockByPlan[p.planCode] ?? true;
@@ -563,10 +608,10 @@ function formatPrice(priceValue) {
         return 'On request';
     }
     if (priceValue === 0) {
-        return '$0.00';
+        return formatCurrency(0);
     }
     // OVH stores prices in microcents: divide by 10^8 to get currency units.
-    return `$${(priceValue / 100000000).toFixed(2)}`;
+    return formatCurrency(priceValue / 100000000);
 }
 
 // Region suffixes on planCode (e.g. "24sk10-eu") map to readable labels.
@@ -672,7 +717,7 @@ function renderCatalogList() {
     }
     plans.forEach(plan => {
         const monthly = getPlanMonthlyPrice(plan);
-        const priceText = monthly?.formattedPrice || (monthly?.price != null ? formatPrice(monthly.price) : 'On request');
+        const priceText = displayPrice(monthly?.price, monthly?.formattedPrice, monthly?.currencyCode || state.catalogCurrency);
 
         const inStock = plan._inStock !== false;
         const name = el('span', {
@@ -982,8 +1027,8 @@ function renderCatalogDetail(plan) {
 
     const monthly = getPlanMonthlyPrice(plan);
     const setup = getPlanSetupFee(plan);
-    const priceText = monthly?.formattedPrice || (monthly?.price != null ? formatPrice(monthly.price) : 'On request');
-    const setupText = setup?.formattedPrice || (setup?.price != null ? formatPrice(setup.price) : '');
+    const priceText = displayPrice(monthly?.price, monthly?.formattedPrice, monthly?.currencyCode || state.catalogCurrency);
+    const setupText = displayPrice(setup?.price, setup?.formattedPrice, setup?.currencyCode || state.catalogCurrency);
     const region = planRegion(plan.planCode);
 
     // Parse server name + CPU from invoiceName (format: "MODEL | CPU")
@@ -1115,7 +1160,7 @@ function renderCatalogDetail(plan) {
         const el2 = document.getElementById('detail-total-price');
         if (el2) {
             if (total > 0) {
-                el2.textContent = `$${(total / 100000000).toFixed(2)}`;
+                el2.textContent = formatCurrency(convertMicrocents(total));
             } else {
                 el2.textContent = priceText;
             }
@@ -1126,7 +1171,7 @@ function renderCatalogDetail(plan) {
         const setupPriceEl = document.getElementById('detail-setup-price');
         if (setupRowEl && setupPriceEl) {
             if (setupTotal > 0) {
-                setupPriceEl.textContent = `+$${(setupTotal / 100000000).toFixed(2)}`;
+                setupPriceEl.textContent = '+' + formatCurrency(convertMicrocents(setupTotal));
                 setupRowEl.classList.remove('hidden');
             } else {
                 setupRowEl.classList.add('hidden');
@@ -1138,7 +1183,8 @@ function renderCatalogDetail(plan) {
         const info = getAddonPrice(addonCode);
         if (!info) return '';
         if (info.price === 0) return 'included';
-        return `+${info.formattedPrice || '$' + (info.price / 100000000).toFixed(2)}`;
+        const fromCode = info.currencyCode || state.catalogCurrency;
+        return '+' + displayPrice(info.price, info.formattedPrice, fromCode);
     }
 
     // Hardware specs from addonFamilies - selectable cards with prices
@@ -1585,7 +1631,7 @@ function renderCatalogDetail(plan) {
             }
 
             const setupFeeText = setup?.price
-                ? ` + $${(setup.price / 100000000).toFixed(2)} setup`
+                ? ` + ${formatCurrency(convertMicrocents(setup.price))} setup`
                 : '';
 
             if (!confirm(`Place order for ${serverModel}?\n${monthly?.formattedPrice || priceText}/mo${setupFeeText}\nDC: ${(dc||'default').toUpperCase()}\nDuration: ${duration}`)) {
@@ -1730,6 +1776,14 @@ async function loadAccountInfo() {
             ['State', me.state],
             ['Legal form', me.legalform],
         ].filter(([, v]) => v);
+        // Default the display currency to the account's billing currency.
+        const billingCurrency = me.currency?.code || (typeof me.currency === 'string' ? me.currency : null);
+        if (billingCurrency && SUPPORTED_CURRENCIES.includes(billingCurrency) && !state._currencyUserSet) {
+            state.displayCurrency = billingCurrency;
+            const sel = document.getElementById('currency-select');
+            if (sel) sel.value = billingCurrency;
+            updateCurrencyStatus();
+        }
         const grid = el('div', { class: 'grid grid-cols-1 sm:grid-cols-2 gap-2' });
         for (const [label, value] of fields) {
             grid.appendChild(el('div', { class: 'bg-gray-700 rounded p-2' }, [
@@ -2641,7 +2695,7 @@ async function loadPriceHistoryView(planCode) {
         const list = el('div', { class: 'space-y-1' });
         history.slice(0, 20).forEach(h => {
             const time = new Date(h.timestamp).toLocaleString();
-            const price = `$${(h.price_in_ucents / 100000000).toFixed(2)}`;
+            const price = formatCurrency(convertMicrocents(h.price_in_ucents));
             list.appendChild(el('div', { class: 'flex justify-between bg-gray-700 rounded px-2 py-1 text-sm' }, [
                 el('span', { class: 'text-gray-400', text: time }),
                 el('span', { class: 'text-green-400 font-bold', text: price }),
@@ -2718,6 +2772,8 @@ async function init() {
         document.getElementById('settings-btn').classList.remove('hidden');
         renderAccountSelect();
         populateCatalogCountries();
+        await loadFxRates();
+        await loadAccountInfo();
         await loadAlerts();
         await loadCatalog();
         await loadPollInterval();
@@ -2785,13 +2841,27 @@ async function init() {
         }
     });
 
-    document.getElementById('load-catalog-btn').addEventListener('click', () => {
-        const country = document.getElementById('catalog-country').value;
-        loadCatalog(country);
-    });
-
-    document.getElementById('catalog-country').addEventListener('change', (e) => {
-        loadCatalog(e.target.value);
+    document.getElementById('currency-select')?.addEventListener('change', (e) => {
+        state.displayCurrency = e.target.value;
+        state._currencyUserSet = true;
+        updateCurrencyStatus();
+        // Re-render with the new display currency. If rates are needed and
+        // not yet loaded, fetch them first.
+        if (state.displayCurrency !== state.catalogCurrency && !state.fxRates) {
+            loadFxRates().then(() => {
+                renderCatalogList();
+                if (state.selectedPlanCode) {
+                    const p = state.plans.find(x => x.planCode === state.selectedPlanCode);
+                    if (p) renderCatalogDetail(p);
+                }
+            });
+        } else {
+            renderCatalogList();
+            if (state.selectedPlanCode) {
+                const p = state.plans.find(x => x.planCode === state.selectedPlanCode);
+                if (p) renderCatalogDetail(p);
+            }
+        }
     });
 
     document.getElementById('catalog-search')?.addEventListener('input', renderCatalogList);
