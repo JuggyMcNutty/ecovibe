@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from fnmatch import fnmatch
 from typing import Any
 
-from app.services.ovh_service import OVHServiceError, get_ovh_service
+from app.services.ovh_service import OVHServiceError, get_active_ovh_service, get_ovh_service
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,8 @@ logger = logging.getLogger(__name__)
 @dataclass
 class StockAlert:
     """A watch on a plan_code + FQN pattern. auto_order_profile_id
-    links to a checkout profile for sniper mode."""
+    links to a checkout profile for sniper mode. account_id scopes the
+    alert to one stored credential set (the sniper orders under it)."""
 
     id: str
     plan_code: str
@@ -29,6 +30,7 @@ class StockAlert:
     enabled: bool = True
     notified_at: datetime | None = None
     auto_order_profile_id: str | None = None
+    account_id: str | None = None
 
 
 @dataclass
@@ -93,6 +95,7 @@ class SniperService:
         alert_id: str,
         plan_code: str,
         matched_fqns: list[str],
+        account_id: str | None = None,
     ) -> None:
         """Called from MonitorService after an alert match.
 
@@ -100,6 +103,9 @@ class SniperService:
           - the alert is armed,
           - no order is already in flight for it, and
           - there is at least one FQN we haven't already tried to order.
+
+        ``account_id`` selects which credential set the order runs under
+        (the alert's own account, not necessarily the active one).
 
         Tracking `fqns_seen` per arm cycle is what prevents double-orders
         when the same stock config persists across consecutive polls.
@@ -116,19 +122,25 @@ class SniperService:
         profile_id = self._armed[alert_id]["profile_id"]
         self._in_flight.add(alert_id)
         # Fire-and-forget - the result is recorded in self._results.
-        asyncio.create_task(self._fire(alert_id, plan_code, new_fqns[0], profile_id))
+        asyncio.create_task(
+            self._fire(alert_id, plan_code, new_fqns[0], profile_id, account_id)
+        )
 
     async def _fire(
-        self, alert_id: str, plan_code: str, fqn: str, profile_id: str
+        self, alert_id: str, plan_code: str, fqn: str, profile_id: str,
+        account_id: str | None = None,
     ) -> None:
         """Execute the rush order for one alert match.
 
         Imports are local to avoid a circular import at module load time
         (checkout.py imports from monitor.py for SniperService).
+
+        ``account_id`` selects the credential set — the alert's own
+        account, so the sniper orders under the right region even if the
+        active account has since changed.
         """
         try:
             from app.api.checkout import RushOrderRequest, _execute_rush_order
-            from app.services.ovh_service import get_ovh_service
             from app.services.storage import get_storage
 
             storage = get_storage()
@@ -138,7 +150,7 @@ class SniperService:
                     "status": "error", "message": f"profile {profile_id} not found"
                 }
                 return
-            service = get_ovh_service()
+            service = get_ovh_service(account_id)
             if not service.is_configured():
                 self._results[alert_id] = {"status": "error", "message": "OVH not configured"}
                 return
@@ -170,6 +182,7 @@ class SniperService:
                 status=None,
                 url=result.get("url"),
                 placed_at=datetime.now(timezone.utc),
+                account_id=account_id,
             )
             self._results[alert_id] = {
                 "status": "ordered",
@@ -232,12 +245,18 @@ class MonitorService:
             self._task = asyncio.create_task(self._run())
 
     async def _load_from_storage(self) -> None:
-        """Reload alerts and poll_interval from SQLite on startup."""
+        """Reload alerts and poll_interval from SQLite on startup.
+
+        Alerts are scoped to the active account (multi-account model):
+        only the active account's alerts are watched, so switching
+        accounts only sees that account's monitors.
+        """
         storage = self._storage_get()
         if not storage:
             return
         try:
-            loaded = storage.load_alerts()
+            active_id = storage.get_active_account_id()
+            loaded = storage.load_alerts(account_id=active_id)
             for a in loaded:
                 self._alerts[a["id"]] = StockAlert(
                     id=a["id"],
@@ -246,6 +265,7 @@ class MonitorService:
                     enabled=a["enabled"],
                     notified_at=a["notified_at"],
                     auto_order_profile_id=a.get("auto_order_profile_id"),
+                    account_id=a.get("account_id") or active_id,
                 )
             interval_str = storage.get_setting("poll_interval")
             if interval_str:
@@ -264,6 +284,19 @@ class MonitorService:
             except asyncio.CancelledError:
                 pass
         self._task = None
+
+    async def reload(self) -> None:
+        """Reload alerts + clear stock caches after an account switch.
+
+        Drops all in-memory alerts and the stock cache, then re-reads
+        the active account's alerts from storage. Called by the accounts
+        API when the active account changes so stale cross-region stock
+        data doesn't bleed into the new account's view.
+        """
+        async with self._lock:
+            self._alerts.clear()
+            self._stock_cache.clear()
+        await self._load_from_storage()
 
     async def _run(self) -> None:
         """Main poll loop: poll, broadcast, sleep, repeat.
@@ -304,7 +337,13 @@ class MonitorService:
                 self._subscribers.remove(q)
 
     async def add_alert(self, plan_code: str, fqn_pattern: str = "*") -> StockAlert:
-        """Create a new alert. Raises DuplicateAlertError if (plan, pattern) exists."""
+        """Create a new alert. Raises DuplicateAlertError if (plan, pattern) exists.
+
+        The alert is bound to the currently active account so the sniper
+        orders under the right region.
+        """
+        storage = self._storage_get()
+        account_id = storage.get_active_account_id() if storage else None
         async with self._lock:
             for existing in self._alerts.values():
                 if existing.plan_code == plan_code and existing.fqn_pattern == fqn_pattern:
@@ -312,12 +351,17 @@ class MonitorService:
                         f"Alert already exists for {plan_code}:{fqn_pattern}"
                     )
             alert_id = str(uuid.uuid4())
-            alert = StockAlert(id=alert_id, plan_code=plan_code, fqn_pattern=fqn_pattern)
+            alert = StockAlert(
+                id=alert_id, plan_code=plan_code, fqn_pattern=fqn_pattern,
+                account_id=account_id,
+            )
             self._alerts[alert_id] = alert
-        storage = self._storage_get()
         if storage:
             try:
-                storage.upsert_alert(alert_id, plan_code, fqn_pattern, True, None)
+                storage.upsert_alert(
+                    alert_id, plan_code, fqn_pattern, True, None,
+                    account_id=account_id,
+                )
             except Exception:
                 logger.warning("failed to persist alert %s", alert_id, exc_info=True)
         return alert
@@ -418,7 +462,7 @@ class MonitorService:
         if not plan_codes:
             return changes
 
-        service = get_ovh_service()
+        service = get_active_ovh_service()
         if not service.is_configured():
             return changes
 
@@ -463,12 +507,18 @@ class MonitorService:
                     if storage:
                         for fqn in diff["newly_available"]:
                             try:
-                                storage.log_stock_event(plan_code, fqn, "available", now)
+                                storage.log_stock_event(
+                                    plan_code, fqn, "available", now,
+                                    account_id=service.account_id,
+                                )
                             except Exception:
                                 logger.debug("failed to log stock event", exc_info=True)
                         for fqn in diff["now_unavailable"]:
                             try:
-                                storage.log_stock_event(plan_code, fqn, "unavailable", now)
+                                storage.log_stock_event(
+                                    plan_code, fqn, "unavailable", now,
+                                    account_id=service.account_id,
+                                )
                             except Exception:
                                 logger.debug("failed to log stock event", exc_info=True)
 
@@ -486,7 +536,10 @@ class MonitorService:
                         except Exception:
                             logger.warning("notifier failed for %s", plan_code, exc_info=True)
                         try:
-                            await sniper.maybe_fire(alert_obj.id, plan_code, matched_fqns)
+                            await sniper.maybe_fire(
+                                alert_obj.id, plan_code, matched_fqns,
+                                account_id=alert_obj.account_id,
+                            )
                         except Exception:
                             logger.warning("sniper fire failed for %s", alert_obj.id, exc_info=True)
 

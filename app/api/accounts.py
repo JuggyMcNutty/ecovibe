@@ -128,11 +128,19 @@ class ActiveRequest(BaseModel):
 
 @router.put("/active")
 async def set_active(request: ActiveRequest) -> dict:
-    """Switch the active account."""
+    """Switch the active account and reload the monitor for it."""
     storage = get_storage()
     if storage.get_account(request.account_id) is None:
         raise HTTPException(status_code=404, detail="Account not found.")
     storage.set_active_account_id(request.account_id)
+    # Reload the monitor so it watches the new account's alerts and drops
+    # the previous account's stock cache. Best-effort: import locally to
+    # avoid a circular import at module load.
+    try:
+        from app.services.monitor import get_monitor_service
+        await get_monitor_service().reload()
+    except Exception:
+        logger.warning("monitor reload after account switch failed", exc_info=True)
     logger.info("Active account switched to: %s", request.account_id)
     return {"status": "ok", "active_account_id": request.account_id}
 

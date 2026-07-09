@@ -34,7 +34,8 @@ class CheckoutProfileResponse(CheckoutProfile):
 @router.get("")
 async def list_profiles() -> list[dict]:
     storage = get_storage()
-    return storage.load_profiles()
+    # Scope to the active account so the UI only shows the current account's profiles.
+    return storage.load_profiles(account_id=storage.get_active_account_id())
 
 
 @router.post("", status_code=201)
@@ -44,6 +45,7 @@ async def create_profile(profile: CheckoutProfile) -> dict:
     record = profile.model_dump()
     record["id"] = profile_id
     record["created_at"] = datetime.now(timezone.utc).isoformat()
+    record["account_id"] = storage.get_active_account_id()
     storage.upsert_profile(record)
     return record
 

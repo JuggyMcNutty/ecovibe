@@ -212,6 +212,7 @@ async def rush_checkout(request: RushOrderRequest) -> dict[str, Any]:
         status=None,
         url=result.get("url"),
         placed_at=datetime.now(timezone.utc),
+        account_id=service.account_id,
     )
     return result
 
@@ -239,5 +240,6 @@ async def checkout(cart_id: str, request: CheckoutRequest) -> dict[str, Any]:
         status=None,
         url=result.get("url"),
         placed_at=datetime.now(timezone.utc),
+        account_id=service.account_id,
     )
     return result
