@@ -58,6 +58,11 @@ let state = {
     allOrders: [],
     selectedOrderId: null,
     ordersFilter: 'all',
+    // Request-generation token for account switches. Incremented on each
+    // switch; async callbacks check that their generation is still current
+    // before writing to state, so stale responses from a previous account
+    // are ignored.
+    _switchGen: 0,
     // Display-only currency conversion (visual only; OVH charges in the
     // catalog's native currency regardless). catalogCurrency is the ISO code
     // the active catalog is denominated in; displayCurrency is what the user
@@ -362,8 +367,36 @@ function renderAccountSelect() {
 
 async function switchAccount(accountId) {
     if (accountId === state.activeAccountId) return;
+    // Tear down all background activity from the previous account so it
+    // doesn't race with the new account's data load or leak stale state.
+    if (state.monitoring) stopMonitoring();
+    stopCatalogAutoRefresh();
+    // Reset stale account-scoped state so the new account starts clean.
+    state.currentStock = {};
+    state.recentAlerts = [];
+    state.selectedPlanCode = null;
+    state.stockByPlan = {};
+    state.allOrders = [];
+    state.selectedOrderId = null;
+    state.cart = null;
+    state.cartCreatedAt = null;
+    state.orderResult = null;
+    state.plans = [];
+    state.addonPrices = {};
+    state.productSpecs = {};
+    state.catalogCountry = null;
+    // Clear detail panels so stale content doesn't linger.
+    const catDetail = document.getElementById('catalog-detail');
+    if (catDetail) catDetail.innerHTML = '<p class="text-gray-500 text-sm">Select a plan to see details.</p>';
+    const ordDetail = document.getElementById('order-detail');
+    if (ordDetail) ordDetail.innerHTML = '<p class="text-gray-500 text-sm">Select an order to see details.</p>';
+
+    // Increment the generation token so in-flight callbacks from the
+    // previous account know they're stale and bail out.
+    const gen = ++state._switchGen;
     try {
         await apiRequest('PUT', '/accounts/active', { account_id: accountId });
+        if (gen !== state._switchGen) return;  // superseded by a newer switch
         state.activeAccountId = accountId;
         const acct = state.accounts.find(a => a.id === accountId);
         if (acct) state.endpoint = acct.endpoint;
@@ -371,18 +404,27 @@ async function switchAccount(accountId) {
         state._currencyUserSet = false;  // allow /me to re-default the currency
         populateCatalogCountries();
         await loadFxRates();
+        if (gen !== state._switchGen) return;
         await loadAccountInfo();
+        if (gen !== state._switchGen) return;
         await loadAlerts();
+        if (gen !== state._switchGen) return;
         await loadCatalog();
+        if (gen !== state._switchGen) return;
         await loadProfiles();
+        if (gen !== state._switchGen) return;
         await loadOrders();
+        if (gen !== state._switchGen) return;
         await loadSniperStatus();
+        if (gen !== state._switchGen) return;
         if (state.billingLoaded) {
             loadPaymentMethods();
             loadCheckoutDefaults();
         }
     } catch (e) {
-        showError(`Failed to switch account: ${e.message}`);
+        if (gen === state._switchGen) {
+            showError(`Failed to switch account: ${e.message}`);
+        }
     }
 }
 
