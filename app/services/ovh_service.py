@@ -445,6 +445,48 @@ class OVHService:
         """Delete an abandoned or failed cart. Best-effort cleanup."""
         self.delete(f"/order/cart/{cart_id}")
 
+    # ---- Orders ----
+
+    def list_orders(
+        self, date_from: str | None = None, date_to: str | None = None
+    ) -> list[int]:
+        """Return all order IDs for the account, optionally date-filtered.
+
+        OVH returns a list of longs (order IDs). Use ``date.from``/``date.to``
+        (ISO 8601) to limit the window.
+        """
+        kwargs: dict[str, Any] = {}
+        if date_from:
+            kwargs["date.from"] = date_from
+        if date_to:
+            kwargs["date.to"] = date_to
+        return self.get("/me/order", **kwargs)
+
+    def get_order(self, order_id: int) -> dict[str, Any]:
+        """Return the full order object (price, pdfUrl, dates, url)."""
+        return self.get(f"/me/order/{order_id}")
+
+    def get_order_status(self, order_id: int) -> str:
+        """Return the order status string (e.g. 'delivering', 'delivered')."""
+        return self.get(f"/me/order/{order_id}/status")
+
+    def get_order_details(self, order_id: int) -> list[dict[str, Any]]:
+        """Return line-item details for an order (server, installation, licenses)."""
+        detail_ids = self.get(f"/me/order/{order_id}/details")
+        details = []
+        for did in detail_ids:
+            detail = self.get(f"/me/order/{order_id}/details/{did}")
+            details.append(detail)
+        return details
+
+    def get_order_followup(self, order_id: int) -> list[dict[str, Any]]:
+        """Return the delivery follow-up timeline for an order."""
+        return self.get(f"/me/order/{order_id}/followUp")
+
+    def waive_order_retraction(self, order_id: int) -> None:
+        """Waive the legal retraction period to speed up delivery."""
+        self.post(f"/me/order/{order_id}/waiveRetraction")
+
 
 # ----- per-account service registry -----
 #

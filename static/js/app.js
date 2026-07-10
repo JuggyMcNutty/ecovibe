@@ -54,6 +54,10 @@ let state = {
     productSpecs: {},
     stockByPlan: {},
     notifSettingsLoaded: false,
+    // Orders tab state.
+    allOrders: [],
+    selectedOrderId: null,
+    ordersFilter: 'all',
     // Display-only currency conversion (visual only; OVH charges in the
     // catalog's native currency regardless). catalogCurrency is the ISO code
     // the active catalog is denominated in; displayCurrency is what the user
@@ -1772,9 +1776,15 @@ function switchTab(tabId) {
     if (billingTab) billingTab.classList.toggle('hidden', tabId !== 'billing-tab');
     const insightsTab = document.getElementById('insights-tab');
     if (insightsTab) insightsTab.classList.toggle('hidden', tabId !== 'insights-tab');
+    const ordersTab = document.getElementById('orders-tab');
+    if (ordersTab) ordersTab.classList.toggle('hidden', tabId !== 'orders-tab');
     // Lazy-load billing data when switching to that tab
     if (tabId === 'billing-tab' && !state.billingLoaded) {
         loadBillingInfo();
+    }
+    // Lazy-load orders data when switching to the orders tab
+    if (tabId === 'orders-tab') {
+        loadOrdersTab();
     }
     // Refresh insights plan dropdown when switching to that tab
     if (tabId === 'insights-tab') {
@@ -2675,6 +2685,241 @@ function renderOrders(orders) {
     });
 }
 
+// ----- Orders tab -----
+
+const ORDER_STATUS_STYLES = {
+    delivered:    'bg-green-900/50 text-green-400 border-green-700',
+    delivering:   'bg-blue-900/50 text-blue-400 border-blue-700',
+    checking:     'bg-blue-900/50 text-blue-300 border-blue-700',
+    notPaid:      'bg-red-900/50 text-red-400 border-red-700',
+    cancelled:    'bg-gray-700 text-gray-400 border-gray-600',
+    cancelling:   'bg-gray-700 text-gray-400 border-gray-600',
+    documentsRequested: 'bg-yellow-900/50 text-yellow-400 border-yellow-700',
+    unknown:      'bg-gray-700 text-gray-400 border-gray-600',
+};
+
+function orderStatusBadge(status) {
+    const cls = ORDER_STATUS_STYLES[status] || ORDER_STATUS_STYLES.unknown;
+    return el('span', { class: `text-xs px-2 py-0.5 rounded border ${cls}`, text: status || 'unknown' });
+}
+
+function _ordersMatchFilter(order, filter) {
+    if (filter === 'all') return true;
+    const st = (order.status || '').toLowerCase();
+    if (filter === 'pending') return ['checking', 'delivering', 'notpaid', 'documentsrequested', 'unknown'].includes(st);
+    if (filter === 'delivered') return st === 'delivered';
+    if (filter === 'cancelled') return ['cancelled', 'cancelling'].includes(st);
+    return true;
+}
+
+async function loadOrdersTab() {
+    const container = document.getElementById('orders-full-list');
+    if (!container) return;
+    container.innerHTML = '';
+    container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'Loading orders from OVH...' }));
+    try {
+        const data = await apiRequest('GET', '/orders?limit=50&days=90');
+        state.allOrders = data?.orders || [];
+        renderOrdersList();
+    } catch (e) {
+        container.innerHTML = '';
+        container.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
+    }
+}
+
+function renderOrdersList() {
+    const container = document.getElementById('orders-full-list');
+    if (!container) return;
+    container.innerHTML = '';
+    const filtered = state.allOrders.filter(o => _ordersMatchFilter(o, state.ordersFilter));
+    if (!filtered.length) {
+        container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No orders found.' }));
+        return;
+    }
+    filtered.forEach(o => {
+        const dateStr = o.date || o.placed_at || '';
+        const date = dateStr ? new Date(dateStr).toLocaleDateString() : '';
+        const priceStr = (o.price_with_tax != null && o.currency_code)
+            ? displayPrice(o.price_with_tax, null, o.currency_code)
+            : '';
+        const isSelected = o.order_id === state.selectedOrderId;
+        const card = el('div', {
+            class: `rounded p-3 cursor-pointer transition-colors border ${isSelected ? 'bg-blue-600/30 border-blue-500' : 'bg-gray-700 border-gray-600 hover:bg-gray-600'}`,
+            role: 'button',
+            tabindex: '0',
+        });
+        card.addEventListener('click', () => {
+            state.selectedOrderId = o.order_id;
+            renderOrdersList();
+            loadOrderDetail(o.order_id);
+        });
+        card.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); card.click(); }
+        });
+        const topRow = el('div', { class: 'flex justify-between items-center gap-2' }, [
+            el('div', { class: 'min-w-0 flex-1' }, [
+                el('span', { class: 'text-blue-400 font-bold text-sm', text: o.server_name || o.plan_code || '(unknown)' }),
+                el('span', { class: 'text-gray-400 ml-2 text-xs', text: `#${o.order_id || '?'}` }),
+            ]),
+            orderStatusBadge(o.status),
+        ]);
+        const bottomRow = el('div', { class: 'flex justify-between items-center mt-1' }, [
+            el('span', { class: 'text-gray-500 text-xs', text: date }),
+            el('span', { class: 'text-yellow-400 text-xs font-bold', text: priceStr }),
+        ]);
+        card.appendChild(topRow);
+        card.appendChild(bottomRow);
+        container.appendChild(card);
+    });
+}
+
+async function loadOrderDetail(orderId) {
+    const container = document.getElementById('order-detail');
+    if (!container) return;
+    container.innerHTML = '';
+    container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'Loading order details...' }));
+    try {
+        const data = await apiRequest('GET', `/orders/${encodeURIComponent(orderId)}`);
+        renderOrderDetail(data);
+    } catch (e) {
+        container.innerHTML = '';
+        container.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
+    }
+}
+
+function renderOrderDetail(data) {
+    const container = document.getElementById('order-detail');
+    if (!container) return;
+    container.innerHTML = '';
+    const order = data.order || {};
+    const status = data.status || 'unknown';
+    const details = data.details || [];
+    const followup = data.followup || [];
+    const orderId = order.orderId || state.selectedOrderId;
+
+    // Header
+    const header = el('div', { class: 'flex justify-between items-center mb-4' }, [
+        el('div', {}, [
+            el('h3', { class: 'text-lg font-bold text-blue-400', text: `Order #${orderId}` }),
+            el('p', { class: 'text-gray-400 text-xs', text: order.date ? new Date(order.date).toLocaleString() : '' }),
+        ]),
+        orderStatusBadge(status),
+    ]);
+    container.appendChild(header);
+
+    // Price breakdown
+    const priceSection = el('div', { class: 'space-y-1 mb-4' });
+    const pwt = order.priceWithTax || {};
+    const pwot = order.priceWithoutTax || {};
+    const tax = order.tax || {};
+    if (pwt.text) {
+        priceSection.appendChild(el('p', {}, [
+            el('span', { class: 'text-gray-400 text-sm', text: 'Total (with tax): ' }),
+            el('span', { class: 'text-yellow-400 font-bold text-sm', text: pwt.text }),
+        ]));
+    }
+    if (pwot.text) {
+        priceSection.appendChild(el('p', { class: 'text-gray-400 text-xs', text: `Subtotal: ${pwot.text}` }));
+    }
+    if (tax.text) {
+        priceSection.appendChild(el('p', { class: 'text-gray-400 text-xs', text: `Tax: ${tax.text}` }));
+    }
+    container.appendChild(priceSection);
+
+    // Dates (retraction, expiration)
+    if (order.retractionDate) {
+        const retDate = new Date(order.retractionDate);
+        const isFuture = retDate > new Date();
+        priceSection.appendChild(el('p', { class: `text-xs ${isFuture ? 'text-yellow-400' : 'text-gray-500'}`, text: `Retraction period: ${retDate.toLocaleString()}${isFuture ? ' (active)' : ' (expired)'}` }));
+    }
+    if (order.expirationDate) {
+        priceSection.appendChild(el('p', { class: 'text-gray-400 text-xs', text: `Expires: ${new Date(order.expirationDate).toLocaleString()}` }));
+    }
+
+    // Actions
+    const actionsRow = el('div', { class: 'flex gap-2 mb-4 flex-wrap' });
+    if (order.pdfUrl) {
+        actionsRow.appendChild(el('a', {
+            href: order.pdfUrl, target: '_blank', rel: 'noopener',
+            class: 'bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm',
+            text: 'View Invoice PDF',
+        }));
+    }
+    if (order.url) {
+        actionsRow.appendChild(el('a', {
+            href: order.url, target: '_blank', rel: 'noopener',
+            class: 'bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm',
+            text: 'Open in OVH Manager',
+        }));
+    }
+    // Waive retraction button (only if retraction period is active)
+    if (order.retractionDate && new Date(order.retractionDate) > new Date()) {
+        const waiveBtn = el('button', {
+            class: 'bg-yellow-600 hover:bg-yellow-700 px-3 py-1 rounded text-sm',
+            text: 'Waive Retraction',
+        });
+        waiveBtn.addEventListener('click', async () => {
+            if (!confirm('Waive the retraction period? This speeds up delivery but you forfeit your right of withdrawal.')) return;
+            waiveBtn.disabled = true;
+            waiveBtn.textContent = 'Waiving...';
+            try {
+                await apiRequest('POST', `/orders/${encodeURIComponent(orderId)}/waive-retraction`);
+                showToast('Retraction waived.');
+                await loadOrderDetail(orderId);
+            } catch (e) {
+                showError(e.message);
+            } finally {
+                waiveBtn.disabled = false;
+                waiveBtn.textContent = 'Waive Retraction';
+            }
+        });
+        actionsRow.appendChild(waiveBtn);
+    }
+    if (actionsRow.children.length) container.appendChild(actionsRow);
+
+    // Line items
+    if (details.length) {
+        const itemsSection = el('div', { class: 'mb-4' });
+        itemsSection.appendChild(el('h4', { class: 'font-bold text-gray-400 text-sm uppercase mb-2', text: 'Line Items' }));
+        for (const d of details) {
+            const dTotal = d.totalPrice?.text || '';
+            itemsSection.appendChild(el('div', { class: 'flex justify-between items-center bg-gray-700 rounded px-3 py-2 mb-1' }, [
+                el('div', { class: 'min-w-0 flex-1' }, [
+                    el('span', { class: 'text-gray-200 text-sm', text: d.description || d.domain || '(line item)' }),
+                    d.detailType ? el('span', { class: 'text-gray-500 ml-2 text-xs', text: d.detailType }) : null,
+                ]),
+                el('span', { class: 'text-gray-400 text-xs whitespace-nowrap', text: dTotal }),
+            ]));
+        }
+        container.appendChild(itemsSection);
+    }
+
+    // Follow-up timeline
+    if (followup.length) {
+        const followSection = el('div', { class: 'mb-4' });
+        followSection.appendChild(el('h4', { class: 'font-bold text-gray-400 text-sm uppercase mb-2', text: 'Delivery Timeline' }));
+        for (const f of followup) {
+            const stepClass = f.status === 'DONE' ? 'text-green-400' :
+                              f.status === 'DOING' ? 'text-blue-400' :
+                              f.status === 'ERROR' ? 'text-red-400' :
+                              'text-gray-400';
+            followSection.appendChild(el('div', { class: 'bg-gray-700 rounded px-3 py-2 mb-1' }, [
+                el('div', { class: 'flex justify-between' }, [
+                    el('span', { class: 'text-sm font-bold', text: f.step || '' }),
+                    el('span', { class: `text-xs font-bold ${stepClass}`, text: f.status || '' }),
+                ]),
+            ]));
+            for (const h of (f.history || [])) {
+                followSection.appendChild(el('div', { class: 'text-gray-500 text-xs ml-4 pl-2 border-l border-gray-600' }, [
+                    el('span', { text: h.date ? new Date(h.date).toLocaleString() : '' }),
+                    el('span', { class: 'ml-2', text: h.label || h.description || '' }),
+                ]));
+            }
+        }
+        container.appendChild(followSection);
+    }
+}
+
 // ----- Insights tab -----
 
 function populateInsightsPlanSelect() {
@@ -2991,6 +3236,15 @@ async function init() {
 
     document.getElementById('catalog-refresh-btn')?.addEventListener('click', () => {
         loadCatalog(null, true);
+    });
+
+    // Orders tab listeners
+    document.getElementById('orders-filter')?.addEventListener('change', (e) => {
+        state.ordersFilter = e.target.value;
+        renderOrdersList();
+    });
+    document.getElementById('orders-refresh-btn')?.addEventListener('click', () => {
+        loadOrdersTab();
     });
 
     document.getElementById('catalog-autorefresh')?.addEventListener('change', (e) => {

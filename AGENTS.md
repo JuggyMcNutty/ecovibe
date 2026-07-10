@@ -111,7 +111,8 @@ app/
 │   ├── cart.py          # Granular cart lifecycle (legacy)
 │   ├── profiles.py      # Saved checkout profile CRUD (per-account)
 │   ├── sniper.py        # Arm/disarm auto-order
-│   ├── insights.py      # History, patterns, price, orders
+│   ├── insights.py      # History, patterns, price, orders (local)
+│   ├── orders.py        # Order management (live OVH list, detail, follow-up, waive)
 │   ├── accounts.py      # Multi-account CRUD + active switch + test
 │   ├── settings.py      # Notification channel settings (Telegram/Discord/Slack/SMTP)
 │   ├── account.py       # OVH account + payment methods + defaults

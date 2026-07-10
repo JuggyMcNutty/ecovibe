@@ -227,6 +227,7 @@
                 <button data-tab="catalog-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-800 text-blue-400 font-bold">Catalog</button>
                 <button data-tab="monitor-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-700 text-gray-400 hover:text-gray-200">Monitor</button>
                 <button data-tab="billing-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-700 text-gray-400 hover:text-gray-200">Billing</button>
+                <button data-tab="orders-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-700 text-gray-400 hover:text-gray-200">Orders</button>
                 <button data-tab="insights-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-700 text-gray-400 hover:text-gray-200">Insights</button>
             </div>
 
@@ -595,6 +596,33 @@
             <button id="back-to-monitor-btn" class="mt-6 bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg">
                 Back to Monitor
             </button>
+        </div>
+
+        <!-- Orders tab -->
+        <div id="orders-tab" class="hidden">
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div class="bg-gray-800 rounded-lg p-4">
+                    <div class="flex justify-between items-center mb-3">
+                        <div class="flex gap-2 items-center">
+                            <select id="orders-filter" class="bg-gray-700 px-3 py-1 rounded text-sm">
+                                <option value="all">All orders</option>
+                                <option value="pending">Pending</option>
+                                <option value="delivered">Delivered</option>
+                                <option value="cancelled">Cancelled</option>
+                            </select>
+                        </div>
+                        <button id="orders-refresh-btn" type="button"
+                                class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm whitespace-nowrap"
+                                title="Refresh order statuses from OVH">↻ Refresh all</button>
+                    </div>
+                    <div id="orders-full-list" class="space-y-2 max-h-[70vh] overflow-y-auto">
+                        <p class="text-gray-500 text-sm">Switch to the Orders tab to load your order history.</p>
+                    </div>
+                </div>
+                <div id="order-detail" class="bg-gray-800 rounded-lg p-4">
+                    <p class="text-gray-500 text-sm">Select an order to see details.</p>
+                </div>
+            </div>
         </div>
 
         <!-- Insights tab -->

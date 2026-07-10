@@ -182,6 +182,19 @@ class Storage:
                     )
                 except sqlite3.OperationalError:
                     pass
+            # Best-effort column adds on orders: enriched data from OVH API.
+            for col_def in (
+                "price_with_tax INTEGER",
+                "currency_code TEXT",
+                "pdf_url TEXT",
+                "retraction_date TEXT",
+                "expiration_date TEXT",
+                "server_name TEXT",
+            ):
+                try:
+                    cur.execute(f"ALTER TABLE orders ADD COLUMN {col_def}")
+                except sqlite3.OperationalError:
+                    pass
             # Migrate legacy single-credential set into an account row.
             self._migrate_legacy_credentials(cur)
             self._conn.commit()
@@ -649,18 +662,86 @@ class Storage:
             cur = self._conn.cursor()
             if account_id:
                 cur.execute(
-                    "SELECT order_id, cart_id, plan_code, status, url, placed_at, account_id "
+                    "SELECT order_id, cart_id, plan_code, status, url, placed_at, account_id, "
+                    "price_with_tax, currency_code, pdf_url, retraction_date, expiration_date, server_name "
                     "FROM orders WHERE account_id = ? ORDER BY placed_at DESC LIMIT ?",
                     (account_id, limit),
                 )
             else:
                 cur.execute(
-                    "SELECT order_id, cart_id, plan_code, status, url, placed_at, account_id "
+                    "SELECT order_id, cart_id, plan_code, status, url, placed_at, account_id, "
+                    "price_with_tax, currency_code, pdf_url, retraction_date, expiration_date, server_name "
                     "FROM orders ORDER BY placed_at DESC LIMIT ?",
                     (limit,),
                 )
             rows = cur.fetchall()
         return [dict(r) for r in rows]
+
+    def get_order_by_id(self, order_id: int) -> dict[str, Any] | None:
+        """Return a single order row by OVH order ID, or None."""
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                "SELECT order_id, cart_id, plan_code, status, url, placed_at, account_id, "
+                "price_with_tax, currency_code, pdf_url, retraction_date, expiration_date, server_name "
+                "FROM orders WHERE order_id = ?",
+                (order_id,),
+            )
+            row = cur.fetchone()
+        return dict(row) if row else None
+
+    def upsert_order_enriched(
+        self,
+        order_id: int,
+        *,
+        status: str | None = None,
+        price_with_tax: int | None = None,
+        currency_code: str | None = None,
+        pdf_url: str | None = None,
+        retraction_date: str | None = None,
+        expiration_date: str | None = None,
+        server_name: str | None = None,
+        account_id: str | None = None,
+    ) -> None:
+        """Insert or update an order with enriched data from the OVH API.
+
+        If the order doesn't exist locally (placed outside this app),
+        a new row is created with the OVH-supplied fields. If it does
+        exist, only the enriched fields are updated.
+        """
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute("SELECT 1 FROM orders WHERE order_id = ?", (order_id,))
+            exists = cur.fetchone() is not None
+            if exists:
+                cur.execute(
+                    """
+                    UPDATE orders SET
+                        status = COALESCE(?, status),
+                        price_with_tax = COALESCE(?, price_with_tax),
+                        currency_code = COALESCE(?, currency_code),
+                        pdf_url = COALESCE(?, pdf_url),
+                        retraction_date = COALESCE(?, retraction_date),
+                        expiration_date = COALESCE(?, expiration_date),
+                        server_name = COALESCE(?, server_name)
+                    WHERE order_id = ?
+                    """,
+                    (status, price_with_tax, currency_code, pdf_url,
+                     retraction_date, expiration_date, server_name, order_id),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO orders (order_id, cart_id, plan_code, status, url, placed_at,
+                                        account_id, price_with_tax, currency_code, pdf_url,
+                                        retraction_date, expiration_date, server_name)
+                    VALUES (?, '', '', ?, '', ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (order_id, status, _iso(datetime.now(timezone.utc)), account_id,
+                     price_with_tax, currency_code, pdf_url,
+                     retraction_date, expiration_date, server_name),
+                )
+            self._conn.commit()
 
 
 _storage: Storage | None = None

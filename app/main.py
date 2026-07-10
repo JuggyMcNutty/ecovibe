@@ -139,6 +139,7 @@ def create_app():
         currency,
         insights,
         monitor,
+        orders,
         profiles,
         sniper,
     )
@@ -177,6 +178,7 @@ def create_app():
     app.include_router(monitor.router)
     app.include_router(alert.router)
     app.include_router(insights.router)
+    app.include_router(orders.router)
     app.include_router(profiles.router)
     app.include_router(sniper.router)
     app.include_router(settings_api.router)
