@@ -486,17 +486,9 @@ async function loadCatalog(country, force = false) {
         const qs = params.toString();
         const url = qs ? `/catalog/plans?${qs}` : '/catalog/plans';
         const resp = await apiRequest('GET', url);
-        // Response shape: {plans: [...], addonPrices: {code: {price, formattedPrice, invoiceName, currencyCode}}}
-        if (Array.isArray(resp)) {
-            // Backwards compat: old API returned just the plans array
-            state.plans = resp;
-            state.addonPrices = {};
-            state.productSpecs = {};
-        } else {
-            state.plans = resp.plans || [];
-            state.addonPrices = resp.addonPrices || {};
-            state.productSpecs = resp.productSpecs || {};
-        }
+        state.plans = resp.plans || [];
+        state.addonPrices = resp.addonPrices || {};
+        state.productSpecs = resp.productSpecs || {};
         // The backend surfaces the catalog's native currency as an
         // authoritative top-level field (sourced from OVH's `locale`).
         // Some endpoints (ovh-ca) omit currencyCode on pricing entries, so
@@ -570,15 +562,9 @@ async function refreshCatalogSilent() {
         const url = `/catalog/plans?country=${encodeURIComponent(state.catalogCountry)}`;
         const resp = await apiRequest('GET', url);
         const oldCount = state.plans.length;
-        if (Array.isArray(resp)) {
-            state.plans = resp;
-            state.addonPrices = {};
-            state.productSpecs = {};
-        } else {
-            state.plans = resp.plans || [];
-            state.addonPrices = resp.addonPrices || {};
-            state.productSpecs = resp.productSpecs || {};
-        }
+        state.plans = resp.plans || [];
+        state.addonPrices = resp.addonPrices || {};
+        state.productSpecs = resp.productSpecs || {};
         state.catalogCurrencyFromApi = resp.currencyCode || '';
         detectCatalogCurrency();
         // Carry over stock flags until the fresh fetch completes.
@@ -647,11 +633,23 @@ async function refreshStockForAllPlans() {
                 const memShort = addonShortCode(defaultMem);
                 const storShort = addonShortCode(defaultStor);
                 // Only consider the default combo as "in stock"
-                stockByPlan[pc] = (data || []).some(entry => {
-                    if (memShort && !addonCodesMatch(memShort, entry.memory)) return false;
-                    if (storShort && !addonCodesMatch(storShort, entry.storage)) return false;
-                    return (entry.datacenters || []).some(dc => dc.availability !== 'unavailable' && dc.availability !== 'comingSoon');
-                });
+                let matched = false;
+                let hasAvailable = false;
+                for (const entry of (data || [])) {
+                    if (memShort && !addonCodesMatch(memShort, entry.memory)) continue;
+                    if (storShort && !addonCodesMatch(storShort, entry.storage)) continue;
+                    matched = true;
+                    if ((entry.datacenters || []).some(dc => dc.availability !== 'unavailable' && dc.availability !== 'comingSoon')) {
+                        hasAvailable = true;
+                        break;
+                    }
+                }
+                // Warn if no stock entry matched the default combo — likely a
+                // code-naming mismatch rather than genuine OOS.
+                if (!matched && (memShort || storShort) && (data || []).length) {
+                    console.warn(`Stock matching failed for ${pc}: default mem=${memShort} stor=${storShort} did not match any stock entry`);
+                }
+                stockByPlan[pc] = hasAvailable;
             } catch (e) {
                 console.warn(`Stock fetch failed for ${pc}, assuming in-stock:`, e);
                 stockByPlan[pc] = true;
@@ -1092,15 +1090,17 @@ function addonShortCode(code) {
     return segs.length > 2 ? segs.slice(0, -2).join('-') : code;
 }
 
-// Normalize storage/memory codes for matching against stock data.
-// OVH's catalog and stock API use inconsistent capacity naming:
-// catalog says '2x512nvme' (physical), stock says '2x500nvme' (usable).
-// Also handles 1920↔1900, 3840↔3800, etc.
+// Normalize storage capacity codes for matching against stock data.
+// OVH's catalog reports raw physical capacity (e.g. 512), while the stock
+// API reports "marketed" capacity (e.g. 500). Use an explicit equivalence
+// map for the known mismatches instead of blind rounding so unexpected
+// capacity values aren't silently altered.
+const STORAGE_CAPACITY_MAP = { 512: 500, 1920: 1900, 3840: 3800 };
 function normalizeAddonCode(code) {
     if (!code) return '';
     return code.replace(/(\d+)(nvme|sa|sas|hdd)/gi, (m, num, unit) => {
         const n = parseInt(num, 10);
-        if (n >= 100) return Math.round(n / 100) * 100 + unit;
+        if (n in STORAGE_CAPACITY_MAP) return STORAGE_CAPACITY_MAP[n] + unit;
         return m;
     });
 }
@@ -1719,7 +1719,7 @@ function renderCatalogDetail(plan) {
             const autoPay = document.getElementById('order-auto-pay')?.checked || false;
             const waive = document.getElementById('order-waive')?.checked || false;
             const regionInfo = OVH_REGIONS[state.endpoint] || OVH_REGIONS['ovh-eu'];
-            const maxPrice = state.checkoutDefaults?.max_price || null;
+            const maxPrice = state.checkoutDefaults?.max_price ?? null;
 
             const setupFeeText = setup?.price
                 ? ` + ${formatCurrency(convertMicrocents(setup.price))} setup`
@@ -2279,7 +2279,7 @@ async function rushOrder(e) {
             duration: duration,
             auto_pay: autoPay,
             waive_retractation: waive,
-            max_price: state.checkoutDefaults?.max_price || null,
+            max_price: state.checkoutDefaults?.max_price ?? null,
         });
 
         state.orderResult = result;
