@@ -487,12 +487,13 @@ class OVHService:
         """Waive the legal retraction period to speed up delivery."""
         self.post(f"/me/order/{order_id}/waiveRetraction")
 
-    def cancel_order(self, order_id: int, reason: str = "cancelled_by_user") -> None:
+    def cancel_order(self, order_id: int, reason: str = "other") -> None:
         """Cancel an order by exercising the right of retraction (withdrawal).
 
-        OVH requires a ``reason`` parameter (free-form string). Only
-        available during the retraction period (before ``retractionDate``).
-        After delivery or once the period expires, OVH rejects this call.
+        OVH requires a ``reason`` from the RetractionReasonEnum:
+        competitor, difficulty, expensive, other, performance,
+        reliability, unused. Defaults to ``other``. Only available during
+        the retraction period (before ``retractionDate``).
         """
         self.post(f"/me/order/{order_id}/retraction", reason=reason)
 

@@ -235,7 +235,7 @@ async def cancel_order(order_id: int) -> dict:
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
     try:
-        await asyncio.to_thread(service.cancel_order, order_id, "cancelled_by_user")
+        await asyncio.to_thread(service.cancel_order, order_id, "other")
     except OVHServiceError as e:
         raise_ovh_http_error(e)
     try:
