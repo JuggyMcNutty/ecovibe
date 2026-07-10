@@ -81,6 +81,7 @@ let state = {
     fxRates: null,
     priceMode: 'ovh',
     _currencyUserSet: false,
+    sniperStatus: null,
 };
 
 // Currency symbols for the four supported display currencies. Used as a
@@ -2015,6 +2016,7 @@ async function loadAlerts() {
         renderAlertsList();
         renderMonitoredList();
         renderSniperAlertSelect();
+        renderArmedSniper();
     } catch (e) {
         console.error('Failed to load alerts:', e);
     }
@@ -2539,6 +2541,7 @@ async function loadProfiles() {
         state.profiles = profiles;
         renderProfileSelect();
         renderSniperProfileSelect();
+        renderArmedSniper();
     } catch (e) {
         console.error('Failed to load profiles:', e);
     }
@@ -2665,30 +2668,83 @@ async function disarmSniper() {
     }
 }
 
+function _sniperArmedInfo(entry) {
+    const alert = (state.alerts || []).find(a => a.id === entry.alert_id);
+    const profile = (state.profiles || []).find(p => p.id === entry.profile_id);
+    return {
+        planCode: entry.plan_code || alert?.plan_code || entry.alert_id,
+        fqn: alert?.fqn_pattern || '(any config)',
+        profileName: profile?.name || `profile ${entry.profile_id.slice(0, 8)}`,
+        profileId: entry.profile_id,
+        alertId: entry.alert_id,
+    };
+}
+
+async function disarmSniperByAlertId(alertId) {
+    if (!alertId) return;
+    try {
+        await apiRequest('POST', `/sniper/disarm/${encodeURIComponent(alertId)}`);
+        await loadSniperStatus();
+        renderArmedSniper();
+    } catch (e) {
+        showError(e.message);
+    }
+}
+
+function renderArmedSniper() {
+    const container = document.getElementById('armed-sniper-list');
+    if (!container) return;
+    const armed = (state.sniperStatus?.armed) || [];
+    container.innerHTML = '';
+    if (armed.length === 0) {
+        container.appendChild(el('p', { class: 'text-gray-500', text: 'No sniper armed' }));
+        return;
+    }
+    armed.forEach(a => {
+        const info = _sniperArmedInfo(a);
+        const head = el('div', { class: 'flex justify-between items-center' }, [
+            el('span', { class: 'text-blue-400 font-bold', text: info.planCode }),
+            el('button', {
+                class: 'text-xs bg-red-700 hover:bg-red-600 px-2 py-1 rounded',
+                text: 'Disarm',
+                onclick: () => disarmSniperByAlertId(info.alertId),
+            }),
+        ]);
+        const cfg = el('div', { class: 'text-gray-400 text-xs font-mono break-all', text: info.fqn });
+        const prof = el('div', { class: 'text-gray-500 text-xs', text: `Profile: ${info.profileName}` });
+        container.appendChild(el('div', { class: 'bg-gray-700 rounded p-2 space-y-1' }, [head, cfg, prof]));
+    });
+}
+
 async function loadSniperStatus() {
     const container = document.getElementById('sniper-status');
-    if (!container) return;
     try {
         const status = await apiRequest('GET', '/sniper/status');
         if (!status) return;
+        state.sniperStatus = status;
+        renderArmedSniper();
         const armed = status.armed || [];
         const results = status.results || {};
+        if (!container) return;
         if (armed.length === 0 && Object.keys(results).length === 0) {
             container.textContent = 'No sniper armed.';
             return;
         }
         container.innerHTML = '';
         armed.forEach(a => {
-            const text = `Armed: ${a.plan_code || a.alert_id} -> profile ${a.profile_id.slice(0, 8)}`;
+            const info = _sniperArmedInfo(a);
+            const text = `${info.planCode} — ${info.fqn} (profile: ${info.profileName})`;
             container.appendChild(el('div', { class: 'text-yellow-400', text }));
         });
         for (const [aid, r] of Object.entries(results)) {
             const cls = r.status === 'ordered' ? 'text-green-400' : 'text-red-400';
-            const text = `Result: ${aid.slice(0, 8)} - ${r.status}${r.order_id ? ` (#${r.order_id})` : ''}`;
+            const alert = (state.alerts || []).find(a => a.id === aid);
+            const label = alert?.plan_code || aid.slice(0, 8);
+            const text = `Result: ${label} - ${r.status}${r.order_id ? ` (#${r.order_id})` : ''}`;
             container.appendChild(el('div', { class: cls, text }));
         }
     } catch (e) {
-        container.textContent = 'Failed to load sniper status';
+        if (container) container.textContent = 'Failed to load sniper status';
     }
 }
 
