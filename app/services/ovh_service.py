@@ -53,6 +53,11 @@ class OVHService:
         self._use_cache = settings.use_cache if use_cache is None else use_cache
         self._endpoint: str = endpoint or settings.endpoint
         self._account_id = account_id
+        # Retain credentials so the client can be rebuilt without an external
+        # reconfigure() call (used by _reset_time_delta fallback).
+        self._app_key = application_key
+        self._app_secret = application_secret
+        self._consumer_key = consumer_key
         # Serialises all ovh.Client calls. The shared ovh.Client bundles a
         # requests.Session and a lazily-cached server-time delta that are
         # NOT safe under concurrent access (the monitor poller, rush orders
@@ -108,6 +113,9 @@ class OVHService:
         with self._lock:
             self._client = None
             self._endpoint = endpoint or self._endpoint
+            self._app_key = application_key
+            self._app_secret = application_secret
+            self._consumer_key = consumer_key
             self._build_client(application_key, application_secret, consumer_key)
 
     @property
@@ -194,9 +202,23 @@ class OVHService:
     def _reset_time_delta(self) -> None:
         """Force the ovh.Client to recompute its server-time delta on the next
         call. The SDK computes it lazily once and caches it forever, so any
-        clock drift (NTP step, suspend/resume) permanently breaks signatures."""
+        clock drift (NTP step, suspend/resume) permanently breaks signatures.
+
+        The SDK exposes no public API to invalidate the cached delta, so we
+        access the private ``_time_delta`` attribute. If a future SDK version
+        removes or renames it, fall back to a full client reconstruction
+        (which drops the HTTP connection pool but is guaranteed to work).
+        """
         if self._client is not None:
-            self._client._time_delta = None
+            if hasattr(self._client, "_time_delta"):
+                self._client._time_delta = None
+            else:
+                logger.warning(
+                    "ovh.Client has no _time_delta attr — rebuilding client "
+                    "as fallback (account=%s)", self._account_id,
+                )
+                self._client = None
+                self._build_client(self._app_key, self._app_secret, self._consumer_key)
 
     # ---- HTTP verb convenience wrappers ----
 
