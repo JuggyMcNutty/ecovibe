@@ -43,7 +43,7 @@ def _extract_server_name(order: dict) -> str | None:
 
 @router.get("")
 async def list_orders(
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=30, ge=1, le=100),
     days: int = Query(default=90, ge=1, le=365),
 ) -> dict:
     """Return a merged list of local + live OVH orders.
@@ -51,7 +51,8 @@ async def list_orders(
     Fetches order IDs from OVH (filtered to the last ``days`` days), enriches
     each with the full order object (price, dates, pdfUrl), merges with local
     orders (which carry the plan_code context), and persists the enriched
-    data back to the local DB.
+    data back to the local DB. An overall timeout prevents the endpoint from
+    hanging if OVH is slow; partial results are returned on timeout.
     """
     service = get_active_ovh_service()
     if not service.is_configured():
@@ -81,50 +82,73 @@ async def list_orders(
     ovh_ids = sorted(ovh_ids, reverse=True)[:limit]
 
     # Fetch the full order object + status for each, enriching local DB.
+    # Wrap in a timeout so the endpoint doesn't hang if OVH is slow; return
+    # partial results (whatever was enriched before the timeout) rather than
+    # an error.
     enriched: list[dict] = []
-    for oid in ovh_ids:
-        try:
-            order_obj = await asyncio.to_thread(service.get_order, oid)
-            status = await asyncio.to_thread(service.get_order_status, oid)
-            price_ucents, currency_code = _extract_price(order_obj)
-            server_name = _extract_server_name(order_obj)
-            retraction_date = order_obj.get("retractionDate")
-            expiration_date = order_obj.get("expirationDate")
-            pdf_url = order_obj.get("pdfUrl")
-            url = order_obj.get("url")
+    timed_out = False
+    try:
+        async with asyncio.timeout(30):
+            for oid in ovh_ids:
+                try:
+                    order_obj = await asyncio.to_thread(service.get_order, oid)
+                    status = await asyncio.to_thread(service.get_order_status, oid)
+                    price_ucents, currency_code = _extract_price(order_obj)
+                    server_name = _extract_server_name(order_obj)
+                    retraction_date = order_obj.get("retractionDate")
+                    expiration_date = order_obj.get("expirationDate")
+                    pdf_url = order_obj.get("pdfUrl")
+                    url = order_obj.get("url")
 
-            storage.upsert_order_enriched(
-                oid,
-                status=str(status),
-                price_with_tax=price_ucents,
-                currency_code=currency_code,
-                pdf_url=pdf_url,
-                retraction_date=retraction_date,
-                expiration_date=expiration_date,
-                server_name=server_name,
-                account_id=account_id,
-            )
-            local = local_by_id.get(oid, {})
-            enriched.append({
-                "order_id": oid,
-                "date": order_obj.get("date"),
-                "status": str(status),
-                "price_with_tax": price_ucents,
-                "currency_code": currency_code,
-                "plan_code": local.get("plan_code", ""),
-                "server_name": server_name or local.get("plan_code", ""),
-                "url": url,
-                "pdf_url": pdf_url,
-                "retraction_date": retraction_date,
-                "expiration_date": expiration_date,
-                "placed_at": local.get("placed_at"),
-            })
-        except OVHServiceError as e:
-            logger.info("Failed to enrich order %s: %s", oid, e)
-            local = local_by_id.get(oid, {})
-            if local:
-                enriched.append({**local, "order_id": oid, "pdf_url": None,
-                                 "retraction_date": None, "expiration_date": None})
+                    try:
+                        storage.upsert_order_enriched(
+                            oid,
+                            status=str(status),
+                            price_with_tax=price_ucents,
+                            currency_code=currency_code,
+                            pdf_url=pdf_url,
+                            retraction_date=retraction_date,
+                            expiration_date=expiration_date,
+                            server_name=server_name,
+                            account_id=account_id,
+                        )
+                    except Exception:
+                        logger.warning("Failed to persist enriched order %s", oid, exc_info=True)
+                    local = local_by_id.get(oid, {})
+                    enriched.append({
+                        "order_id": oid,
+                        "date": order_obj.get("date"),
+                        "status": str(status),
+                        "price_with_tax": price_ucents,
+                        "currency_code": currency_code,
+                        "plan_code": local.get("plan_code", ""),
+                        "server_name": server_name or local.get("plan_code", ""),
+                        "url": url,
+                        "pdf_url": pdf_url,
+                        "retraction_date": retraction_date,
+                        "expiration_date": expiration_date,
+                        "placed_at": local.get("placed_at"),
+                    })
+                except OVHServiceError as e:
+                    logger.info("Failed to enrich order %s: %s", oid, e)
+                    local = local_by_id.get(oid, {})
+                    enriched.append({
+                        "order_id": oid,
+                        "date": None,
+                        "status": "unknown",
+                        "price_with_tax": local.get("price_with_tax"),
+                        "currency_code": local.get("currency_code"),
+                        "plan_code": local.get("plan_code", ""),
+                        "server_name": local.get("server_name") or local.get("plan_code", f"Order #{oid}"),
+                        "url": local.get("url"),
+                        "pdf_url": local.get("pdf_url"),
+                        "retraction_date": local.get("retraction_date"),
+                        "expiration_date": local.get("expiration_date"),
+                        "placed_at": local.get("placed_at"),
+                    })
+    except TimeoutError:
+        timed_out = True
+        logger.warning("Order enrichment timed out after 30s (%d/%d done)", len(enriched), len(ovh_ids))
 
     # Also include local orders not returned by OVH (e.g. very recent orders
     # that haven't propagated yet, or orders past the date window).
@@ -150,7 +174,7 @@ async def list_orders(
     # Sort by date/order_id descending.
     enriched.sort(key=lambda x: (x.get("date") or x.get("placed_at") or "", x.get("order_id") or 0), reverse=True)
 
-    return {"orders": enriched[:limit]}
+    return {"orders": enriched[:limit], "timed_out": timed_out}
 
 
 @router.get("/{order_id}")
