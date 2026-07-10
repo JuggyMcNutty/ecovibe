@@ -2853,8 +2853,9 @@ function renderOrderDetail(data) {
         }));
     }
     // Waive retraction + cancel buttons (only if retraction period is active
-    // and the order isn't already cancelled or delivered).
-    const cancellableStatus = !['cancelled', 'cancelling', 'delivered'].includes((status || '').toLowerCase());
+    // and the order is paid and not already cancelled/delivered — OVH
+    // rejects retraction on unpaid orders with 403 "Order is not paid").
+    const cancellableStatus = !['cancelled', 'cancelling', 'delivered', 'notpaid', 'unknown'].includes((status || '').toLowerCase());
     if (order.retractionDate && new Date(order.retractionDate) > new Date() && cancellableStatus) {
         const waiveBtn = el('button', {
             class: 'bg-yellow-600 hover:bg-yellow-700 px-3 py-1 rounded text-sm',
