@@ -43,7 +43,7 @@ async def get_payment_methods() -> dict:
     try:
         ids = await asyncio.to_thread(service.get, "/me/paymentMethod")
         methods = []
-        for pid in ids[:10]:
+        for pid in (ids or [])[:10]:
             try:
                 detail = await asyncio.to_thread(service.get, f"/me/paymentMethod/{pid}")
                 methods.append(detail)
@@ -51,6 +51,11 @@ async def get_payment_methods() -> dict:
                 pass
         return {"payment_methods": methods}
     except OVHServiceError as e:
+        # /me/paymentMethod doesn't exist on some endpoints (e.g. ovh-ca,
+        # which uses the legacy /me/paymentMean API). Degrade gracefully
+        # rather than surfacing a 404 to the user.
+        if e.status_code == 404:
+            return {"payment_methods": []}
         raise_ovh_http_error(e)
 
 
