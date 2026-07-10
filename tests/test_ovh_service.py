@@ -94,6 +94,36 @@ def test_create_cart_us_endpoint_passes_us_subsidiary():
     assert kwargs["ovhSubsidiary"] == "US"
 
 
+def test_create_cart_ca_endpoint_passes_ca_subsidiary():
+    """OVH CA accepts only the CA subsidiary; any other (US/IE/WORLD/...) is
+    rejected with HTTP 400 'invalid ovhSubsidiary'. Verified live: the public
+    catalog endpoint returns 200 for CA and 400 for WORLD/US/FR/IE."""
+    with patch("app.services.ovh_service.ovh.Client") as MockClient:
+        MockClient.return_value = MagicMock()
+        svc = OVHService(
+            endpoint="ovh-ca",
+            application_key="ak",
+            application_secret="as",
+            consumer_key="ck",
+            use_cache=False,
+        )
+    svc._client.post = MagicMock(return_value={"cartId": "C-CA"})
+    svc.create_cart(description="rush")
+    args, kwargs = svc._client.post.call_args
+    assert kwargs["ovhSubsidiary"] == "CA"
+
+
+def test_valid_subsidiaries_per_endpoint():
+    """valid_subsidiaries() returns the accepted set for each endpoint and
+    a safe default (IE) for unknown endpoints."""
+    assert _make_service("ovh-eu").valid_subsidiaries() == {
+        "IE", "FR", "DE", "GB", "ES", "PL", "IT", "PT", "CZ", "FI"
+    }
+    assert _make_service("ovh-us").valid_subsidiaries() == {"US"}
+    assert _make_service("ovh-ca").valid_subsidiaries() == {"CA"}
+    assert _make_service("ovh-xx").valid_subsidiaries() == {"IE"}
+
+
 def test_add_server_to_cart_body():
     svc = _make_service()
     svc._client.post = MagicMock(return_value={"itemId": 1})

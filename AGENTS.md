@@ -8,6 +8,9 @@ OVH Flash Sale Monitor — FastAPI backend + vanilla JS SPA frontend for
 monitoring OVH ECO server flash sales and placing rush orders via the
 OVH API. Python 3.10+, single-process, SQLite persistence.
 
+## Design Philosophy
+When developing or coming up with decisions on this project always choose to do the proper and modern choice. DO NOT come up with hacky solutions, and choose to solve bugs when they are noticed.
+
 ## Environment
 
 - **Python venv**: `.venv/` (Python 3.14). Use `.venv/bin/python` and
@@ -85,7 +88,7 @@ not on PATH; use the absolute path above.
    - **Commit after changes**: use git to commit logical units with a
      short descriptive message matching the existing style (see
      `git log --oneline`). Use prefixes like `Fix:`, `Add`,
-     `Catalog:`, `Humanize`, etc. Make one logical commit per change;
+     `Catalog:`, etc. Make one logical commit per change;
      split bug fixes from features. Run, from the project root:
      ```bash
      git add <files>          # stage only the intended files
@@ -93,8 +96,6 @@ not on PATH; use the absolute path above.
      ```
      Before committing, inspect `git status` and `git diff`; stage
      only intended files and never commit secrets.
-3. **Do not commit unless the user asks**. The user explicitly
-   requests commits in this repo.
 
 ## Architecture
 
@@ -189,6 +190,17 @@ were created under (`account_id` column on each table).
   matching the endpoint (US/CA/EU). Without it, OVH US/CA returns
   404 "Invalid Cart ID" on all subsequent cart calls. The
   `_default_subsidiary()` method on OVHService handles this.
+- **Subsidiary is endpoint-scoped**: each endpoint only accepts its
+  own subsidiaries (`OVHService.valid_subsidiaries()`; ovh-ca accepts
+  ONLY `CA` — verified live, `WORLD`/`US`/`FR`/`IE` all 400). The
+  currency selector maps a display currency to a subsidiary, but that
+  subsidiary is only fetched when the active endpoint accepts it;
+  otherwise `catalogSubsidiaryForCurrency()` (app.js) and
+  `_resolve_subsidiary()` (catalog.py) fall back to the endpoint's
+  default and rely on FX conversion. A "CA/world" account billed in USD
+  otherwise sends `?country=US` to ca.api.ovh.com → 400
+  "invalid ovhSubsidiary". `detectCatalogCurrency()` always reads the
+  catalog's real currency from the response (not the display currency).
 - **Route ordering**: in `checkout.py`, `POST /rush` must be
   registered BEFORE `POST /{cart_id}` or FastAPI matches the
   wildcard route first, causing "Invalid Cart ID" 404s.
@@ -244,11 +256,11 @@ were created under (`account_id` column on each table).
   `us`. The `OVH_REGIONS` map in `app.js` maps each endpoint to its
   correct OVH region config value (`europe`, `united_states`, `canada`).
 - **Live stock**: `/dedicated/server/datacenter/availabilities?planCode=X`
+  set up monitors.
   returns per-DC availability for each RAM+storage combo. Availability
   values are `unavailable`, `comingSoon`, `1H-low`, `1H-high`, `72H`,
   etc. `comingSoon` is NOT orderable — treat as out-of-stock for the
   catalog OOS badge but show DC names in the detail panel so users can
-  set up monitors.
 - **Stock matching**: catalog addon codes and stock API codes use
   inconsistent naming. `addonShortCode()` strips the region suffix,
   `normalizeAddonCode()` rounds capacity numbers (512→500), and

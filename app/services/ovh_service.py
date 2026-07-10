@@ -214,6 +214,21 @@ class OVHService:
 
     # ---- Catalog & availability ----
 
+    # Subsidiaries accepted by each endpoint. ovh-us and ovh-ca each accept
+    # exactly one; ovh-eu accepts the European country subsidiaries. Sending
+    # a subsidiary not in this set to an endpoint is rejected with HTTP 400
+    # "invalid ovhSubsidiary" (verified live: ca.api.ovh.com accepts only CA;
+    # WORLD/US/FR/IE all 400).
+    _VALID_SUBSIDIARIES: dict[str, set[str]] = {
+        "ovh-eu": {"IE", "FR", "DE", "GB", "ES", "PL", "IT", "PT", "CZ", "FI"},
+        "ovh-us": {"US"},
+        "ovh-ca": {"CA"},
+    }
+
+    def valid_subsidiaries(self) -> set[str]:
+        """Return the subsidiary codes accepted by this endpoint."""
+        return self._VALID_SUBSIDIARIES.get(self._endpoint, {"IE"})
+
     def _default_subsidiary(self) -> str:
         """Return the default subsidiary for the configured endpoint.
 

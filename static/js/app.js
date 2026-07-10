@@ -107,11 +107,6 @@ function loadFxRates() {
 function updateCurrencyStatus() {
     const el = document.getElementById('currency-status');
     if (!el) return;
-    if (state.priceMode === 'ovh') {
-        el.textContent = '';
-        return;
-    }
-    // FX mode
     if (state.displayCurrency === state.catalogCurrency) {
         el.textContent = '';
         return;
@@ -410,24 +405,25 @@ const SUBSIDIARIES_BY_ENDPOINT = {
     'ovh-ca': ['CA'],
 };
 
-function defaultSubsidiaryForEndpoint(endpoint) {
-    const list = SUBSIDIARIES_BY_ENDPOINT[endpoint] || SUBSIDIARIES_BY_ENDPOINT['ovh-eu'];
-    return list[0];
-}
-
 function populateCatalogCountries() {
     // The per-country dropdown was replaced by the currency selector.
     // Kept as a no-op so existing call sites don't need updating.
 }
 
 function catalogSubsidiaryForCurrency() {
-    // In 'ovh' mode, fetch from the subsidiary that natively prices in
-    // the display currency so OVH's real prices are shown. In 'fx' mode,
-    // use the active account's default subsidiary.
+    // Return the catalog subsidiary to fetch from. Each OVH endpoint only
+    // accepts its own subsidiaries (ovh-us -> {US}, ovh-ca -> {CA},
+    // ovh-eu -> {IE, FR, DE, GB, ...}); a foreign subsidiary is rejected
+    // with HTTP 400 "invalid ovhSubsidiary" (verified live: ca.api.ovh.com
+    // accepts only CA). So only use the currency-mapped subsidiary when the
+    // active endpoint actually accepts it; otherwise fall back to the
+    // endpoint's default and rely on FX conversion for display.
+    const valid = SUBSIDIARIES_BY_ENDPOINT[state.endpoint] || SUBSIDIARIES_BY_ENDPOINT['ovh-eu'];
     if (state.priceMode === 'ovh') {
-        return CURRENCY_SUBSIDIARY[state.displayCurrency] || defaultSubsidiaryForEndpoint(state.endpoint);
+        const mapped = CURRENCY_SUBSIDIARY[state.displayCurrency];
+        if (mapped && valid.includes(mapped)) return mapped;
     }
-    return defaultSubsidiaryForEndpoint(state.endpoint);
+    return valid[0];
 }
 
 async function loadCatalog(country) {
@@ -473,16 +469,14 @@ async function loadCatalog(country) {
 }
 
 function detectCatalogCurrency() {
-    // In 'ovh' mode we fetched from the subsidiary matching the display
-    // currency, so the catalog currency should match.
-    if (state.priceMode === 'ovh') {
-        state.catalogCurrency = state.displayCurrency;
-        updateMaxPriceLabel();
-        updateCurrencyStatus();
-        return;
-    }
-    // Prefer currencyCode from addon prices (set by the backend from OVH's
-    // pricing data); fall back to the first plan's pricing currencyCode.
+    // Detect the catalog's native currency from the response data. We can no
+    // longer assume it matches the display currency: when the display
+    // currency's subsidiary isn't valid for the active endpoint (e.g. USD on
+    // ovh-ca), we fall back to the endpoint's default subsidiary, so the
+    // catalog may be denominated in a different currency (e.g. CAD) and need
+    // FX conversion for display. Prefer currencyCode from addon prices (set
+    // by the backend from OVH's pricing data); fall back to a plan's pricing
+    // currencyCode.
     for (const code in state.addonPrices) {
         const cc = state.addonPrices[code]?.currencyCode;
         if (cc) { state.catalogCurrency = cc; updateMaxPriceLabel(); updateCurrencyStatus(); return; }

@@ -1,13 +1,35 @@
 """Smoke tests for the FastAPI app endpoints."""
+from unittest.mock import MagicMock
+
 import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.services.ovh_service import get_active_ovh_service
 
 
 @pytest.fixture
 def client():
     return TestClient(app)
+
+
+XHR = {"X-Requested-With": "XMLHttpRequest"}
+
+
+def _create_account(client, label="EU personal", endpoint="ovh-eu"):
+    r = client.post(
+        "/api/accounts",
+        json={
+            "label": label,
+            "endpoint": endpoint,
+            "application_key": "ak",
+            "application_secret": "secret123",
+            "consumer_key": "ck",
+        },
+        headers=XHR,
+    )
+    assert r.status_code == 201, r.text
+    return r.json()
 
 
 def test_health(client):
@@ -99,3 +121,45 @@ def test_alert_duplicate_returns_409(client):
 def test_delete_missing_alert_404(client):
     r = client.delete("/api/alerts/nonexistent-uuid")
     assert r.status_code == 404
+
+
+def _mock_active_catalog(service):
+    service.fetch_catalog = MagicMock(return_value={"plans": [], "addons": [], "products": []})
+
+
+def test_catalog_subsidiary_falls_back_when_invalid_for_endpoint(client):
+    """A foreign subsidiary must fall back to the endpoint's default rather
+    than be forwarded to OVH (which would 400 'invalid ovhSubsidiary'). A
+    CA-world account billed in USD would otherwise send ?country=US to
+    ca.api.ovh.com."""
+    _create_account(client, label="CA", endpoint="ovh-ca")
+    svc = get_active_ovh_service()
+    _mock_active_catalog(svc)
+
+    r = client.get("/api/catalog/plans?country=US")
+    assert r.status_code == 200
+    svc.fetch_catalog.assert_called_once()
+    assert svc.fetch_catalog.call_args.kwargs["subsidiary"] == "CA"
+
+
+def test_catalog_subsidiary_passes_valid_value_through(client):
+    """A subsidiary that is valid for the active endpoint is forwarded as-is
+    (no fallback)."""
+    _create_account(client, label="EU", endpoint="ovh-eu")
+    svc = get_active_ovh_service()
+    _mock_active_catalog(svc)
+
+    r = client.get("/api/catalog/plans?country=FR")
+    assert r.status_code == 200
+    assert svc.fetch_catalog.call_args.kwargs["subsidiary"] == "FR"
+
+
+def test_catalog_subsidiary_defaults_when_no_country(client):
+    """Omitting country resolves to the endpoint's default subsidiary."""
+    _create_account(client, label="CA", endpoint="ovh-ca")
+    svc = get_active_ovh_service()
+    _mock_active_catalog(svc)
+
+    r = client.get("/api/catalog/plans")
+    assert r.status_code == 200
+    assert svc.fetch_catalog.call_args.kwargs["subsidiary"] == "CA"

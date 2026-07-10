@@ -10,16 +10,18 @@ from app.services.ovh_service import OVHServiceError, get_active_ovh_service
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
 
 
-def _default_subsidiary() -> str:
-    """Return the default subsidiary for the configured OVH endpoint.
+def _resolve_subsidiary(country: str | None) -> str:
+    """Resolve the OVH subsidiary to query for the active endpoint.
 
-    Each OVH region only accepts certain subsidiaries:
-      ovh-eu → IE (also FR, DE, GB, ES, PL, ...)
-      ovh-us → US
-      ovh-ca → CA
-    Sending the wrong subsidiary (e.g. IE to ovh-us) returns HTTP 400.
+    Each endpoint only accepts its own subsidiaries (see
+    ``OVHService.valid_subsidiaries``); a foreign one is rejected with HTTP 400
+    "invalid ovhSubsidiary". When ``country`` is missing or not valid for the
+    active endpoint, fall back to the endpoint's default subsidiary.
     """
     service = get_active_ovh_service()
+    valid = service.valid_subsidiaries()
+    if country and country in valid:
+        return country
     return service._default_subsidiary()
 
 
@@ -77,7 +79,7 @@ async def get_catalog(
     service = get_active_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
-    subsidiary = country if country else _default_subsidiary()
+    subsidiary = _resolve_subsidiary(country)
     try:
         return await asyncio.to_thread(
             service.fetch_catalog, subsidiary=subsidiary, force=force_refresh
@@ -128,7 +130,7 @@ async def get_plans(
     service = get_active_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
-    subsidiary = country if country else _default_subsidiary()
+    subsidiary = _resolve_subsidiary(country)
     try:
         catalog = await asyncio.to_thread(service.fetch_catalog, subsidiary=subsidiary)
         plans = catalog.get("plans", [])
