@@ -2852,8 +2852,10 @@ function renderOrderDetail(data) {
             text: 'Open in OVH Manager',
         }));
     }
-    // Waive retraction button (only if retraction period is active)
-    if (order.retractionDate && new Date(order.retractionDate) > new Date()) {
+    // Waive retraction + cancel buttons (only if retraction period is active
+    // and the order isn't already cancelled or delivered).
+    const cancellableStatus = !['cancelled', 'cancelling', 'delivered'].includes((status || '').toLowerCase());
+    if (order.retractionDate && new Date(order.retractionDate) > new Date() && cancellableStatus) {
         const waiveBtn = el('button', {
             class: 'bg-yellow-600 hover:bg-yellow-700 px-3 py-1 rounded text-sm',
             text: 'Waive Retraction',
@@ -2874,6 +2876,28 @@ function renderOrderDetail(data) {
             }
         });
         actionsRow.appendChild(waiveBtn);
+
+        const cancelBtn = el('button', {
+            class: 'bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-sm',
+            text: 'Cancel Order',
+        });
+        cancelBtn.addEventListener('click', async () => {
+            if (!confirm('Cancel this order? This exercises your right of retraction (withdrawal) and cannot be undone.')) return;
+            cancelBtn.disabled = true;
+            cancelBtn.textContent = 'Cancelling...';
+            try {
+                const r = await apiRequest('POST', `/orders/${encodeURIComponent(orderId)}/cancel`);
+                showToast(`Order cancelled: ${r.status}`);
+                await loadOrderDetail(orderId);
+                await loadOrdersTab();
+            } catch (e) {
+                showError(e.message);
+            } finally {
+                cancelBtn.disabled = false;
+                cancelBtn.textContent = 'Cancel Order';
+            }
+        });
+        actionsRow.appendChild(cancelBtn);
     }
     if (actionsRow.children.length) container.appendChild(actionsRow);
 

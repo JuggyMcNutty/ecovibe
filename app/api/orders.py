@@ -222,3 +222,26 @@ async def waive_retraction(order_id: int) -> dict:
     except OVHServiceError as e:
         raise_ovh_http_error(e)
     return {"order_id": order_id, "status": "retraction_waived"}
+
+
+@router.post("/{order_id}/cancel")
+async def cancel_order(order_id: int) -> dict:
+    """Cancel an order by exercising the right of retraction (withdrawal).
+
+    Only available during the retraction period; OVH rejects the call
+    once the period expires or the order is delivered.
+    """
+    service = get_active_ovh_service()
+    if not service.is_configured():
+        raise HTTPException(status_code=503, detail="OVH API not configured")
+    try:
+        await asyncio.to_thread(service.cancel_order, order_id)
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    try:
+        status = await asyncio.to_thread(service.get_order_status, order_id)
+    except OVHServiceError:
+        status = "cancelling"
+    storage = get_storage()
+    storage.update_order_status(order_id, str(status))
+    return {"order_id": order_id, "status": status}
