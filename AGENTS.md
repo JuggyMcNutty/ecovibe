@@ -130,7 +130,7 @@ static/js/app.js         # Frontend SPA (vanilla JS, ~2800 lines)
 static/css/input.css     # Tailwind source
 static/css/app.css       # Built/minified (do not edit — rebuild from input.css)
 templates/index.html     # SPA shell with cache-busted asset refs
-tests/                   # pytest suite (~91 tests, uses TestClient)
+tests/                   # pytest suite (108 tests, uses TestClient)
 ```
 
 ## Multi-account model
@@ -217,7 +217,7 @@ were created under (`account_id` column on each table).
   primary label (from `addonPrices` map). The `humanizeAddon()`
   functions are only a fallback when no price entry exists.
 - **Frontend**: no framework, no build step for JS. `app.js` is a
-  ~2300-line vanilla SPA using a custom `el()` DOM helper. Cache
+  ~3300-line vanilla SPA using a custom `el()` DOM helper. Cache
   busting is automatic via content-hash query strings
   (`?v=<sha256[:12]>`) injected by `app/utils/cache_buster.py`.
 - **CSS**: Tailwind v4 with `@source` directives in
@@ -232,19 +232,22 @@ were created under (`account_id` column on each table).
 
 - **`_iso()` in storage.py** must return `dt.isoformat()` — it was
   once an empty function and silently broke `notified_at` persistence.
+  (Resolved — now correct, kept as a historical note.)
 - **`refreshCatalogSilent`** must handle the `{plans, addonPrices,
-  productSpecs}` response shape (not just a bare array), or addon
-  prices and product specs vanish after auto-refresh.
+  productSpecs, currencyCode}` response shape (not just a bare array),
+  or addon prices and product specs vanish after auto-refresh.
+  (Resolved — now handles the full shape including `currencyCode`.)
 - **`max_price`** must be passed in rush-order requests from both
   the catalog "Order Now" form AND the monitor tab's rush form.
+  (Resolved — all three paths pass it: catalog form, monitor form, sniper.)
 - **Route order** in `checkout.py`: `/rush` before `/{cart_id}` or
   FastAPI's wildcard match shadows the static route.
 - **Cache busters** are automatic (content-hash based, see
   `app/utils/cache_buster.py`); no manual `?v=N` bumping is needed.
-- **Logging**: uvicorn's default config filters out logs from
-  non-uvicorn loggers (even WARNING level). Use `print(...,
-  file=sys.stderr)` for debug tracing that must appear in the
-  console, or configure logging explicitly.
+- **Logging**: uvicorn's default config only configures its own loggers.
+  `run.py` extends `LOGGING_CONFIG` to add an `"app"` logger so all
+  `app.*` loggers emit to the console at INFO level. Use
+  `logger.info()`/`logger.warning()` — never `print(file=sys.stderr)`.
 - **Shared `ovh.Client` concurrency**: the `OVHService` singleton's
   `ovh.Client` (and its bundled `requests.Session` + lazily-cached
   server-time delta) is used from multiple threads via
@@ -256,6 +259,8 @@ were created under (`account_id` column on each table).
   SDK caches the delta forever, so clock drift (NTP step,
   suspend/resume) otherwise permanently breaks every signature and
   OVH reports the signature mismatch as an invalid application key.
+  `_reset_time_delta()` guards with `hasattr` and falls back to a full
+  client reconstruction if the SDK renames/removes the private attribute.
 - **Cart configuration endpoint**: the EU-only
   `/order/cart/{cartId}/eco/configuration` path 404s on ovh-us with
   "Got an invalid (or empty) URL". Use `/order/cart/{cartId}/item/{itemId}/configuration`
@@ -265,16 +270,19 @@ were created under (`account_id` column on each table).
   `us`. The `OVH_REGIONS` map in `app.js` maps each endpoint to its
   correct OVH region config value (`europe`, `united_states`, `canada`).
 - **Live stock**: `/dedicated/server/datacenter/availabilities?planCode=X`
-  set up monitors.
   returns per-DC availability for each RAM+storage combo. Availability
   values are `unavailable`, `comingSoon`, `1H-low`, `1H-high`, `72H`,
   etc. `comingSoon` is NOT orderable — treat as out-of-stock for the
   catalog OOS badge but show DC names in the detail panel so users can
+  see upcoming availability.
 - **Stock matching**: catalog addon codes and stock API codes use
   inconsistent naming. `addonShortCode()` strips the region suffix,
-  `normalizeAddonCode()` rounds capacity numbers (512→500), and
+  `normalizeAddonCode()` maps known capacity mismatches via an explicit
+  equivalence table (512→500, 1920→1900, 3840→3800), and
   `addonCodesMatch()` also checks prefix match (catalog `ram-16g`
-  matches stock `ram-16g-ecc-2133`).
+  matches stock `ram-16g-ecc-2133`). `refreshStockForAllPlans` logs a
+  `console.warn` when a plan's default combo fails to match any stock
+  entry, so silent match failures are detectable.
 - **OOS badge**: the catalog list badge checks only the included (free)
   memory+storage combo (`fam.default` from `addonFamilies`), not all
   combos. A plan is OOS if its default config is unavailable in all DCs.
