@@ -125,6 +125,7 @@ async def get_stock(
 @router.get("/plans")
 async def get_plans(
     country: str | None = Query(default=None),
+    force_refresh: bool = Query(default=False, description="Force cache refresh"),
 ) -> dict[str, Any]:
     """Return plans + addon pricing from the catalog."""
     service = get_active_ovh_service()
@@ -132,7 +133,9 @@ async def get_plans(
         raise HTTPException(status_code=503, detail="OVH API not configured")
     subsidiary = _resolve_subsidiary(country)
     try:
-        catalog = await asyncio.to_thread(service.fetch_catalog, subsidiary=subsidiary)
+        catalog = await asyncio.to_thread(
+            service.fetch_catalog, subsidiary=subsidiary, force=force_refresh
+        )
         plans = catalog.get("plans", [])
         # OVH only populates `currencyCode` on individual pricing entries for
         # some endpoints; ovh-ca leaves them null and exposes the catalog's

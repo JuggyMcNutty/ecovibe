@@ -467,7 +467,7 @@ function catalogSubsidiaryForCurrency() {
     return subsidiaryForMode(state.priceMode);
 }
 
-async function loadCatalog(country) {
+async function loadCatalog(country, force = false) {
     showLoading();
     // Keep the "Convert pricing" checkbox in sync with the current
     // endpoint/currency (covers paths that bypass loadAccountInfo, e.g.
@@ -476,9 +476,11 @@ async function loadCatalog(country) {
     const subsidiary = country || catalogSubsidiaryForCurrency();
     state.catalogCountry = subsidiary;
     try {
-        const url = subsidiary
-            ? `/catalog/plans?country=${encodeURIComponent(subsidiary)}`
-            : '/catalog/plans';
+        const params = new URLSearchParams();
+        if (subsidiary) params.set('country', subsidiary);
+        if (force) params.set('force_refresh', 'true');
+        const qs = params.toString();
+        const url = qs ? `/catalog/plans?${qs}` : '/catalog/plans';
         const resp = await apiRequest('GET', url);
         // Response shape: {plans: [...], addonPrices: {code: {price, formattedPrice, invoiceName, currencyCode}}}
         if (Array.isArray(resp)) {
@@ -2986,6 +2988,10 @@ async function init() {
     document.getElementById('catalog-sort')?.addEventListener('change', renderCatalogList);
     document.getElementById('catalog-region-filter')?.addEventListener('change', renderCatalogList);
     document.getElementById('catalog-stock-first')?.addEventListener('change', renderCatalogList);
+
+    document.getElementById('catalog-refresh-btn')?.addEventListener('click', () => {
+        loadCatalog(null, true);
+    });
 
     document.getElementById('catalog-autorefresh')?.addEventListener('change', (e) => {
         if (e.target.checked) {
