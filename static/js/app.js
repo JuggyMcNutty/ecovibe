@@ -1281,8 +1281,14 @@ function renderCatalogDetail(plan) {
         return '+' + displayPrice(info.price, info.formattedPrice, fromCode);
     }
 
-    // Hardware specs from addonFamilies - selectable cards with prices
-    const families = plan.addonFamilies || [];
+    // Hardware specs from addonFamilies - selectable cards with prices.
+    // Only hardware families are shown; license families (application-license,
+    // distribution-license) are excluded because they don't participate in the
+    // FQN, totals, order form, or rush order — showing them as selectable
+    // cards would be misleading (the CA catalog includes them, the US one
+    // doesn't, so filtering also makes both endpoints render consistently).
+    const HARDWARE_FAMILIES = new Set(['memory', 'storage', 'bandwidth', 'vrack']);
+    const families = (plan.addonFamilies || []).filter(f => HARDWARE_FAMILIES.has(f.name));
     const specsSection = el('div', { class: 'space-y-3 mb-4' });
     specsSection.appendChild(el('h3', { class: 'font-bold text-gray-400 text-sm uppercase mb-2', text: 'Configuration Options' }));
 
