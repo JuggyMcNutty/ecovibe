@@ -58,13 +58,13 @@ let state = {
     // catalog's native currency regardless). catalogCurrency is the ISO code
     // the active catalog is denominated in; displayCurrency is what the user
     // sees. fxRates is the cached Frankfurter/ECB payload (EUR-base).
-    // priceMode: 'fx' = convert via ECB rates; 'ovh' = fetch the catalog
-    // from a subsidiary matching the selected currency so OVH's real
-    // prices are shown directly (no FX conversion).
+    // priceMode: 'ovh' = fetch the catalog from a subsidiary matching the
+    // selected currency so OVH's real prices are shown directly (default);
+    // 'fx' = convert via ECB rates.
     catalogCurrency: 'EUR',
     displayCurrency: 'EUR',
     fxRates: null,
-    priceMode: 'fx',
+    priceMode: 'ovh',
     _currencyUserSet: false,
 };
 
@@ -108,9 +108,10 @@ function updateCurrencyStatus() {
     const el = document.getElementById('currency-status');
     if (!el) return;
     if (state.priceMode === 'ovh') {
-        el.textContent = 'OVH native prices';
+        el.textContent = '';
         return;
     }
+    // FX mode
     if (state.displayCurrency === state.catalogCurrency) {
         el.textContent = '';
         return;
@@ -2882,47 +2883,35 @@ async function init() {
     document.getElementById('currency-select')?.addEventListener('change', (e) => {
         state.displayCurrency = e.target.value;
         state._currencyUserSet = true;
+        // In OVH mode, changing the currency re-fetches the matching
+        // subsidiary's catalog. In FX mode, just re-render with new rates.
         if (state.priceMode === 'ovh') {
-            // Re-fetch the catalog from the subsidiary matching the new
-            // currency so OVH's real prices are shown.
             loadCatalog();
         } else {
             updateCurrencyStatus();
-            // Re-render with the new display currency. If rates are needed and
-            // not yet loaded, fetch them first.
-            if (state.displayCurrency !== state.catalogCurrency && !state.fxRates) {
-                loadFxRates().then(() => {
-                    renderCatalogList();
-                    if (state.selectedPlanCode) {
-                        const p = state.plans.find(x => x.planCode === state.selectedPlanCode);
-                        if (p) renderCatalogDetail(p);
-                    }
-                });
-            } else {
-                renderCatalogList();
-                if (state.selectedPlanCode) {
-                    const p = state.plans.find(x => x.planCode === state.selectedPlanCode);
-                    if (p) renderCatalogDetail(p);
-                }
+            renderCatalogList();
+            if (state.selectedPlanCode) {
+                const p = state.plans.find(x => x.planCode === state.selectedPlanCode);
+                if (p) renderCatalogDetail(p);
             }
         }
     });
 
     document.getElementById('price-mode-ovh')?.addEventListener('change', (e) => {
-        state.priceMode = e.target.checked ? 'ovh' : 'fx';
-        // In OVH mode we fetch the catalog from the subsidiary matching the
-        // display currency; in FX mode we use the active account's default.
-        // Either way, re-fetch + re-render.
-        if (state.priceMode === 'ovh') {
-            loadCatalog();
-        } else {
-            // Back to FX mode: reload the default catalog and ensure rates
-            // are available for conversion.
+        // Checked = convert pricing via FX rates; unchecked = OVH native
+        // prices (fetch from the subsidiary matching the display currency).
+        state.priceMode = e.target.checked ? 'fx' : 'ovh';
+        updateCurrencyStatus();
+        if (state.priceMode === 'fx') {
+            // FX mode: ensure rates are loaded, then re-render.
             if (!state.fxRates) {
                 loadFxRates().then(() => loadCatalog());
             } else {
                 loadCatalog();
             }
+        } else {
+            // OVH mode: re-fetch from the matching subsidiary.
+            loadCatalog();
         }
     });
 
