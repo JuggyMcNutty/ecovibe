@@ -228,15 +228,19 @@ class MonitorService:
         self._storage = None
 
     def _storage_get(self):
-        """Lazily fetch Storage. Returns None if unavailable."""
+        """Lazily fetch Storage. Returns None if unavailable.
+
+        On transient failure, keeps self._storage = None so the next call
+        retries instead of permanently disabling persistence.
+        """
         if self._storage is None:
             try:
                 from app.services.storage import get_storage
                 self._storage = get_storage()
             except Exception:
                 logger.warning("storage unavailable; alerts will not persist", exc_info=True)
-                self._storage = False
-        return self._storage if self._storage is not False else None
+                return None  # don't cache the failure — retry next call
+        return self._storage
 
     async def start(self) -> None:
         """Load persisted alerts + settings, then spawn the background poller."""
@@ -276,12 +280,17 @@ class MonitorService:
             logger.warning("failed to load alerts from storage", exc_info=True)
 
     async def stop(self) -> None:
-        """Cancel the background poller. Safe to call multiple times."""
+        """Cancel the background poller. Safe to call multiple times.
+
+        Uses a timeout so shutdown doesn't hang if the poller is mid-way
+        through an OVH API call (asyncio.to_thread can't be cancelled
+        mid-flight).
+        """
         if self._task and not self._task.done():
             self._task.cancel()
             try:
-                await self._task
-            except asyncio.CancelledError:
+                await asyncio.wait_for(self._task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
         self._task = None
 
@@ -296,6 +305,7 @@ class MonitorService:
         async with self._lock:
             self._alerts.clear()
             self._stock_cache.clear()
+            self._last_stock.clear()
         await self._load_from_storage()
 
     async def _run(self) -> None:

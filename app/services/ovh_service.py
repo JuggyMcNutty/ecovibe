@@ -161,7 +161,10 @@ class OVHService:
                     )
                     self._reset_time_delta()
                     return self._do_call(method, path, **kwargs)
-                if e.status_code in (500, 502, 503, 504):
+                if e.status_code in (500, 502, 503, 504) and method.upper() != "POST":
+                    # Only retry idempotent methods. Retrying POST (e.g.
+                    # checkout) can duplicate an order if OVH already
+                    # processed it but the response was lost.
                     logger.warning(
                         "OVH %s transient error - retrying once (query_id=%s)",
                         e.status_code, e.query_id,
@@ -190,6 +193,8 @@ class OVHService:
             if e.response is not None:
                 status = getattr(e.response, "status_code", None)
             raise OVHServiceError(str(e), status_code=status, query_id=e.query_id) from e
+        except Exception as e:
+            raise OVHServiceError(str(e), status_code=None, query_id=None) from e
 
     @staticmethod
     def _is_stale_signature(e: OVHServiceError) -> bool:
