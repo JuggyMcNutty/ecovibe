@@ -30,17 +30,19 @@ _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 def _same_origin(request: HTTPConnection) -> bool:
-    """True if the request's Origin or Referer matches the request Host."""
+    """True if the request's Origin or Referer matches the request Host
+    and scheme. A scheme mismatch (e.g. http origin on an HTTPS request)
+    is treated as unsafe."""
     host = request.headers.get("host", "")
     if not host:
         return False
+    scheme = request.url.scheme  # "http" or "https"
     for header in ("origin", "referer"):
         val = request.headers.get(header)
         if not val:
             continue
         parsed = urlparse(val)
-        # Compare netloc (host:port); treat scheme mismatch as unsafe.
-        if parsed.netloc == host:
+        if parsed.netloc == host and parsed.scheme == scheme:
             return True
     return False
 

@@ -403,26 +403,28 @@ class Storage:
         """Insert or update an account. Returns the account id.
 
         If ``account_id`` is None a new id is generated. On update, empty
-        ``application_secret`` is preserved (so masked edits don't wipe the
-        stored secret).
+        ``application_secret``, ``application_key``, or ``consumer_key``
+        are preserved (so masked edits don't wipe stored credentials).
         """
         aid = account_id or uuid.uuid4().hex
         with self._lock:
             cur = self._conn.cursor()
             if account_id:
-                # Preserve the stored secret when the caller sends an empty
-                # one (masked-edit flow). Queried inline — NOT via
+                # Preserve stored credentials when the caller sends empty
+                # values (masked-edit flow). Queried inline — NOT via
                 # self.get_account(), which would deadlock on self._lock.
                 cur.execute(
-                    "SELECT application_secret FROM accounts WHERE id = ?",
+                    "SELECT application_key, application_secret, consumer_key FROM accounts WHERE id = ?",
                     (account_id,),
                 )
                 row = cur.fetchone()
+                key = application_key or (row["application_key"] if row else "")
                 secret = application_secret or (row["application_secret"] if row else "")
+                ck = consumer_key or (row["consumer_key"] if row else "")
                 cur.execute(
                     "UPDATE accounts SET label=?, endpoint=?, application_key=?, "
                     "application_secret=?, consumer_key=? WHERE id=?",
-                    (label, endpoint, application_key, secret, consumer_key, aid),
+                    (label, endpoint, key, secret, ck, aid),
                 )
             else:
                 cur.execute(

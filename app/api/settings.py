@@ -53,7 +53,7 @@ def _mask(value: str) -> str:
 
 
 # Which fields are secrets (masked on GET)
-_SECRET_FIELDS = {"telegram_bot_token", "smtp_password"}
+_SECRET_FIELDS = {"telegram_bot_token", "smtp_password", "discord_webhook_url", "slack_webhook_url"}
 
 
 @router.get("/notifications")
