@@ -58,12 +58,11 @@ let state = {
     // catalog's native currency regardless). catalogCurrency is the ISO code
     // the active catalog is denominated in; displayCurrency is what the user
     // sees. fxRates is the cached Frankfurter/ECB payload (EUR-base).
-    // priceMode: 'ovh' = show OVH's native prices for a currency the active
-    // endpoint reports (fetch its subsidiary); 'fx' = FX-convert from the
-    // endpoint's default catalog to a currency it doesn't report. Set by
-    // updatePriceModeVisibility() based on whether the display currency is
-    // natively available on the active endpoint; the "Convert pricing"
-    // checkbox is only shown when 'fx' applies (non-native currency).
+    // priceMode: 'ovh' = show OVH's native catalog currency (its exact
+    // formattedPrice) — this is the default, so prices always reflect what
+    // OVH actually charges. 'fx' = FX-convert to the user's selected display
+    // currency. Set by the "Convert pricing" checkbox (always visible). All
+    // price rendering goes through effectiveDisplayCurrency().
     catalogCurrency: 'EUR',
     // Authoritative native currency from the backend's top-level
     // `currencyCode` (OVH `locale.currencyCode`). Some endpoints (ovh-ca)
@@ -91,36 +90,23 @@ const CURRENCY_SUBSIDIARY = {
     CAD: 'CA',
 };
 
-// Reverse: subsidiary -> ISO currency. Used to derive the native currency
-// of an endpoint (the currency its default subsidiary prices in).
-const SUBSIDIARY_CURRENCY = Object.fromEntries(
-    Object.entries(CURRENCY_SUBSIDIARY).map(([c, s]) => [s, c])
-);
-
-// Currencies the active endpoint natively reports (i.e. can fetch without
-// FX). For ovh-ca that's {CAD} only; for ovh-us {USD}; for ovh-eu {EUR, GBP}.
-// A display currency outside this set must be FX-converted from the
-// endpoint's default catalog.
-function nativeCurrenciesForEndpoint(endpoint) {
-    const subs = SUBSIDIARIES_BY_ENDPOINT[endpoint] || SUBSIDIARIES_BY_ENDPOINT['ovh-eu'];
-    const set = new Set();
-    for (const s of subs) {
-        const cur = SUBSIDIARY_CURRENCY[s];
-        if (cur) set.add(cur);
+// Resolve the catalog subsidiary to fetch from for a given price mode.
+// 'ovh' (native): fetch the subsidiary matching the display currency when
+// the active endpoint accepts it, so OVH's exact prices are shown.
+// 'fx' (converted): always fetch the endpoint's default subsidiary and let
+// the frontend FX-convert for display. Each endpoint only accepts its own
+// subsidiaries (ovh-ca -> {CA}, ovh-us -> {US}, ovh-eu -> {IE, FR, ...});
+// a foreign subsidiary is rejected with HTTP 400 "invalid ovhSubsidiary".
+function subsidiaryForMode(mode) {
+    const valid = SUBSIDIARIES_BY_ENDPOINT[state.endpoint] || SUBSIDIARIES_BY_ENDPOINT['ovh-eu'];
+    if (mode === 'ovh') {
+        const mapped = CURRENCY_SUBSIDIARY[state.displayCurrency];
+        if (mapped && valid.includes(mapped)) return mapped;
     }
-    return set;
+    return valid[0];
 }
 
-// The single native currency for an endpoint (currency of its default
-// subsidiary). Used as the display default when the account's billing
-// currency isn't natively fetchable (e.g. a CA/world account billed in USD
-// on ovh-ca -> default to CAD so OVH's exact prices are shown, not FX-USD).
-function nativeCurrencyForEndpoint(endpoint) {
-    const subs = SUBSIDIARIES_BY_ENDPOINT[endpoint] || SUBSIDIARIES_BY_ENDPOINT['ovh-eu'];
-    return SUBSIDIARY_CURRENCY[subs[0]] || 'EUR';
-}
-
-function formatCurrency(amount, code = state.displayCurrency) {
+function formatCurrency(amount, code = effectiveDisplayCurrency()) {
     if (typeof amount !== 'number' || !isFinite(amount)) return 'On request';
     try {
         return new Intl.NumberFormat(undefined, { style: 'currency', currency: code }).format(amount);
@@ -143,6 +129,16 @@ function loadFxRates() {
 function updateCurrencyStatus() {
     const el = document.getElementById('currency-status');
     if (!el) return;
+    // 'ovh' (native) mode always shows the catalog's native currency, even
+    // when the selector differs — surface that so the user knows why prices
+    // aren't in their selected currency (and how to convert).
+    if (state.priceMode === 'ovh') {
+        el.textContent = (state.displayCurrency === state.catalogCurrency)
+            ? ''
+            : `(native ${state.catalogCurrency})`;
+        return;
+    }
+    // 'fx' mode: converting to the selected display currency.
     if (state.displayCurrency === state.catalogCurrency) {
         el.textContent = '';
         return;
@@ -154,31 +150,24 @@ function updateCurrencyStatus() {
     }
 }
 
-// Show the "Convert pricing" checkbox only when the selected display
-// currency is NOT natively reported by the active endpoint (i.e. FX
-// conversion is the only way to show that currency). When the display
-// currency is native (e.g. CAD on ovh-ca), OVH's exact prices are shown
-// directly and there's nothing to convert, so the checkbox is hidden and
-// 'ovh' mode is forced. When non-native, 'fx' mode is forced and the
-// checkbox is checked; unchecking it reverts to the endpoint's native
-// currency so the user can get back to OVH's real prices in one click.
-function updatePriceModeVisibility() {
-    const wrap = document.getElementById('price-mode-wrap');
-    const cb = document.getElementById('price-mode-ovh');
-    if (!wrap || !cb) return;
-    const native = nativeCurrenciesForEndpoint(state.endpoint);
-    const isNative = native.has(state.displayCurrency);
-    wrap.style.display = isNative ? 'none' : '';
-    if (isNative) {
-        state.priceMode = 'ovh';
-        cb.checked = false;
-    } else {
-        state.priceMode = 'fx';
-        cb.checked = true;
-    }
+// The currency prices are actually rendered in. 'ovh' mode always shows
+// OVH's native catalog currency (OVH's exact formattedPrice); 'fx' mode
+// converts to the user's selected display currency. All price rendering
+// goes through this so the "Convert pricing" toggle has one effect.
+function effectiveDisplayCurrency() {
+    return state.priceMode === 'ovh' ? state.catalogCurrency : state.displayCurrency;
 }
 
-function convertMicrocents(microcents, fromCode = state.catalogCurrency, toCode = state.displayCurrency) {
+// Keep the "Convert pricing" checkbox in sync with priceMode. The checkbox
+// is always visible — FX conversion is a user option; it's unchecked by
+// default (OVH native pricing shown) and checking it converts to the
+// selected display currency.
+function updatePriceModeVisibility() {
+    const cb = document.getElementById('price-mode-ovh');
+    if (cb) cb.checked = (state.priceMode === 'fx');
+}
+
+function convertMicrocents(microcents, fromCode = state.catalogCurrency, toCode = effectiveDisplayCurrency()) {
     // microcents (1 unit = 10^8 microcents) → currency units → FX → display units
     const units = microcents / 100000000;
     if (fromCode === toCode || !state.fxRates) return units; // no conversion
@@ -191,17 +180,19 @@ function convertMicrocents(microcents, fromCode = state.catalogCurrency, toCode 
 }
 
 function displayPrice(microcents, formattedPrice, fromCode = state.catalogCurrency) {
-    // Prefer OVH's exact formattedPrice when the display currency matches the
-    // catalog currency; otherwise convert raw microcents.
-    if (state.displayCurrency === fromCode && formattedPrice) return formattedPrice;
+    // Render in the effective display currency (native in 'ovh' mode, the
+    // selected currency in 'fx' mode). Prefer OVH's exact formattedPrice
+    // when it already matches the effective currency.
+    const eff = effectiveDisplayCurrency();
+    if (eff === fromCode && formattedPrice) return formattedPrice;
     if (microcents == null) return 'On request';
-    return formatCurrency(convertMicrocents(microcents, fromCode, state.displayCurrency), state.displayCurrency);
+    return formatCurrency(convertMicrocents(microcents, fromCode, eff), eff);
 }
 
 function displayPriceUnits(microcents, fromCode = state.catalogCurrency) {
     // Returns just the converted numeric units (for totals arithmetic display).
     if (microcents == null) return 0;
-    return convertMicrocents(microcents, fromCode, state.displayCurrency);
+    return convertMicrocents(microcents, fromCode, effectiveDisplayCurrency());
 }
 
 
@@ -471,19 +462,9 @@ function populateCatalogCountries() {
 }
 
 function catalogSubsidiaryForCurrency() {
-    // Return the catalog subsidiary to fetch from. Each OVH endpoint only
-    // accepts its own subsidiaries (ovh-us -> {US}, ovh-ca -> {CA},
-    // ovh-eu -> {IE, FR, DE, GB, ...}); a foreign subsidiary is rejected
-    // with HTTP 400 "invalid ovhSubsidiary" (verified live: ca.api.ovh.com
-    // accepts only CA). So only use the currency-mapped subsidiary when the
-    // active endpoint actually accepts it; otherwise fall back to the
-    // endpoint's default and rely on FX conversion for display.
-    const valid = SUBSIDIARIES_BY_ENDPOINT[state.endpoint] || SUBSIDIARIES_BY_ENDPOINT['ovh-eu'];
-    if (state.priceMode === 'ovh') {
-        const mapped = CURRENCY_SUBSIDIARY[state.displayCurrency];
-        if (mapped && valid.includes(mapped)) return mapped;
-    }
-    return valid[0];
+    // Delegate to subsidiaryForMode() so the fetch and the display mode
+    // agree on which subsidiary's catalog is the source of truth.
+    return subsidiaryForMode(state.priceMode);
 }
 
 async function loadCatalog(country) {
@@ -1889,24 +1870,16 @@ async function loadAccountInfo() {
             ['State', me.state],
             ['Legal form', me.legalform],
         ].filter(([, v]) => v);
-        // Default the display currency. Prefer the account's billing
-        // currency, but only when it's natively fetchable from the active
-        // endpoint (so OVH's exact prices are shown). When it isn't — e.g. a
-        // "CA/world" account billed in USD on ovh-ca, which only accepts the
-        // CA subsidiary — fall back to the endpoint's native currency so the
-        // user sees OVH's real prices instead of FX-converted values that
-        // don't match what OVH will actually charge.
+        // Default the display currency (selector) to the account's invoiced
+        // currency. Prices default to OVH's native currency regardless (see
+        // effectiveDisplayCurrency / the "Convert pricing" checkbox); the
+        // selector just records the user's preferred currency for when they
+        // opt into FX conversion.
         const billingCurrency = me.currency?.code || (typeof me.currency === 'string' ? me.currency : null);
-        if (!state._currencyUserSet) {
-            const native = nativeCurrenciesForEndpoint(state.endpoint);
-            const target = (billingCurrency && native.has(billingCurrency))
-                ? billingCurrency
-                : nativeCurrencyForEndpoint(state.endpoint);
-            if (target && SUPPORTED_CURRENCIES.includes(target)) {
-                state.displayCurrency = target;
-                const sel = document.getElementById('currency-select');
-                if (sel) sel.value = target;
-            }
+        if (billingCurrency && SUPPORTED_CURRENCIES.includes(billingCurrency) && !state._currencyUserSet) {
+            state.displayCurrency = billingCurrency;
+            const sel = document.getElementById('currency-select');
+            if (sel) sel.value = billingCurrency;
         }
         updatePriceModeVisibility();
         updateCurrencyStatus();
@@ -2970,39 +2943,51 @@ async function init() {
     document.getElementById('currency-select')?.addEventListener('change', (e) => {
         state.displayCurrency = e.target.value;
         state._currencyUserSet = true;
-        // Re-evaluate whether conversion is needed for the new currency and
-        // set priceMode accordingly (native -> 'ovh', non-native -> 'fx').
-        updatePriceModeVisibility();
         updateCurrencyStatus();
-        // FX mode needs rates to convert; load them if missing.
-        if (state.priceMode === 'fx' && !state.fxRates) {
-            loadFxRates().then(() => loadCatalog());
-        } else {
+        // In 'ovh' mode the fetched subsidiary depends on the selected
+        // currency (when the endpoint accepts it), so a currency change may
+        // need a re-fetch. In 'fx' mode the catalog is always the endpoint
+        // default, so only a re-render is needed (plus rates if converting).
+        if (state.priceMode === 'ovh') {
             loadCatalog();
+        } else if (!state.fxRates) {
+            loadFxRates().then(() => {
+                renderCatalogList();
+                if (state.selectedPlanCode) {
+                    const p = state.plans.find(x => x.planCode === state.selectedPlanCode);
+                    if (p) renderCatalogDetail(p);
+                }
+            });
+        } else {
+            renderCatalogList();
+            if (state.selectedPlanCode) {
+                const p = state.plans.find(x => x.planCode === state.selectedPlanCode);
+                if (p) renderCatalogDetail(p);
+            }
         }
     });
 
     document.getElementById('price-mode-ovh')?.addEventListener('change', (e) => {
-        if (e.target.checked) {
-            // Convert pricing to the selected (non-native) currency.
-            state.priceMode = 'fx';
-            updateCurrencyStatus();
-            if (!state.fxRates) {
+        // Checked = convert pricing to the selected currency (fx); unchecked
+        // = show OVH's native catalog currency (ovh).
+        state.priceMode = e.target.checked ? 'fx' : 'ovh';
+        updateCurrencyStatus();
+        // Re-fetch only if the source subsidiary actually changes with the
+        // new mode; otherwise just re-render in the new effective currency
+        // (avoids a needless OVH round-trip on the common CA/USD toggle).
+        const newSub = subsidiaryForMode(state.priceMode);
+        if (newSub !== state.catalogCountry) {
+            if (state.priceMode === 'fx' && !state.fxRates) {
                 loadFxRates().then(() => loadCatalog());
             } else {
                 loadCatalog();
             }
         } else {
-            // Stop converting: revert to the endpoint's native currency so
-            // OVH's exact prices are shown, and hide this checkbox.
-            const native = nativeCurrencyForEndpoint(state.endpoint);
-            state.displayCurrency = native;
-            state.priceMode = 'ovh';
-            const sel = document.getElementById('currency-select');
-            if (sel) sel.value = native;
-            updatePriceModeVisibility();
-            updateCurrencyStatus();
-            loadCatalog();
+            renderCatalogList();
+            if (state.selectedPlanCode) {
+                const p = state.plans.find(x => x.planCode === state.selectedPlanCode);
+                if (p) renderCatalogDetail(p);
+            }
         }
     });
 

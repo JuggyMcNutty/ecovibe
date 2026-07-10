@@ -294,9 +294,12 @@ were created under (`account_id` column on each table).
   account's billing currency from `/me` and is a view preference (not
   persisted). OVH charges in the catalog's native currency regardless.
   The catalog's `currencyCode` is passed through in `addonPrices` so the
-  frontend can convert. When display==catalog currency, OVH's exact
-  `formattedPrice` is shown; otherwise raw microcents (÷10^8) are
-  converted via `convertMicrocents()` + `Intl.NumberFormat`. The old
+  frontend can convert. By default prices show OVH's **native** catalog
+  currency (`priceMode='ovh'` — OVH's exact `formattedPrice`); the
+  "Convert pricing" checkbox (always visible) opts into FX conversion to
+  the selected currency (`priceMode='fx'`). All price rendering goes
+  through `effectiveDisplayCurrency()` (=`catalogCurrency` in 'ovh' mode,
+  `displayCurrency` in 'fx' mode) so the toggle has one effect. The old
   per-country catalog dropdown was replaced by the currency selector.
   `max_price` stays in the catalog's native currency (microcents) and is
   labelled with the currency code; the budget-guard error message uses
