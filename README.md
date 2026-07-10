@@ -135,12 +135,21 @@ Generate the `.htpasswd` file with `htpasswd -c /etc/nginx/.htpasswd admin`.
 - Set region (Europe/Canada/US), operating system, and billing duration
 - Auto-pay and waive retraction options
 - **Max price cap** - refuse checkout if price exceeds threshold (enforced in both catalog and rush order flows)
-- **Region mismatch guard** - prevents ordering cross-region plans (e.g. EU plan on US endpoint)
+
+### Order Management
+- **Full orders tab** - list all orders from OVH (not just locally-placed), merged with local order data
+- **Status badges** - color-coded by OVH OrderStatusEnum (delivered, delivering, notPaid, cancelled, etc.)
+- **Order detail panel** - price breakdown (with/without tax), line items (server, installation, licenses), delivery follow-up timeline
+- **Invoice PDF links** - direct link to OVH's invoice PDF
+- **Waive retraction** - one-click waive the legal retraction period to speed up delivery
+- **Cancel order** - exercise the right of retraction (withdrawal) during the retraction period
+- **Refresh all** - re-fetch all order statuses from OVH
+- **Filter** by status (all / pending / delivered / cancelled)
 
 ### Historical Insights
 - **Restock patterns** - stock events are logged to SQLite; view hourly bar chart aggregation to find the best times to monitor
 - **Price history** - track price changes per plan over time with manual refresh
-- **Order tracking** - recently placed orders with live status refresh from OVH
+- **Order tracking** - see the Orders tab above for full order management
 - **Stock events** - recent availability/unavailability events per plan
 
 ### Notification Channels
@@ -267,6 +276,13 @@ GET  /api/sniper/status                      - Show armed alerts + last results
 POST /api/sniper/arm                         - Arm alert with profile (body: {alert_id, profile_id})
 POST /api/sniper/disarm/{alert_id}           - Disarm an alert
 
+# Order Management (live OVH orders)
+GET  /api/orders?limit=30&days=90               - List all orders (merged local + OVH, enriched)
+GET  /api/orders/{order_id}                     - Full order detail (line items + follow-up timeline)
+POST /api/orders/{order_id}/refresh             - Re-fetch order status from OVH
+POST /api/orders/{order_id}/waive-retraction    - Waive the retraction period (speed up delivery)
+POST /api/orders/{order_id}/cancel              - Cancel order (exercise right of retraction)
+
 # Insights (historical data)
 GET  /api/insights/history/{plan_code}?days=N    - Recent stock events
 GET  /api/insights/patterns/{plan_code}          - Hourly restock count aggregation
@@ -364,7 +380,8 @@ ovh-gui/
 │   │   ├── checkout.py      # Rush order (one-shot) + legacy cart checkout
 │   │   ├── profiles.py      # Saved checkout profile CRUD (per-account)
 │   │   ├── sniper.py        # Sniper arm/disarm/status
-│   │   ├── insights.py      # History, patterns, price, orders
+│   │   ├── insights.py      # History, patterns, price, orders (local)
+│   │   ├── orders.py        # Order management (live OVH list, detail, follow-up, waive, cancel)
 │   │   ├── accounts.py      # Multi-account CRUD + active switch + test
 │   │   ├── settings.py      # Notification channel settings (Telegram/Discord/Slack/SMTP)
 │   │   ├── account.py       # OVH account + payment methods + defaults
@@ -376,11 +393,11 @@ ovh-gui/
 │       ├── notifier.py      # Telegram/Discord/Slack/email fan-out
 │       ├── storage.py       # SQLite persistence (alerts, profiles, events, prices, orders)
 │       └── cache.py         # In-memory TTL cache
-├── static/js/app.js         # Frontend SPA (vanilla JS, ~2600 lines)
+├── static/js/app.js         # Frontend SPA (vanilla JS, ~3300 lines)
 ├── static/css/input.css     # Tailwind v4 source
 ├── static/css/app.css       # Built/minified (do not edit)
 ├── templates/index.html    # SPA shell with cache-busted asset refs
-├── tests/                   # pytest suite (69 tests, uses TestClient)
+├── tests/                   # pytest suite (108 tests, uses TestClient)
 ├── requirements.txt         # Runtime dependencies
 ├── requirements-dev.txt     # Dev dependencies (ruff, pytest, httpx)
 ├── pyproject.toml           # Project metadata + tool config

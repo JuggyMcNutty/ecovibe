@@ -126,7 +126,7 @@ app/
     ├── notifier.py      # Telegram/Discord/Slack/email fan-out
     ├── storage.py       # SQLite persistence (singleton)
     └── cache.py         # In-memory TTL cache
-static/js/app.js         # Frontend SPA (vanilla JS, ~2800 lines)
+static/js/app.js         # Frontend SPA (vanilla JS, ~3300 lines)
 static/css/input.css     # Tailwind source
 static/css/app.css       # Built/minified (do not edit — rebuild from input.css)
 templates/index.html     # SPA shell with cache-busted asset refs
@@ -150,8 +150,11 @@ were created under (`account_id` column on each table).
   its constructor (no DB read) — construct directly in tests.
 - **Active account**: stored in `settings.active_account_id`; cached by
   the registry. Switching via `PUT /api/accounts/active` calls
-  `monitor.reload()` which clears in-memory alerts + stock cache and
-  re-reads the active account's alerts.
+  `monitor.reload()` which clears in-memory alerts, stock cache, and
+  `_last_stock` (the stock-diff baseline) and re-reads the active
+  account's alerts. If `reload()` fails, the active account is reverted
+  so the monitor doesn't poll the new account with the old account's
+  alerts.
 - **Monitor**: polls the active account only (Decision 1A). The poller
   early-returns when there are no enabled alerts, so idle polling does
   no OVH network I/O. Multi-account simultaneous polling is a future
@@ -161,6 +164,15 @@ were created under (`account_id` column on each table).
   (`get_ovh_service(alert.account_id)`), not the active one — so an
   armed sniper keeps targeting the right region after a switch.
 - **Notifier + checkout_defaults**: global (not per-account).
+- **Frontend account switch**: `switchAccount()` in `app.js` tears down
+  the SSE monitor + catalog auto-refresh, resets 8 account-scoped state
+  fields, and uses a request-generation token (`_switchGen`) so stale
+  async responses from the previous account are ignored after each
+  `await`.
+- **Network error wrapping**: `OVHService._do_call` wraps non-`APIError`
+  exceptions (`ConnectionError`, `TimeoutError`, `SSLError`) in
+  `OVHServiceError` so they surface as proper error responses instead of
+  unhandled 500s.
 - **Migration**: on `init()`, if `accounts` is empty and the legacy
   `credentials` table has rows, one account is created from them, set
   active, and all data rows backfilled with its id. Idempotent.
@@ -289,11 +301,13 @@ were created under (`account_id` column on each table).
 - **Notifier settings**: stored in the DB `settings` table with
   `notifier_` prefix (e.g. `notifier_telegram_bot_token`). The notifier
   reads from DB first, then env vars. Secrets (bot tokens, SMTP
-  passwords) are masked on GET. Masked values (containing `...`) are
-  preserved on PUT so users don't re-enter them.
+  passwords, Discord/Slack webhook URLs) are masked on GET. Masked
+  values (containing `...`) are preserved on PUT so users don't re-enter
+  them.
 - **500 retry**: `OVHService._call` retries once on 500/502/503/504
-  after a 0.5s backoff — OVH returns transient 500s that succeed on
-  retry.
+  after a 0.5s backoff, but **only for non-POST methods** — POST (e.g.
+  checkout) is never retried to prevent duplicate orders when OVH
+  processed the request but the response was lost.
 - **Settings UI**: notification settings live in the credentials-view
   (accessed via the Settings button in the header), NOT as a tab. A
   back button returns to the monitor view.
