@@ -9,6 +9,7 @@ on all interfaces (e.g. behind a reverse proxy). See README.md > Deployment.
 """
 def main() -> None:
     import uvicorn
+    from uvicorn.config import LOGGING_CONFIG
 
     from app.config import get_settings
     from app.main import app
@@ -22,7 +23,16 @@ def main() -> None:
         print("Binding to localhost only. Set OVH_HOST=0.0.0.0 to expose.")
     print()
 
-    uvicorn.run(app, host=settings.host, port=settings.port)
+    # Extend uvicorn's default log config so application loggers (app.*)
+    # flow through the same handler/level as uvicorn's own loggers.
+    # Without this, logger.info()/warning() calls in app/ produce no output.
+    LOGGING_CONFIG["loggers"]["app"] = {
+        "handlers": ["default"],
+        "level": "INFO",
+        "propagate": False,
+    }
+
+    uvicorn.run(app, host=settings.host, port=settings.port, log_config=LOGGING_CONFIG)
 
 
 if __name__ == "__main__":

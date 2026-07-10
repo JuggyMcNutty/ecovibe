@@ -1,7 +1,6 @@
 """Checkout endpoints - place orders and one-shot rush orders."""
 import asyncio
 import logging
-import sys
 from datetime import datetime, timezone
 from typing import Any
 
@@ -14,12 +13,6 @@ from app.services.ovh_service import OVHServiceError, get_active_ovh_service
 from app.services.storage import get_storage
 
 logger = logging.getLogger(__name__)
-
-
-def _trace(msg: str) -> None:
-    """Print to stderr so it always shows in the uvicorn console,
-    bypassing the logging config that filters non-uvicorn loggers."""
-    print(f"[rush] {msg}", file=sys.stderr, flush=True)
 
 router = APIRouter(prefix="/api/checkout", tags=["checkout"])
 
@@ -69,19 +62,19 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
             )
             if plan_dcs:
                 datacenters = plan_dcs
-                _trace(f"no DCs selected - auto-trying plan DCs: {plan_dcs}")
+                logger.info("no DCs selected - auto-trying plan DCs: %s", plan_dcs)
         except OVHServiceError:
             pass
     if not any(d for d in datacenters):
         datacenters = [""]
-    _trace(f"start: plan={req.plan_code} endpoint={service.endpoint} region={req.region}")
+    logger.info("rush start: plan=%s endpoint=%s region=%s", req.plan_code, service.endpoint, req.region)
     cart = await asyncio.to_thread(service.create_cart, "Rush Order")
-    _trace(f"created cart {cart.get('cartId')} for plan {req.plan_code}")
+    logger.info("created cart %s for plan %s", cart.get('cartId'), req.plan_code)
     try:
         await asyncio.to_thread(service.assign_cart, cart["cartId"])
-        _trace(f"assigned cart {cart.get('cartId')}")
+        logger.info("assigned cart %s", cart.get('cartId'))
     except OVHServiceError as e:
-        _trace(f"assign FAILED for cart {cart.get('cartId')}: {e}")
+        logger.info("assign FAILED for cart %s: %s", cart.get('cartId'), e)
         try:
             await asyncio.to_thread(service.delete_cart, cart["cartId"])
         except OVHServiceError:
@@ -97,11 +90,11 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
             quantity=1,
         )
         item_id = server_item["itemId"]
-        _trace(f"added server {req.plan_code} to cart {cart.get('cartId')} (item {item_id})")
+        logger.info("added server %s to cart %s (item %s)", req.plan_code, cart.get('cartId'), item_id)
 
         # Add each selected addon (RAM/storage/bandwidth) sequentially.
         for addon in filter(None, [req.ram, req.storage, req.bandwidth]):
-            _trace(f"adding addon {addon} to cart {cart.get('cartId')}")
+            logger.info("adding addon %s to cart %s", addon, cart.get('cartId'))
             await asyncio.to_thread(
                 service.add_option_to_cart,
                 cart_id=cart["cartId"],
@@ -125,7 +118,7 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
                     value=dc,
                 )
                 dc_set = True
-                _trace(f"dc {dc} accepted for cart {cart.get('cartId')}")
+                logger.info("dc %s accepted for cart %s", dc, cart.get('cartId'))
                 break
             except OVHServiceError as e:
                 last_dc_error = e
@@ -156,7 +149,7 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
             )
             for label, value in remaining_configs
         ])
-        _trace(f"configs set (region={req.region}, os={req.os}) for cart {cart.get('cartId')}")
+        logger.info("configs set (region=%s, os=%s) for cart %s", req.region, req.os, cart.get('cartId'))
 
         result = await asyncio.to_thread(
             service.checkout_cart,
@@ -164,10 +157,10 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
             auto_pay=req.auto_pay,
             waive_retractation=req.waive_retractation,
         )
-        _trace(f"checkout OK for cart {cart.get('cartId')}")
+        logger.info("checkout OK for cart %s", cart.get('cartId'))
         return result
     except OVHServiceError as e:
-        _trace(f"step FAILED for cart {cart.get('cartId')}: {e}")
+        logger.info("rush step FAILED for cart %s: %s", cart.get('cartId'), e)
         try:
             await asyncio.to_thread(service.delete_cart, cart["cartId"])
         except OVHServiceError:
