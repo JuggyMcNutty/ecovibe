@@ -1,6 +1,7 @@
 """Checkout endpoints - place orders and one-shot rush orders."""
 import asyncio
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -9,6 +10,7 @@ from pydantic import BaseModel
 
 from app.api.errors import raise_ovh_http_error
 from app.models.schemas import CheckoutRequest
+from app.services.monitor import DuplicateAlertError, get_monitor_service, get_sniper_service
 from app.services.ovh_service import OVHServiceError, get_active_ovh_service
 from app.services.storage import get_storage
 
@@ -23,6 +25,11 @@ class RushOrderRequest(BaseModel):
     `datacenters` is ordered - the first one OVH accepts wins. `max_price`
     is in microcents of euro (matches OVH's `priceInUcents` field) and
     refuses checkout if the current price exceeds it.
+
+    When `arm_if_oos` is true and the requested FQN is not currently
+    orderable, the request does NOT fire an order. Instead it creates a
+    checkout profile + alert and arms the sniper so the background poller
+    auto-orders when OVH reports the config back in stock.
     """
 
     plan_code: str
@@ -37,6 +44,7 @@ class RushOrderRequest(BaseModel):
     auto_pay: bool = False
     waive_retractation: bool = False
     max_price: int | None = None
+    arm_if_oos: bool = False
 
 
 async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
@@ -168,6 +176,88 @@ async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
         raise
 
 
+async def _arm_sniper_from_rush(request: RushOrderRequest, service) -> dict[str, Any]:
+    """Create a profile + alert and arm the sniper for an out-of-stock rush.
+
+    Reuses an existing alert for the same (plan_code, fqn) when present so
+    re-arming a previously-fired sniper doesn't create duplicates. The
+    alert uses the exact FQN as its pattern so the sniper fires only when
+    that precise configuration comes back in stock. Returns a payload
+    describing the armed state; raises HTTPException on unrecoverable
+    failure (and cleans up any profile it created).
+    """
+    storage = get_storage()
+    account_id = service.account_id
+
+    # 1) Save a checkout profile mirroring the rush request.
+    profile_id = str(uuid.uuid4())
+    profile_record = {
+        "id": profile_id,
+        "name": f"Quick: {request.plan_code}",
+        "plan_code": request.plan_code,
+        "fqn": request.fqn,
+        "ram": request.ram,
+        "storage": request.storage,
+        "bandwidth": request.bandwidth,
+        "datacenters": ",".join(request.datacenters),
+        "region": request.region,
+        "os": request.os,
+        "duration": request.duration,
+        "auto_pay": request.auto_pay,
+        "waive_retractation": request.waive_retractation,
+        "max_price": request.max_price,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "account_id": account_id,
+    }
+    try:
+        storage.upsert_profile(profile_record)
+    except Exception as e:
+        logger.warning("failed to save sniper profile: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to save checkout profile") from e
+
+    # 2) Find or create an alert scoped to this exact FQN.
+    monitor = get_monitor_service()
+    alert_id: str | None = None
+    for a in monitor.get_alerts():
+        if a.plan_code == request.plan_code and a.fqn_pattern == request.fqn:
+            alert_id = a.id
+            break
+    if alert_id is None:
+        try:
+            alert = await monitor.add_alert(request.plan_code, request.fqn)
+            alert_id = alert.id
+        except DuplicateAlertError:
+            for a in monitor.get_alerts():
+                if a.plan_code == request.plan_code and a.fqn_pattern == request.fqn:
+                    alert_id = a.id
+                    break
+    if alert_id is None:
+        try:
+            storage.delete_profile(profile_id)
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail="Failed to create alert")
+
+    # 3) Arm the sniper - the background poller auto-orders on restock.
+    sniper = get_sniper_service()
+    sniper.arm(alert_id, profile_id)
+    logger.info(
+        "armed sniper for OOS plan %s (alert=%s profile=%s)",
+        request.plan_code, alert_id, profile_id,
+    )
+    return {
+        "status": "armed",
+        "alert_id": alert_id,
+        "profile_id": profile_id,
+        "plan_code": request.plan_code,
+        "fqn": request.fqn,
+        "message": (
+            f"{request.plan_code} is out of stock. Sniper armed - the "
+            "monitor will auto-order when it comes back in stock."
+        ),
+    }
+
+
 @router.post("/rush")
 async def rush_checkout(request: RushOrderRequest) -> dict[str, Any]:
     """One-shot rush order: build cart, add server/options/configs, checkout.
@@ -195,6 +285,26 @@ async def rush_checkout(request: RushOrderRequest) -> dict[str, Any]:
                     f"max {request.max_price / 100_000_000:.2f} {cur}"
                 ),
             )
+
+    # When armed-mode is requested, check whether the FQN is currently
+    # orderable before attempting an order. If it is out of stock, arm the
+    # sniper instead of firing a doomed order that OVH rejects with
+    # "... is not available in <dc>". The monitor's background poller
+    # (independent of any browser connection) then auto-orders on restock.
+    if request.arm_if_oos:
+        try:
+            avail_configs = await asyncio.to_thread(
+                service.get_availability, request.plan_code
+            )
+        except OVHServiceError:
+            # Availability endpoint unreachable - fall through to the
+            # normal order attempt; the sniper can't fire without stock
+            # data anyway, and the user gets the real OVH error.
+            avail_configs = None
+        if avail_configs is not None:
+            orderable_fqns = {c.get("fqn", "") for c in avail_configs}
+            if request.fqn not in orderable_fqns:
+                return await _arm_sniper_from_rush(request, service)
 
     try:
         result = await _execute_rush_order(service, request)

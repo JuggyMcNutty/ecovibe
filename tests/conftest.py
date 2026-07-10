@@ -31,6 +31,7 @@ def isolated_state(tmp_path, monkeypatch):
         except RuntimeError:
             pass
     monitor_mod._monitor_service = None
+    monitor_mod._sniper_service = None
 
     from app.config import get_settings
     get_settings.cache_clear()

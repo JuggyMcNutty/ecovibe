@@ -268,7 +268,7 @@ function hideError() {
 }
 
 let toastTimer = null;
-function showToast(message) {
+function showToast(message, duration = 2500) {
     const toast = document.getElementById('toast-view');
     document.getElementById('toast-message').textContent = message;
     toast.classList.remove('hidden');
@@ -276,7 +276,7 @@ function showToast(message) {
     toastTimer = setTimeout(() => {
         toast.classList.add('hidden');
         toastTimer = null;
-    }, 2500);
+    }, duration);
 }
 
 function updateConnectionStatus(connected) {
@@ -2322,7 +2322,25 @@ async function rushOrder(e) {
             auto_pay: autoPay,
             waive_retractation: waive,
             max_price: state.checkoutDefaults?.max_price ?? null,
+            arm_if_oos: true,
         });
+
+        // When the requested config is out of stock the backend arms the
+        // sniper instead of firing a doomed order. Refresh the alerts,
+        // profiles, and sniper panels so the armed state is visible, and
+        // start the monitor so the user sees the stock-alert banner the
+        // moment OVH reports it back in stock. The background poller
+        // auto-orders regardless of any browser connection.
+        if (result.status === 'armed') {
+            showToast(result.message || `Sniper armed for ${result.plan_code}. Will auto-order when back in stock.`, 6000);
+            await loadAlerts();
+            await loadProfiles();
+            await loadSniperStatus();
+            if (!state.monitoring) {
+                startMonitoring();
+            }
+            return;
+        }
 
         state.orderResult = result;
         state.cart = null;
