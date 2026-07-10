@@ -1,4 +1,4 @@
-"""OVH Flash Sale Monitor application package.
+"""ECOVibe application package.
 
 The FastAPI app instance is constructed lazily in `app.main.create_app()`
 and exposed as `app.main.app`. Import `app.main` explicitly rather than

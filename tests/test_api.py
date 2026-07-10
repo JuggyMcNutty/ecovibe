@@ -44,7 +44,7 @@ def test_health(client):
 def test_root_serves_html(client):
     r = client.get("/")
     assert r.status_code == 200
-    assert "OVH Flash Sale Monitor" in r.text
+    assert "ECOVibe" in r.text
 
 
 def test_catalog_unconfigured_returns_503(client):

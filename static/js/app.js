@@ -1,4 +1,4 @@
-// OVH Flash Sale Monitor - frontend SPA (vanilla JS, no framework)
+// ECOVibe - frontend SPA (vanilla JS, no framework)
 
 const API_BASE = '/api';
 

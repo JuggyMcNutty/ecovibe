@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OVH Flash Sale Monitor - entry point.
+"""ECOVibe - entry point.
 
 Run: python run.py
 Then open http://localhost:8000 and configure credentials in the browser.
@@ -14,7 +14,7 @@ def main() -> None:
     from app.main import app
 
     settings = get_settings()
-    print("OVH Flash Sale Monitor")
+    print("ECOVibe")
     print("=" * 40)
     print(f"Starting server on http://{settings.host}:{settings.port}")
     print("Open the URL in your browser to configure OVH credentials.")

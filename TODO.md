@@ -1,4 +1,4 @@
-# OVH Flash Sale Monitor
+# ECOVibe
 
 All planned MVP features are implemented. This file tracks the original plan for reference.
 

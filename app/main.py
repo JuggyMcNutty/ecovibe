@@ -149,7 +149,7 @@ def create_app():
     from app.config import get_settings
 
     app = FastAPI(
-        title="OVH Flash Sale Monitor",
+        title="ECOVibe",
         description="Real-time OVH server stock monitoring and fast checkout",
         version="0.2.0",
         lifespan=lifespan,

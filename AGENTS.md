@@ -4,7 +4,7 @@ Reference for AI sessions working on this repo. Read this first.
 
 ## Project
 
-OVH Flash Sale Monitor — FastAPI backend + vanilla JS SPA frontend for
+ECOVibe — FastAPI backend + vanilla JS SPA frontend for
 monitoring OVH ECO server flash sales and placing rush orders via the
 OVH API. Python 3.10+, single-process, SQLite persistence.
 

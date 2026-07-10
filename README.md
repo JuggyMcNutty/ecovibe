@@ -1,4 +1,4 @@
-# OVH Flash Sale Monitor
+# ECOVibe
 
 Real-time stock monitoring and fast checkout for OVH ECO servers. Never miss a flash sale!
 
@@ -69,7 +69,7 @@ server {
     listen 80;
     server_name flash.example.com;
 
-    auth_basic "OVH Flash Sale Monitor";
+    auth_basic "ECOVibe";
     auth_basic_user_file /etc/nginx/.htpasswd;
 
     location / {

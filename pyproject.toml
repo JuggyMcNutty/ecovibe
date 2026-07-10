@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ovh-flash-monitor"
+name = "ecovibe"
 version = "0.2.0"
 description = "Real-time OVH ECO server flash sale stock monitoring with instant rush-order checkout."
 readme = "README.md"
