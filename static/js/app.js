@@ -1825,9 +1825,11 @@ function switchTab(tabId) {
     if (tabId === 'billing-tab' && !state.billingLoaded) {
         loadBillingInfo();
     }
-    // Lazy-load orders data when switching to the orders tab
+    // Lazy-load orders data when switching to the orders tab. Returns the
+    // promise so callers that need to await it (e.g. openOrderInTab) can;
+    // other callers ignore the return value and it runs fire-and-forget.
     if (tabId === 'orders-tab') {
-        loadOrdersTab();
+        return loadOrdersTab();
     }
     // Refresh insights plan dropdown when switching to that tab
     if (tabId === 'insights-tab') {
@@ -2770,34 +2772,40 @@ function renderOrders(orders) {
     orders.slice(0, 10).forEach(o => {
         const time = o.placed_at ? new Date(o.placed_at).toLocaleString() : '';
         const id = o.order_id ? `#${o.order_id}` : '(pending)';
-        const status = o.status || 'unknown';
+        const refreshBtn = o.order_id ? el('button', {
+            class: 'text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded',
+            text: 'Refresh',
+            onclick: async (ev) => {
+                ev.stopPropagation();
+                const btn = ev.currentTarget;
+                btn.disabled = true;
+                btn.textContent = '...';
+                try {
+                    const r = await apiRequest('GET', `/insights/orders/${encodeURIComponent(o.order_id)}`);
+                    showToast(`Order #${o.order_id}: ${r.status}`);
+                    await loadOrders();
+                } catch (e) {
+                    showError(e.message);
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = 'Refresh';
+                }
+            },
+        }) : null;
         const head = el('div', { class: 'flex justify-between items-center' }, [
             el('div', {}, [
                 el('span', { class: 'text-blue-400 font-bold', text: `${o.plan_code} ${id}` }),
                 el('span', { class: 'text-gray-400 ml-2 text-xs', text: time }),
             ]),
-            o.order_id ? el('button', {
-                class: 'text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded',
-                text: 'Refresh',
-                onclick: async (ev) => {
-                    const btn = ev.currentTarget;
-                    btn.disabled = true;
-                    btn.textContent = '...';
-                    try {
-                        const r = await apiRequest('GET', `/insights/orders/${encodeURIComponent(o.order_id)}`);
-                        showToast(`Order #${o.order_id}: ${r.status}`);
-                        await loadOrders();
-                    } catch (e) {
-                        showError(e.message);
-                    } finally {
-                        btn.disabled = false;
-                        btn.textContent = 'Refresh';
-                    }
-                },
-            }) : null,
+            refreshBtn,
         ]);
-        const st = el('span', { class: 'text-xs text-gray-400', text: `status: ${status}` });
-        container.appendChild(el('div', { class: 'bg-gray-700 rounded p-2' }, [head, st]));
+        const card = el('div', {
+            class: `bg-gray-700 rounded p-2 space-y-1 ${o.order_id ? 'cursor-pointer hover:bg-gray-600 transition-colors' : ''}`,
+        }, [head, orderStatusBadge(o.status || 'unknown')]);
+        if (o.order_id) {
+            card.addEventListener('click', () => openOrderInTab(o.order_id));
+        }
+        container.appendChild(card);
     });
 }
 
@@ -2826,6 +2834,14 @@ function _ordersMatchFilter(order, filter) {
     if (filter === 'delivered') return st === 'delivered';
     if (filter === 'cancelled') return ['cancelled', 'cancelling'].includes(st);
     return true;
+}
+
+async function openOrderInTab(orderId) {
+    if (!orderId) return;
+    await switchTab('orders-tab');
+    state.selectedOrderId = orderId;
+    renderOrdersList();
+    loadOrderDetail(orderId);
 }
 
 async function loadOrdersTab() {
