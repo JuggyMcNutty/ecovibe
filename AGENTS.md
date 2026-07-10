@@ -201,6 +201,14 @@ were created under (`account_id` column on each table).
   otherwise sends `?country=US` to ca.api.ovh.com → 400
   "invalid ovhSubsidiary". `detectCatalogCurrency()` always reads the
   catalog's real currency from the response (not the display currency).
+- **Catalog currency source**: ovh-ca leaves `currencyCode` null on
+  individual pricing entries and exposes the native currency only via
+  the catalog's top-level `locale.currencyCode` (verified live: pricings
+  have `currencyCode: None`, `locale.currencyCode: "CAD"`). `/api/catalog/plans`
+  propagates `locale.currencyCode` into each `addonPrices[code].currencyCode`
+  and a top-level `currencyCode` field; `detectCatalogCurrency()` (app.js)
+  prefers that field. Without it, CAD microcents would be mislabelled as
+  EUR and FX-converted against the wrong base.
 - **Route ordering**: in `checkout.py`, `POST /rush` must be
   registered BEFORE `POST /{cart_id}` or FastAPI matches the
   wildcard route first, causing "Invalid Cart ID" 404s.

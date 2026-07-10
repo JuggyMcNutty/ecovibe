@@ -134,6 +134,12 @@ async def get_plans(
     try:
         catalog = await asyncio.to_thread(service.fetch_catalog, subsidiary=subsidiary)
         plans = catalog.get("plans", [])
+        # OVH only populates `currencyCode` on individual pricing entries for
+        # some endpoints; ovh-ca leaves them null and exposes the catalog's
+        # native currency solely via the top-level `locale.currencyCode`.
+        # Use it as the authoritative fallback so the frontend can label and
+        # FX-convert prices correctly regardless of endpoint.
+        locale_cc = (catalog.get("locale") or {}).get("currencyCode", "") or ""
         # Build addon price lookup from the catalog's top-level addons array.
         # Each addon may have both a monthly price (interval=1) and a one-time
         # setup/installation fee (interval=0, intervalUnit='none'). We surface
@@ -177,12 +183,17 @@ async def get_plans(
                     entry["setup_price"] = pr.get("price", 0)
                     entry["setup_formattedPrice"] = pr.get("formattedPrice", "")
                     found = True
+            # Endpoints like ovh-ca omit currencyCode on pricings; fall back to
+            # the catalog's locale currency so display labels are correct.
+            if not entry["currencyCode"]:
+                entry["currencyCode"] = locale_cc
             if found:
                 addon_prices[code] = entry
         return {
             "plans": plans,
             "addonPrices": addon_prices,
             "productSpecs": _build_product_specs(catalog),
+            "currencyCode": locale_cc,
         }
     except OVHServiceError as e:
         raise_ovh_http_error(e)

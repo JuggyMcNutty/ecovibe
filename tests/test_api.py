@@ -127,6 +127,20 @@ def _mock_active_catalog(service):
     service.fetch_catalog = MagicMock(return_value={"plans": [], "addons": [], "products": []})
 
 
+def _mock_active_catalog_with_locale(service, *, addons, locale_cc):
+    """Mock fetch_catalog to return a catalog with a locale and addons.
+
+    Mirrors the ovh-ca shape: pricing entries carry NO currencyCode, and the
+    native currency lives only in the top-level `locale.currencyCode`.
+    """
+    service.fetch_catalog = MagicMock(return_value={
+        "plans": [],
+        "addons": addons,
+        "products": [],
+        "locale": {"currencyCode": locale_cc, "subsidiary": "CA", "taxRate": 0},
+    })
+
+
 def test_catalog_subsidiary_falls_back_when_invalid_for_endpoint(client):
     """A foreign subsidiary must fall back to the endpoint's default rather
     than be forwarded to OVH (which would 400 'invalid ovhSubsidiary'). A
@@ -163,3 +177,53 @@ def test_catalog_subsidiary_defaults_when_no_country(client):
     r = client.get("/api/catalog/plans")
     assert r.status_code == 200
     assert svc.fetch_catalog.call_args.kwargs["subsidiary"] == "CA"
+
+
+def test_catalog_currency_propagated_from_locale_when_pricings_omit_it(client):
+    """ovh-ca leaves currencyCode null on pricing entries and exposes the
+    native currency only via the catalog's top-level locale. The backend
+    must propagate it so the frontend can FX-convert prices for display
+    (without this, prices would be mislabelled as EUR and mis-converted)."""
+    _create_account(client, label="CA", endpoint="ovh-ca")
+    svc = get_active_ovh_service()
+    _mock_active_catalog_with_locale(
+        svc,
+        addons=[{
+            "planCode": "ram-16g",
+            "invoiceName": "16GB ECC",
+            "pricings": [
+                {"mode": "default", "interval": 1, "intervalUnit": "month",
+                 "price": 500000000, "formattedPrice": "$5 CAD", "currencyCode": None},
+            ],
+        }],
+        locale_cc="CAD",
+    )
+
+    r = client.get("/api/catalog/plans?country=CA")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["currencyCode"] == "CAD"
+    assert body["addonPrices"]["ram-16g"]["currencyCode"] == "CAD"
+
+
+def test_catalog_currency_uses_pricing_currency_code_when_present(client):
+    """When OVH does populate currencyCode on pricings (e.g. ovh-eu), that
+    value is used and locale is only a fallback."""
+    _create_account(client, label="EU", endpoint="ovh-eu")
+    svc = get_active_ovh_service()
+    _mock_active_catalog_with_locale(
+        svc,
+        addons=[{
+            "planCode": "ram-16g",
+            "invoiceName": "16GB ECC",
+            "pricings": [
+                {"mode": "default", "interval": 1, "intervalUnit": "month",
+                 "price": 500000000, "formattedPrice": "5.00€", "currencyCode": "EUR"},
+            ],
+        }],
+        locale_cc="EUR",
+    )
+
+    r = client.get("/api/catalog/plans?country=IE")
+    assert r.status_code == 200
+    assert r.json()["addonPrices"]["ram-16g"]["currencyCode"] == "EUR"

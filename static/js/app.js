@@ -62,6 +62,10 @@ let state = {
     // selected currency so OVH's real prices are shown directly (default);
     // 'fx' = convert via ECB rates.
     catalogCurrency: 'EUR',
+    // Authoritative native currency from the backend's top-level
+    // `currencyCode` (OVH `locale.currencyCode`). Some endpoints (ovh-ca)
+    // leave currencyCode null on pricings, so this is the reliable source.
+    catalogCurrencyFromApi: '',
     displayCurrency: 'EUR',
     fxRates: null,
     priceMode: 'ovh',
@@ -446,6 +450,11 @@ async function loadCatalog(country) {
             state.addonPrices = resp.addonPrices || {};
             state.productSpecs = resp.productSpecs || {};
         }
+        // The backend surfaces the catalog's native currency as an
+        // authoritative top-level field (sourced from OVH's `locale`).
+        // Some endpoints (ovh-ca) omit currencyCode on pricing entries, so
+        // this is the reliable source for FX-aware price display.
+        state.catalogCurrencyFromApi = resp.currencyCode || '';
         // Detect the catalog's native currency from the first addon price
         // that carries a currencyCode (or from a plan's pricing).
         detectCatalogCurrency();
@@ -474,9 +483,19 @@ function detectCatalogCurrency() {
     // currency's subsidiary isn't valid for the active endpoint (e.g. USD on
     // ovh-ca), we fall back to the endpoint's default subsidiary, so the
     // catalog may be denominated in a different currency (e.g. CAD) and need
-    // FX conversion for display. Prefer currencyCode from addon prices (set
-    // by the backend from OVH's pricing data); fall back to a plan's pricing
-    // currencyCode.
+    // FX conversion for display.
+    //
+    // The backend surfaces the catalog's native currency authoritatively via
+    // the top-level `currencyCode` field (sourced from OVH's `locale`); this
+    // is the reliable source because some endpoints (ovh-ca) leave
+    // currencyCode null on individual pricings. Fall back to addon/plan
+    // pricing entries for older responses that lack the field.
+    if (state.catalogCurrencyFromApi) {
+        state.catalogCurrency = state.catalogCurrencyFromApi;
+        updateMaxPriceLabel();
+        updateCurrencyStatus();
+        return;
+    }
     for (const code in state.addonPrices) {
         const cc = state.addonPrices[code]?.currencyCode;
         if (cc) { state.catalogCurrency = cc; updateMaxPriceLabel(); updateCurrencyStatus(); return; }
@@ -513,6 +532,7 @@ async function refreshCatalogSilent() {
             state.addonPrices = resp.addonPrices || {};
             state.productSpecs = resp.productSpecs || {};
         }
+        state.catalogCurrencyFromApi = resp.currencyCode || '';
         detectCatalogCurrency();
         // Carry over stock flags until the fresh fetch completes.
         for (const p of state.plans) {
