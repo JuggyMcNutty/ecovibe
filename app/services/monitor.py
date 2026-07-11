@@ -194,6 +194,11 @@ class SniperService:
         except Exception as e:
             logger.error("sniper order failed for %s", alert_id, exc_info=True)
             self._results[alert_id] = {"status": "error", "message": str(e)}
+            # Un-blacklist the FQN so a transient failure (OVH 500, network
+            # blip, momentary price spike) doesn't permanently stop the
+            # sniper from retrying it on the next poll cycle.
+            if alert_id in self._armed:
+                self._armed[alert_id]["fqns_seen"].discard(fqn)
         finally:
             self._in_flight.discard(alert_id)
 
@@ -499,8 +504,12 @@ class MonitorService:
                     diff = self.get_stock_diff(plan_code, new_statuses)
                     self._stock_cache[plan_code] = new_statuses
                     triggered_alerts: list[tuple[StockAlert, list[str]]] = []
-                    if diff["newly_available"]:
+                    # Broadcast on any change (restock or sell-out) so SSE
+                    # clients can keep their stock indicators accurate -
+                    # not just when something newly became available.
+                    if diff["newly_available"] or diff["now_unavailable"]:
                         changes.append(diff)
+                    if diff["newly_available"]:
                         # Find every alert that matches at least one new FQN.
                         for alert in self._alerts.values():
                             if alert.plan_code == plan_code and alert.enabled:
@@ -540,9 +549,14 @@ class MonitorService:
                     for alert_obj, matched_fqns in triggered_alerts:
                         price = None
                         if storage:
-                            price = storage.latest_price(plan_code)
+                            price_ucents = storage.latest_price(plan_code)
+                            if price_ucents is not None:
+                                price = price_ucents / 100_000_000
                         try:
-                            await notify_stock_alert(plan_code, matched_fqns, price)
+                            await notify_stock_alert(
+                                plan_code, matched_fqns, price,
+                                currency_code=service.default_currency_code(),
+                            )
                         except Exception:
                             logger.warning("notifier failed for %s", plan_code, exc_info=True)
                         try:
