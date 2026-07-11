@@ -34,16 +34,21 @@ def _get_notifier_setting(key: str) -> str | None:
     return getattr(get_settings(), key, None)
 
 
-def _format_message(plan_code: str, fqns: list[str], price: float | None = None) -> tuple[str, str]:
+def _format_message(
+    plan_code: str, fqns: list[str], price: float | None = None,
+    currency_code: str = "EUR",
+) -> tuple[str, str]:
     """Build the alert text in both plain-text and HTML forms.
 
-    `price` is the latest known price in euros (or None if unavailable).
-    Truncates the FQN list to the first 5 entries with a "+N more" suffix
-    to avoid overflowing chat clients on plans with many configs.
+    `price` is the latest known price in the account's own currency units
+    (already divided out of microcents by the caller), or None if
+    unavailable. Truncates the FQN list to the first 5 entries with a
+    "+N more" suffix to avoid overflowing chat clients on plans with many
+    configs.
     """
     fqn_list = ", ".join(fqns[:5])
     extra = f" (+{len(fqns) - 5} more)" if len(fqns) > 5 else ""
-    price_str = f" at \u20AC{price:.2f}" if price is not None else ""
+    price_str = f" at {price:.2f} {currency_code}" if price is not None else ""
     plain = f"OVH stock alert: {plan_code} now available{price_str}\nConfigs: {fqn_list}{extra}"
     html = (
         f"<b>OVH stock alert</b>: <code>{plan_code}</code> now available{price_str}<br>"
@@ -52,13 +57,15 @@ def _format_message(plan_code: str, fqns: list[str], price: float | None = None)
     return plain, html
 
 
-async def _send_telegram(plan_code: str, fqns: list[str], price: float | None) -> None:
+async def _send_telegram(
+    plan_code: str, fqns: list[str], price: float | None, currency_code: str,
+) -> None:
     """Send a Telegram message via the Bot API. No-op if not configured."""
     token = _get_notifier_setting("telegram_bot_token")
     chat_id = _get_notifier_setting("telegram_chat_id")
     if not (token and chat_id):
         return
-    plain, _ = _format_message(plan_code, fqns, price)
+    plain, _ = _format_message(plan_code, fqns, price, currency_code)
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -75,12 +82,14 @@ async def _send_telegram(plan_code: str, fqns: list[str], price: float | None) -
         logger.warning("telegram notification failed", exc_info=True)
 
 
-async def _send_discord(plan_code: str, fqns: list[str], price: float | None) -> None:
+async def _send_discord(
+    plan_code: str, fqns: list[str], price: float | None, currency_code: str,
+) -> None:
     """Post a Discord webhook with a rich embed. No-op if not configured."""
     webhook_url = _get_notifier_setting("discord_webhook_url")
     if not webhook_url:
         return
-    plain, _ = _format_message(plan_code, fqns, price)
+    plain, _ = _format_message(plan_code, fqns, price, currency_code)
     embed: dict[str, Any] = {
         "title": "\U0001F514 OVH Stock Alert",
         "description": plain,
@@ -101,12 +110,14 @@ async def _send_discord(plan_code: str, fqns: list[str], price: float | None) ->
         logger.warning("discord notification failed", exc_info=True)
 
 
-async def _send_slack(plan_code: str, fqns: list[str], price: float | None) -> None:
+async def _send_slack(
+    plan_code: str, fqns: list[str], price: float | None, currency_code: str,
+) -> None:
     """Post to a Slack incoming webhook. No-op if not configured."""
     webhook_url = _get_notifier_setting("slack_webhook_url")
     if not webhook_url:
         return
-    plain, _ = _format_message(plan_code, fqns, price)
+    plain, _ = _format_message(plan_code, fqns, price, currency_code)
     payload = {
         "text": f"\U0001F514 {plain}",
         "blocks": [
@@ -125,7 +136,9 @@ async def _send_slack(plan_code: str, fqns: list[str], price: float | None) -> N
         logger.warning("slack notification failed", exc_info=True)
 
 
-def _send_email(plan_code: str, fqns: list[str], price: float | None) -> None:
+def _send_email(
+    plan_code: str, fqns: list[str], price: float | None, currency_code: str,
+) -> None:
     """Send an HTML email via SMTP. No-op if not configured.
 
     Synchronous (smtplib is blocking) - callers should run via
@@ -138,7 +151,7 @@ def _send_email(plan_code: str, fqns: list[str], price: float | None) -> None:
     notify_to = _get_notifier_setting("notify_email_to")
     if not (smtp_host and notify_to and smtp_from):
         return
-    _, html = _format_message(plan_code, fqns, price)
+    _, html = _format_message(plan_code, fqns, price, currency_code)
     msg = MIMEText(html, "html")
     msg["Subject"] = f"OVH stock alert: {plan_code} available"
     msg["From"] = smtp_from
@@ -157,18 +170,23 @@ def _send_email(plan_code: str, fqns: list[str], price: float | None) -> None:
 
 
 async def notify_stock_alert(
-    plan_code: str, fqns: list[str], price: float | None = None
+    plan_code: str, fqns: list[str], price: float | None = None,
+    currency_code: str = "EUR",
 ) -> None:
     """Fan out a stock alert to every configured channel concurrently.
+
+    `price` must already be in whole currency units (not microcents) and
+    `currency_code` should reflect the account the alert came from - callers
+    must convert before calling this.
 
     `return_exceptions=True` ensures one channel's failure cannot cancel the
     others. Errors are logged inside each sender; this coroutine never raises.
     """
     await asyncio.gather(
-        _send_telegram(plan_code, fqns, price),
-        _send_discord(plan_code, fqns, price),
-        _send_slack(plan_code, fqns, price),
-        asyncio.to_thread(_send_email, plan_code, fqns, price),
+        _send_telegram(plan_code, fqns, price, currency_code),
+        _send_discord(plan_code, fqns, price, currency_code),
+        _send_slack(plan_code, fqns, price, currency_code),
+        asyncio.to_thread(_send_email, plan_code, fqns, price, currency_code),
         return_exceptions=True,
     )
 
