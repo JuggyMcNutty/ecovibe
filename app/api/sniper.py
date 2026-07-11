@@ -40,7 +40,7 @@ async def arm(req: SniperArmRequest) -> dict:
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
     storage = get_storage()
-    profile = storage.load_profile(req.profile_id)
+    profile = storage.load_profile(req.profile_id, account_id=alert.account_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
     sniper = get_sniper_service()

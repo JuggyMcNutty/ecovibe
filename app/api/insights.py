@@ -64,15 +64,20 @@ async def refresh_price(
     if price_ucents is None:
         raise HTTPException(status_code=404, detail="Plan not found in catalog")
     storage = get_storage()
-    storage.log_price(plan_code, price_ucents, datetime.now(timezone.utc))
+    storage.log_price(
+        plan_code, price_ucents, datetime.now(timezone.utc),
+        account_id=service.account_id,
+        currency_code=service.default_currency_code(country),
+    )
     return {"plan_code": plan_code, "price_in_ucents": price_ucents}
 
 
 @router.get("/orders")
 async def list_orders(limit: int = Query(default=50, ge=1, le=500)) -> dict:
-    """Return recently placed orders."""
+    """Return recently placed orders for the active account."""
     storage = get_storage()
-    return {"orders": storage.load_orders(limit=limit)}
+    service = get_active_ovh_service()
+    return {"orders": storage.load_orders(limit=limit, account_id=service.account_id)}
 
 
 @router.get("/orders/{order_id}")

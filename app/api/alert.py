@@ -90,8 +90,12 @@ async def assign_profile(alert_id: str, request: AssignProfileRequest) -> AlertR
     alert = monitor.get_alert(alert_id)
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
-    alert.auto_order_profile_id = request.profile_id
     storage = get_storage()
+    if request.profile_id is not None:
+        profile = storage.load_profile(request.profile_id, account_id=alert.account_id)
+        if not profile:
+            raise HTTPException(status_code=404, detail="Profile not found")
+    alert.auto_order_profile_id = request.profile_id
     try:
         storage.set_alert_profile(alert_id, request.profile_id)
     except Exception:

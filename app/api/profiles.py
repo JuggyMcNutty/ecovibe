@@ -53,7 +53,7 @@ async def create_profile(profile: CheckoutProfile) -> dict:
 @router.get("/{profile_id}")
 async def get_profile(profile_id: str) -> dict:
     storage = get_storage()
-    profile = storage.load_profile(profile_id)
+    profile = storage.load_profile(profile_id, account_id=storage.get_active_account_id())
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
     return profile
@@ -62,12 +62,14 @@ async def get_profile(profile_id: str) -> dict:
 @router.put("/{profile_id}")
 async def update_profile(profile_id: str, profile: CheckoutProfile) -> dict:
     storage = get_storage()
-    existing = storage.load_profile(profile_id)
+    active_account_id = storage.get_active_account_id()
+    existing = storage.load_profile(profile_id, account_id=active_account_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Profile not found")
     record = profile.model_dump()
     record["id"] = profile_id
     record["created_at"] = existing["created_at"]
+    record["account_id"] = active_account_id
     storage.upsert_profile(record)
     return record
 
@@ -75,5 +77,9 @@ async def update_profile(profile_id: str, profile: CheckoutProfile) -> dict:
 @router.delete("/{profile_id}")
 async def delete_profile(profile_id: str) -> dict:
     storage = get_storage()
-    storage.delete_profile(profile_id)
+    active_account_id = storage.get_active_account_id()
+    existing = storage.load_profile(profile_id, account_id=active_account_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    storage.delete_profile(profile_id, account_id=active_account_id)
     return {"status": "deleted", "id": profile_id}
