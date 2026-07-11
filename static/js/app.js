@@ -2454,6 +2454,10 @@ async function saveCredentials() {
     const applicationSecret = document.getElementById('cred-app-secret').value.trim();
     const consumerKey = document.getElementById('cred-consumer-key').value.trim();
     const editingId = state.editingAccountId;
+    // Onboarding = the first-ever account (setup wizard). Adding an extra
+    // account or editing one is "manage mode" and must not auto-activate or
+    // navigate away.
+    const isOnboarding = !state.configured && !editingId;
 
     if (!applicationKey || !consumerKey) {
         showCredentialTestResult('error', 'Application key and consumer key are required.');
@@ -2476,9 +2480,6 @@ async function saveCredentials() {
             savedId = created.id;
         }
         await loadAccounts();
-        state.activeAccountId = savedId;
-        state.endpoint = endpoint;
-        state.configured = true;
 
         // Test the saved account.
         try {
@@ -2489,7 +2490,29 @@ async function saveCredentials() {
             showCredentialTestResult('error', `Account saved but test failed: ${e.message}`);
         }
 
-        // After 1.2s, proceed to the monitor (or back to account list in manage mode).
+        if (!isOnboarding) {
+            // Manage mode: the active account is unchanged (only the first
+            // account auto-activates; switch via the dropdown). Refresh the
+            // list, reset the form for another add, and stay on this view.
+            renderAccountList();
+            renderAccountSelect();
+            state.editingAccountId = null;
+            document.getElementById('setup-title').textContent = 'Add OVH Account';
+            document.getElementById('setup-description').textContent = 'Add an OVH API account to monitor flash sales and place orders. Credentials are stored in the local database.';
+            document.getElementById('cred-label').value = '';
+            document.getElementById('cred-app-key').value = '';
+            document.getElementById('cred-app-secret').value = '';
+            document.getElementById('cred-consumer-key').value = '';
+            document.getElementById('delete-credentials-btn').classList.add('hidden');
+            return;
+        }
+
+        // Onboarding: the first account is now active on the backend.
+        state.activeAccountId = savedId;
+        state.endpoint = endpoint;
+        state.configured = true;
+
+        // After 1.2s, proceed to the monitor.
         setTimeout(async () => {
             document.getElementById('settings-btn').classList.remove('hidden');
             renderAccountSelect();
