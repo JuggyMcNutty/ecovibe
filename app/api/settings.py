@@ -44,11 +44,17 @@ class NotifierSettings(BaseModel):
 
 
 def _mask(value: str) -> str:
-    """Mask a secret, showing only first 4 and last 4 characters."""
+    """Mask a secret, showing only first 4 and last 4 characters.
+
+    Always includes "..." in the output, even for short secrets, so
+    `update_notifications`'s `"..." in val` check can reliably recognize
+    a round-tripped masked value and skip overwriting the real stored
+    secret with the mask itself.
+    """
     if not value:
         return ""
     if len(value) <= 8:
-        return "****"
+        return "****...****"
     return f"{value[:4]}...{value[-4:]}"
 
 
