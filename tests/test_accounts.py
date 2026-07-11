@@ -236,3 +236,66 @@ def test_storage_load_alerts_filtered_by_account():
     assert a_ids == {"id-a"}
     assert b_ids == {"id-b"}
     assert all_ids == {"id-a", "id-b"}
+
+
+def test_same_plan_alert_persists_across_two_accounts():
+    """Regression test for the alerts UNIQUE constraint bug: two accounts
+    watching the same (plan_code, fqn_pattern) must not collide - the old
+    UNIQUE(plan_code, fqn_pattern) constraint (no account_id) made the
+    second account's upsert raise sqlite3.IntegrityError, which was
+    swallowed, so the alert silently never persisted to disk."""
+    from app.services.storage import get_storage
+    s = get_storage()
+    s.upsert_alert("id-a", "24ska", "*", True, None, account_id="acct-a")
+    s.upsert_alert("id-b", "24ska", "*", True, None, account_id="acct-b")
+    rows = s.load_alerts()
+    ids = {r["id"] for r in rows}
+    assert ids == {"id-a", "id-b"}
+
+
+def test_profile_crud_is_account_scoped(client):
+    """A profile created under account A cannot be read/updated/deleted
+    while account B is active (IDOR check)."""
+    a = _create_account(client, label="A")
+    b = _create_account(client, label="B", endpoint="ovh-us")
+    _switch(client, a["id"])
+    profile = client.post("/api/profiles", json={
+        "name": "profA", "plan_code": "24ska", "fqn": "24ska.default",
+        "region": "europe", "os": "none_64.en", "duration": "P1M",
+    }, headers=XHR).json()
+    pid = profile["id"]
+
+    _switch(client, b["id"])
+    assert client.get(f"/api/profiles/{pid}").status_code == 404
+    assert client.put(f"/api/profiles/{pid}", json={
+        "name": "hijacked", "plan_code": "x", "fqn": "x.default",
+        "region": "europe", "os": "none_64.en", "duration": "P1M",
+    }, headers=XHR).status_code == 404
+    assert client.delete(f"/api/profiles/{pid}", headers=XHR).status_code == 404
+
+    # Profile must be untouched and still owned by A.
+    _switch(client, a["id"])
+    still_there = client.get(f"/api/profiles/{pid}").json()
+    assert still_there["name"] == "profA"
+
+
+def test_insights_orders_scoped_to_active_account(client):
+    """GET /api/insights/orders must not leak another account's orders."""
+    from datetime import datetime, timezone
+
+    from app.services.storage import get_storage
+
+    a = _create_account(client, label="A")
+    b = _create_account(client, label="B", endpoint="ovh-us")
+    storage = get_storage()
+    now = datetime.now(timezone.utc)
+    storage.log_order(1, "cart-a", "24ska", "delivered", "http://a", now, account_id=a["id"])
+    storage.log_order(2, "cart-b", "24sk11", "delivered", "http://b", now, account_id=b["id"])
+
+    _switch(client, a["id"])
+    orders_a = client.get("/api/insights/orders").json()["orders"]
+    assert {o["order_id"] for o in orders_a} == {1}
+
+    _switch(client, b["id"])
+    orders_b = client.get("/api/insights/orders").json()["orders"]
+    assert {o["order_id"] for o in orders_b} == {2}
