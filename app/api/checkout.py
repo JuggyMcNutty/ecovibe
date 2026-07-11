@@ -47,17 +47,53 @@ class RushOrderRequest(BaseModel):
     arm_if_oos: bool = False
 
 
+async def _enforce_max_price(service, req: RushOrderRequest) -> None:
+    """Budget guard: refuse to order if the price has spiked past the cap.
+
+    Called from `_execute_rush_order` so both the manual rush-order route
+    and the sniper's auto-order path (which calls `_execute_rush_order`
+    directly, bypassing the route handler) enforce the cap identically.
+    Fails closed: if the price can't be verified (lookup error), the order
+    is refused rather than allowed through unchecked - a cap that can't be
+    confirmed is not a cap.
+    """
+    if req.max_price is None:
+        return
+    try:
+        price = await asyncio.to_thread(service.get_plan_price, req.plan_code)
+    except OVHServiceError as e:
+        raise OVHServiceError(
+            f"Could not verify price against max_price cap: {e.message}",
+            status_code=409,
+        ) from e
+    cur = service.default_currency_code()
+    if price is None:
+        raise OVHServiceError(
+            f"Could not verify price against max_price cap for {req.plan_code}",
+            status_code=409,
+        )
+    if price > req.max_price:
+        raise OVHServiceError(
+            f"Price {price / 100_000_000:.2f} {cur} exceeds "
+            f"max {req.max_price / 100_000_000:.2f} {cur}",
+            status_code=409,
+        )
+
+
 async def _execute_rush_order(service, req: RushOrderRequest) -> dict[str, Any]:
     """Build a cart, add items + configs, and checkout.
 
-    Tries each datacenter in `req.datacenters` in order until one succeeds.
-    On any failure after cart creation, the cart is deleted to avoid
-    orphans. Region and OS configs are applied in parallel since they are
+    Enforces `req.max_price` (if set) before touching the cart. Tries each
+    datacenter in `req.datacenters` in order until one succeeds. On any
+    failure after cart creation, the cart is deleted to avoid orphans.
+    Region and OS configs are applied in parallel since they are
     independent of each other.
 
-    Raises `OVHServiceError` on any upstream failure - the caller is
-    responsible for mapping it to an HTTP response.
+    Raises `OVHServiceError` on any upstream failure (including a
+    max_price breach) - the caller is responsible for mapping it to an
+    HTTP response.
     """
+    await _enforce_max_price(service, req)
     datacenters = list(req.datacenters)
     # If no DCs were selected, auto-discover the plan's available DCs from
     # the catalog. OVH requires `dedicated_datacenter` before checkout or
@@ -269,22 +305,6 @@ async def rush_checkout(request: RushOrderRequest) -> dict[str, Any]:
     service = get_active_ovh_service()
     if not service.is_configured():
         raise HTTPException(status_code=503, detail="OVH API not configured")
-
-    # Budget guard: refuse to checkout if the price has spiked past the cap.
-    if request.max_price is not None:
-        try:
-            price = await asyncio.to_thread(service.get_plan_price, request.plan_code)
-        except OVHServiceError:
-            price = None
-        if price is not None and price > request.max_price:
-            cur = service.default_currency_code()
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Price {price / 100_000_000:.2f} {cur} exceeds "
-                    f"max {request.max_price / 100_000_000:.2f} {cur}"
-                ),
-            )
 
     # When armed-mode is requested, check whether the FQN is currently
     # orderable before attempting an order. If it is out of stock, arm the
