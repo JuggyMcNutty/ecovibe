@@ -601,9 +601,14 @@ function updateMaxPriceLabel() {
 
 async function refreshCatalogSilent() {
     if (!state.configured || !state.catalogCountry) return;
+    const gen = state._switchGen;
     try {
         const url = `/catalog/plans?country=${encodeURIComponent(state.catalogCountry)}`;
         const resp = await apiRequest('GET', url);
+        // An account switch happened while this request was in flight -
+        // discard the stale response instead of clobbering the new
+        // account's freshly-loaded catalog state.
+        if (gen !== state._switchGen) return;
         const oldCount = state.plans.length;
         state.plans = resp.plans || [];
         state.addonPrices = resp.addonPrices || {};
@@ -625,7 +630,9 @@ async function refreshCatalogSilent() {
         } else {
             updateCatalogRefreshBadge(`${state.plans.length} plans`, false);
         }
-        refreshStockForAllPlans().then(() => renderCatalogList()).catch(() => {});
+        refreshStockForAllPlans().then(() => {
+            if (gen === state._switchGen) renderCatalogList();
+        }).catch(() => {});
     } catch (e) {
         // Silent fail - don't disrupt the user with error banners on background polls
         console.error('Catalog auto-refresh failed:', e);
@@ -1548,9 +1555,14 @@ function renderCatalogDetail(plan) {
         }
     }
 
-    // Fetch stock data asynchronously (don't block rendering)
-    apiRequest('GET', `/catalog/stock?plan_code=${encodeURIComponent(plan.planCode)}`)
+    // Fetch stock data asynchronously (don't block rendering). Guard
+    // against a stale response landing after the user has since selected
+    // a different plan (rapid clicking) - only apply it if this fetch's
+    // plan is still the one selected.
+    const stockFetchPlanCode = plan.planCode;
+    apiRequest('GET', `/catalog/stock?plan_code=${encodeURIComponent(stockFetchPlanCode)}`)
         .then(data => {
+            if (state.selectedPlanCode !== stockFetchPlanCode) return;
             stockData = data || [];
             updateStockDisplay();
         })
@@ -2189,9 +2201,12 @@ function startMonitoring() {
 
             if (data.type === 'stock_update') {
                 data.changes.forEach(change => {
-                    if (change.newly_available.length > 0) {
-                        state.currentStock[change.plan_code] = change.currently_available.map(fqn => ({ fqn }));
+                    // Always sync the monitored-list dot to the latest snapshot,
+                    // even when nothing newly became available - otherwise a
+                    // plan that sells out never reverts from green to red.
+                    state.currentStock[change.plan_code] = change.currently_available.map(fqn => ({ fqn }));
 
+                    if (change.newly_available.length > 0) {
                         showStockAlert(change.plan_code, change.newly_available);
                         addToRecentAlerts(change.plan_code, change.newly_available);
 
@@ -3189,7 +3204,11 @@ async function loadPriceHistoryView(planCode) {
         const list = el('div', { class: 'space-y-1' });
         history.slice(0, 20).forEach(h => {
             const time = new Date(h.timestamp).toLocaleString();
-            const price = formatCurrency(convertMicrocents(h.price_in_ucents));
+            // Convert from the currency the row was actually logged in, not
+            // today's session currency - older rows predating per-row
+            // currency tracking fall back to the current catalog currency.
+            const fromCode = h.currency_code || state.catalogCurrency;
+            const price = formatCurrency(convertMicrocents(h.price_in_ucents, fromCode));
             list.appendChild(el('div', { class: 'flex justify-between bg-gray-700 rounded px-2 py-1 text-sm' }, [
                 el('span', { class: 'text-gray-400', text: time }),
                 el('span', { class: 'text-green-400 font-bold', text: price }),
@@ -3435,7 +3454,10 @@ async function init() {
         state.cart = null;
         state.cartCreatedAt = null;
         showView('monitor');
-        startMonitoring();
+        // Only (re)start monitoring if it was already active - don't force
+        // it on for a user who placed an order via the catalog's inline
+        // "Order Now" flow without ever enabling it.
+        if (state.monitoring) startMonitoring();
     });
 
     document.getElementById('sound-toggle').addEventListener('change', (e) => {
