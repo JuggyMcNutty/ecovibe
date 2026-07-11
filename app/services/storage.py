@@ -68,8 +68,9 @@ class Storage:
                     enabled INTEGER NOT NULL DEFAULT 1,
                     notified_at TEXT,
                     auto_order_profile_id TEXT,
+                    account_id TEXT,
                     created_at TEXT NOT NULL,
-                    UNIQUE(plan_code, fqn_pattern)
+                    UNIQUE(plan_code, fqn_pattern, account_id)
                 )
                 """
             )
@@ -106,13 +107,21 @@ class Storage:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     plan_code TEXT NOT NULL,
                     price_in_ucents INTEGER NOT NULL,
-                    timestamp TEXT NOT NULL
+                    timestamp TEXT NOT NULL,
+                    currency_code TEXT
                 )
                 """
             )
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_price_history_plan ON price_history(plan_code, timestamp)"
             )
+            # Best-effort column add for pre-existing DBs (currency wasn't
+            # tracked per-row before, so old rows fall back to the caller's
+            # current display currency rather than a stored value).
+            try:
+                cur.execute("ALTER TABLE price_history ADD COLUMN currency_code TEXT")
+            except sqlite3.OperationalError:
+                pass
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS checkout_profiles (
@@ -197,6 +206,9 @@ class Storage:
                     pass
             # Migrate legacy single-credential set into an account row.
             self._migrate_legacy_credentials(cur)
+            # Must run after the migration above so account_id is backfilled
+            # before the new constraint takes effect.
+            self._migrate_alerts_unique_constraint(cur)
             self._conn.commit()
 
     def _migrate_legacy_credentials(self, cur: sqlite3.Cursor) -> None:
@@ -252,6 +264,56 @@ class Storage:
                 (acct_id,),
             )
         logger.info("Migrated legacy credentials to account %s (%s)", acct_id, label)
+
+    def _migrate_alerts_unique_constraint(self, cur: sqlite3.Cursor) -> None:
+        """One-time migration: rebuild `alerts` so its UNIQUE constraint
+        includes `account_id`, not just `(plan_code, fqn_pattern)`.
+
+        Without `account_id` in the constraint, two different accounts
+        watching the same plan/pattern collide on the same unique index -
+        the second `upsert_alert` raises `sqlite3.IntegrityError`, which
+        `MonitorService.add_alert` swallows, so the alert silently never
+        persists. Runs on every init() but is a no-op once the constraint
+        already includes account_id (including on fresh installs, whose
+        `CREATE TABLE` already has the right constraint). Idempotent.
+        """
+        cur.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='alerts'"
+        )
+        row = cur.fetchone()
+        if row is None or "UNIQUE(plan_code, fqn_pattern, account_id)" in row["sql"]:
+            return
+        cur.execute(
+            """
+            CREATE TABLE alerts_new (
+                id TEXT PRIMARY KEY,
+                plan_code TEXT NOT NULL,
+                fqn_pattern TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                notified_at TEXT,
+                auto_order_profile_id TEXT,
+                account_id TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(plan_code, fqn_pattern, account_id)
+            )
+            """
+        )
+        # On a (plan_code, fqn_pattern, account_id) collision (only possible
+        # among rows that predate account scoping), keep the most recently
+        # created row - INSERT OR IGNORE keeps the first row it sees per key.
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO alerts_new
+                (id, plan_code, fqn_pattern, enabled, notified_at,
+                 auto_order_profile_id, account_id, created_at)
+            SELECT id, plan_code, fqn_pattern, enabled, notified_at,
+                   auto_order_profile_id, account_id, created_at
+            FROM alerts ORDER BY created_at DESC
+            """
+        )
+        cur.execute("DROP TABLE alerts")
+        cur.execute("ALTER TABLE alerts_new RENAME TO alerts")
+        logger.info("Migrated alerts table: UNIQUE constraint now includes account_id")
 
     def close(self) -> None:
         with self._lock:
@@ -528,13 +590,13 @@ class Storage:
     # ----- price history -----
 
     def log_price(self, plan_code: str, price_in_ucents: int, timestamp: datetime,
-                  account_id: str | None = None) -> None:
+                  account_id: str | None = None, currency_code: str | None = None) -> None:
         with self._lock:
             cur = self._conn.cursor()
             cur.execute(
-                "INSERT INTO price_history (plan_code, price_in_ucents, timestamp, account_id) "
-                "VALUES (?, ?, ?, ?)",
-                (plan_code, price_in_ucents, _iso(timestamp), account_id),
+                "INSERT INTO price_history (plan_code, price_in_ucents, timestamp, account_id, currency_code) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (plan_code, price_in_ucents, _iso(timestamp), account_id, currency_code),
             )
             self._conn.commit()
 
@@ -544,7 +606,7 @@ class Storage:
         with self._lock:
             cur = self._conn.cursor()
             cur.execute(
-                "SELECT plan_code, price_in_ucents, timestamp FROM price_history "
+                "SELECT plan_code, price_in_ucents, timestamp, currency_code FROM price_history "
                 "WHERE plan_code = ? ORDER BY timestamp DESC LIMIT ?",
                 (plan_code, limit),
             )
@@ -554,6 +616,7 @@ class Storage:
                 "plan_code": r["plan_code"],
                 "price_in_ucents": r["price_in_ucents"],
                 "timestamp": r["timestamp"],
+                "currency_code": r["currency_code"],
             }
             for r in rows
         ]
@@ -599,10 +662,16 @@ class Storage:
             )
             self._conn.commit()
 
-    def delete_profile(self, profile_id: str) -> None:
+    def delete_profile(self, profile_id: str, account_id: str | None = None) -> None:
         with self._lock:
             cur = self._conn.cursor()
-            cur.execute("DELETE FROM checkout_profiles WHERE id = ?", (profile_id,))
+            if account_id:
+                cur.execute(
+                    "DELETE FROM checkout_profiles WHERE id = ? AND account_id = ?",
+                    (profile_id, account_id),
+                )
+            else:
+                cur.execute("DELETE FROM checkout_profiles WHERE id = ?", (profile_id,))
             self._conn.commit()
 
     def load_profiles(self, account_id: str | None = None) -> list[dict[str, Any]]:
@@ -618,12 +687,26 @@ class Storage:
             rows = cur.fetchall()
         return [dict(r) for r in rows]
 
-    def load_profile(self, profile_id: str) -> dict[str, Any] | None:
+    def load_profile(self, profile_id: str, account_id: str | None = None) -> dict[str, Any] | None:
+        """Fetch a profile by id, optionally scoped to an account.
+
+        ``account_id`` is omitted by internal callers that legitimately
+        need cross-account lookup (e.g. the sniper firing under an alert's
+        own account, which may differ from the currently active one).
+        User-facing routes must always pass it to prevent IDOR access to
+        another account's profile.
+        """
         with self._lock:
             cur = self._conn.cursor()
-            cur.execute(
-                "SELECT * FROM checkout_profiles WHERE id = ?", (profile_id,)
-            )
+            if account_id:
+                cur.execute(
+                    "SELECT * FROM checkout_profiles WHERE id = ? AND account_id = ?",
+                    (profile_id, account_id),
+                )
+            else:
+                cur.execute(
+                    "SELECT * FROM checkout_profiles WHERE id = ?", (profile_id,)
+                )
             row = cur.fetchone()
         return dict(row) if row else None
 
