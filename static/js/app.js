@@ -2117,6 +2117,16 @@ function renderAlertsList() {
     });
 }
 
+// Glob match mirroring the backend's fnmatch (fqn_pattern supports * and ?).
+function fqnMatchesPattern(fqn, pattern) {
+    if (!pattern || pattern === '*') return true;
+    const re = new RegExp('^' + pattern
+        .replace(/[.+^${}()|[\]\\]/g, '\\$&')  // escape regex specials
+        .replace(/\*/g, '.*')
+        .replace(/\?/g, '.') + '$', 'i');
+    return re.test(fqn);
+}
+
 function renderMonitoredList() {
     const container = document.getElementById('monitored-list');
     container.innerHTML = '';
@@ -2126,7 +2136,9 @@ function renderMonitoredList() {
     }
     state.alerts.forEach(alert => {
         const stock = state.currentStock[alert.plan_code];
-        const available = stock && stock.length > 0;
+        // Green only when a config matching THIS alert's pattern is in stock,
+        // not merely any config of the plan (misleading for scoped patterns).
+        const available = !!(stock && stock.some(s => fqnMatchesPattern(s.fqn, alert.fqn_pattern)));
         const label = el('span', { class: 'font-bold', text: alert.plan_code });
         const dot = el('span', {
             class: `w-3 h-3 rounded-full ${available ? 'bg-green-500' : 'bg-red-500'}`,
@@ -2700,9 +2712,12 @@ async function loadProfileIntoForm(profileId) {
     if (!profile) return;
     document.getElementById('rush-plan-code').value = profile.plan_code || '';
     document.getElementById('rush-fqn').value = profile.fqn || '';
-    if (profile.ram) document.getElementById('rush-ram').value = profile.ram;
-    if (profile.storage) document.getElementById('rush-storage').value = profile.storage;
-    if (profile.bandwidth) document.getElementById('rush-bandwidth').value = profile.bandwidth;
+    // Always assign (not just when truthy) so switching to a profile that
+    // omits an addon clears the previous profile's value instead of leaving
+    // it stuck in the form.
+    document.getElementById('rush-ram').value = profile.ram || '';
+    document.getElementById('rush-storage').value = profile.storage || '';
+    document.getElementById('rush-bandwidth').value = profile.bandwidth || '';
     document.querySelectorAll('.rush-dc').forEach(cb => {
         cb.checked = (profile.datacenters || '').split(',').map(s => s.trim()).includes(cb.value);
     });
