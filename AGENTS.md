@@ -231,23 +231,31 @@ were created under (`account_id` column on each table).
   primary label (from `addonPrices` map). The `humanizeAddon()`
   functions are only a fallback when no price entry exists.
 - **Order line items**: OVH's `/me/order/{id}/details` splits every
-  ordered component into separate rows by `detailType` (`INSTALLATION` =
-  one-time setup fee, `DURATION` = recurring monthly) grouped under a
-  hierarchical `domain` (`*001` = the server, `*001.001`, `*001.002`, ...
-  = its options), so an 8-row order is really ~4 items. `_group_line_items()`
-  in `orders.py` collapses them by domain into one `line_items` entry each
-  (`setup_price`/`recurring_price` merged, label cleaned of OVH's "rental -
-  1 month" boilerplate via `_pick_label`); `get_order_detail` returns
-  both the raw `details` and grouped `line_items`, and the frontend renders
-  `line_items` (falling back to `details`).
+  ordered component into a setup row (one-time fee) and a monthly row, so an
+  8-row order is really ~4 items. `_group_line_items()` in `orders.py`
+  collapses them into one `line_items` entry each (`setup_price`/
+  `recurring_price` merged, label cleaned via `_pick_label`); `get_order_detail`
+  returns both the raw `details` and grouped `line_items`, and the frontend
+  renders `line_items` (falling back to `details`). **The raw detail shape
+  differs by region** and the grouping handles both:
+  - **ovh-ca/eu**: rows tagged with `detailType` (`INSTALLATION` = setup,
+    `DURATION` = monthly) under a hierarchical `domain` (`*001` = server,
+    `*001.00x` = options). Grouped by domain, sorted (server first).
+  - **ovh-us**: **no `detailType`**, and every row's `domain` is `*`; the
+    setup/monthly split is encoded only in the description (`"X"` vs
+    `"X - 1 month"`). Grouped by the cleaned product label in OVH's order.
+    `_row_kind()` bridges the two (detailType when present, else the
+    `- 1 month` suffix); `_group_line_items` groups by domain only when it
+    actually distinguishes items, else by label.
 - **Order title (server name)**: OVH server orders carry no name on the order
   object, so the list title is derived from the line items. `_name_from_details`
   picks the **server** line — the priciest grouped item (options are
-  included/$0), *not* the first detail row (which is often the RAM) — falling
-  back to a real `domain` hostname. The derived name is persisted; a title cached
-  wrong won't self-heal on a plain list load, so the "Refresh all" button hits
-  `GET /api/orders?refresh=true`, which re-derives names instead of trusting the
-  cache (still `name_budget`-limited so it can't hang).
+  included/$0), *not* the first detail row (which is often the RAM/storage) —
+  falling back to a real `domain` hostname. This is region-agnostic (works for
+  both the ca/eu and us detail shapes above). The derived name is persisted; a
+  title cached wrong won't self-heal on a plain list load, so the "Refresh all"
+  button hits `GET /api/orders?refresh=true`, which re-derives names instead of
+  trusting the cache (still `name_budget`-limited so it can't hang).
 - **Frontend**: no framework, no build step for JS. `app.js` is a
   ~3300-line vanilla SPA using a custom `el()` DOM helper. Cache
   busting is automatic via content-hash query strings
