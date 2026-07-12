@@ -633,36 +633,58 @@
         </div>
 
         <!-- Insights tab -->
-        <div id="insights-tab" class="hidden">
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div class="bg-gray-800 rounded-lg p-4">
-                    <h2 class="text-xl font-bold mb-4">Restock Patterns</h2>
-                    <div class="flex gap-2 mb-3">
-                        <select id="insights-plan-select" class="flex-1 bg-gray-700 px-3 py-2 rounded">
-                            <option value="">Select a monitored plan...</option>
-                        </select>
-                        <select id="insights-days" class="bg-gray-700 px-2 py-2 rounded text-sm">
-                            <option value="7">7 days</option>
-                            <option value="30" selected>30 days</option>
-                            <option value="90">90 days</option>
-                        </select>
+        <div id="insights-tab" class="hidden space-y-6">
+            <!-- Controls -->
+            <div class="flex flex-wrap items-center gap-2">
+                <select id="insights-plan-select" class="flex-1 min-w-[12rem] bg-gray-700 px-3 py-2 rounded">
+                    <option value="">Select a monitored plan…</option>
+                </select>
+                <select id="insights-days" class="bg-gray-700 px-2 py-2 rounded text-sm">
+                    <option value="7">Last 7 days</option>
+                    <option value="30" selected>Last 30 days</option>
+                    <option value="90">Last 90 days</option>
+                </select>
+            </div>
+
+            <!-- Cross-plan overview -->
+            <div class="bg-gray-800 rounded-lg p-4">
+                <h2 class="text-lg font-bold mb-1">Monitored plans</h2>
+                <p class="text-gray-400 text-xs mb-3">Restock activity across every plan you monitor. Click a row to dig in.</p>
+                <div id="insights-overview" class="overflow-x-auto">
+                    <p class="text-gray-500 text-sm">Loading…</p>
+                </div>
+            </div>
+
+            <!-- Per-plan detail -->
+            <div id="insights-detail" class="hidden space-y-6">
+                <!-- At-a-glance stat tiles -->
+                <div id="insights-summary" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3"></div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div class="bg-gray-800 rounded-lg p-4">
+                        <h2 class="text-lg font-bold mb-1">Best time to catch</h2>
+                        <p class="text-gray-400 text-xs mb-3">Restocks by weekday &amp; hour, in your local time. Darker = more often.</p>
+                        <div id="insights-heatmap"></div>
                     </div>
-                    <div id="restock-pattern" class="space-y-2">
-                        <p class="text-gray-500 text-sm">Select a plan to see restock patterns by hour.</p>
+
+                    <div class="bg-gray-800 rounded-lg p-4">
+                        <h2 class="text-lg font-bold mb-1">Price trend</h2>
+                        <p class="text-gray-400 text-xs mb-3">Monthly price logged over time.</p>
+                        <div id="insights-price"></div>
                     </div>
                 </div>
 
-                <div class="bg-gray-800 rounded-lg p-4">
-                    <h2 class="text-xl font-bold mb-4">Price History</h2>
-                    <div id="price-history" class="space-y-2">
-                        <p class="text-gray-500 text-sm">Select a plan to see price history.</p>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div class="bg-gray-800 rounded-lg p-4">
+                        <h2 class="text-lg font-bold mb-1">Recent in-stock windows</h2>
+                        <p class="text-gray-400 text-xs mb-3">How long each config stayed orderable — how fast you must act.</p>
+                        <div id="insights-windows" class="space-y-2 max-h-[36vh] overflow-y-auto"></div>
                     </div>
-                </div>
 
-                <div class="bg-gray-800 rounded-lg p-4 lg:col-span-2">
-                    <h2 class="text-xl font-bold mb-4">Recent Stock Events</h2>
-                    <div id="stock-events" class="space-y-2 max-h-[40vh] overflow-y-auto">
-                        <p class="text-gray-500 text-sm">Select a plan to see recent stock events.</p>
+                    <div class="bg-gray-800 rounded-lg p-4">
+                        <h2 class="text-lg font-bold mb-1">Recent activity</h2>
+                        <p class="text-gray-400 text-xs mb-3">Latest stock changes for this plan.</p>
+                        <div id="insights-activity" class="space-y-1 max-h-[36vh] overflow-y-auto"></div>
                     </div>
                 </div>
             </div>

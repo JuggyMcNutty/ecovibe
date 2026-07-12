@@ -1843,9 +1843,10 @@ function switchTab(tabId) {
     if (tabId === 'orders-tab') {
         return loadOrdersTab();
     }
-    // Refresh insights plan dropdown when switching to that tab
+    // Refresh insights plan dropdown + overview when switching to that tab
     if (tabId === 'insights-tab') {
         populateInsightsPlanSelect();
+        loadInsightsData();
     }
 }
 
@@ -3122,10 +3123,10 @@ function populateInsightsPlanSelect() {
     if (!select) return;
     const current = select.value;
     select.innerHTML = '';
-    select.appendChild(el('option', { value: '', text: 'Select a monitored plan...' }));
+    select.appendChild(el('option', { value: '', text: 'Select a monitored plan…' }));
     const codes = sortedMonitoredPlanCodes();
     codes.forEach(code => {
-        select.appendChild(el('option', { value: code, text: code }));
+        select.appendChild(el('option', { value: code, text: insightsPlanLabel(code) }));
     });
     if (current && codes.includes(current)) {
         select.value = current;
@@ -3139,134 +3140,388 @@ function sortedMonitoredPlanCodes() {
     return merged.sort();
 }
 
+function insightsPlanLabel(code) {
+    const p = (state.plans || []).find(x => x.planCode === code);
+    return p && p.invoiceName ? `${p.invoiceName} (${code})` : code;
+}
+
+// Split an FQN ("plan.ram-….softraid-…") into readable addon labels.
+function humanizeFqn(fqn) {
+    if (!fqn) return 'Unknown config';
+    const parts = fqn.split('.').slice(1);  // drop the leading plan code
+    if (!parts.length) return fqn;
+    return parts.map(humanizeAddon).join(' · ');
+}
+
+function formatDuration(sec) {
+    if (sec == null) return '—';
+    sec = Math.round(sec);
+    if (sec < 60) return `${sec}s`;
+    const m = Math.floor(sec / 60);
+    if (m < 60) return `${m}m`;
+    const h = Math.floor(m / 60);
+    const rm = m % 60;
+    if (h < 24) return rm ? `${h}h ${rm}m` : `${h}h`;
+    const d = Math.floor(h / 24);
+    const rh = h % 24;
+    return rh ? `${d}d ${rh}h` : `${d}d`;
+}
+
+function relativeTime(ts) {
+    if (!ts) return '—';
+    const then = new Date(ts).getTime();
+    if (isNaN(then)) return '—';
+    const diff = Math.round((Date.now() - then) / 1000);
+    if (diff < 45) return 'just now';
+    if (diff < 5400) return `${formatDuration(diff)} ago`;
+    const h = Math.round(diff / 3600);
+    if (h < 36) return `${h}h ago`;
+    return `${Math.round(h / 24)}d ago`;
+}
+
+function median(nums) {
+    if (!nums.length) return null;
+    const s = [...nums].sort((a, b) => a - b);
+    const mid = Math.floor(s.length / 2);
+    return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
 async function loadInsightsData() {
+    const days = insightsDays();
+    loadInsightsOverview(days);
     const planCode = document.getElementById('insights-plan-select').value;
-    const days = parseInt(document.getElementById('insights-days').value, 10) || 30;
+    const detail = document.getElementById('insights-detail');
     if (!planCode) {
-        document.getElementById('restock-pattern').innerHTML = '';
-        document.getElementById('restock-pattern').appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'Select a plan to see restock patterns by hour.' }));
-        document.getElementById('price-history').innerHTML = '';
-        document.getElementById('price-history').appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'Select a plan to see price history.' }));
-        document.getElementById('stock-events').innerHTML = '';
-        document.getElementById('stock-events').appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'Select a plan to see recent stock events.' }));
+        if (detail) detail.classList.add('hidden');
         return;
     }
-    await Promise.all([
-        loadRestockPatterns(planCode, days),
-        loadPriceHistoryView(planCode),
-        loadStockEvents(planCode, days),
+    if (detail) detail.classList.remove('hidden');
+    loadInsightsDetail(planCode, days);
+}
+
+function insightsDays() {
+    return parseInt(document.getElementById('insights-days').value, 10) || 30;
+}
+
+function selectInsightsPlan(code) {
+    const select = document.getElementById('insights-plan-select');
+    if (!select) return;
+    if (!Array.from(select.options).some(o => o.value === code)) {
+        select.appendChild(el('option', { value: code, text: insightsPlanLabel(code) }));
+    }
+    select.value = code;
+    loadInsightsData();
+    document.getElementById('insights-detail')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function loadInsightsOverview(days) {
+    const container = document.getElementById('insights-overview');
+    if (!container) return;
+    try {
+        const data = await apiRequest('GET', `/insights/summary?days=${days}`);
+        const plans = data?.plans || [];
+        container.innerHTML = '';
+        if (!plans.length) {
+            container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No restock history logged yet. Add alerts and start the monitor to build history over time.' }));
+            return;
+        }
+        const headCell = (t, extra = '') => el('th', { class: `py-2 pr-4 font-medium ${extra}`, text: t });
+        const table = el('table', { class: 'w-full text-sm border-collapse' }, [
+            el('thead', {}, [
+                el('tr', { class: 'text-left text-gray-400 border-b border-gray-700' }, [
+                    headCell('Plan'),
+                    headCell('Status'),
+                    headCell('Restocks', 'text-right'),
+                    headCell('Typical window', 'text-right'),
+                    headCell('Last restock', 'text-right'),
+                ]),
+            ]),
+        ]);
+        const tbody = el('tbody');
+        plans.forEach(p => {
+            const nameCell = el('td', { class: 'py-2 pr-4' }, [
+                el('div', { class: 'font-mono text-gray-200', text: p.plan_code }),
+            ]);
+            const label = insightsPlanLabel(p.plan_code);
+            if (label !== p.plan_code) {
+                nameCell.appendChild(el('div', { class: 'text-xs text-gray-500 truncate max-w-[16rem]', text: label.replace(` (${p.plan_code})`, '') }));
+            }
+            const row = el('tr', {
+                class: 'border-b border-gray-700/40 hover:bg-gray-700/40 cursor-pointer',
+                onclick: () => selectInsightsPlan(p.plan_code),
+            }, [
+                nameCell,
+                el('td', { class: 'py-2 pr-4' }, [stockBadge(p.in_stock_now)]),
+                el('td', { class: 'py-2 pr-4 text-right tabular-nums', text: String(p.restocks) }),
+                el('td', { class: 'py-2 pr-4 text-right tabular-nums text-gray-300', text: p.median_window_seconds != null ? formatDuration(p.median_window_seconds) : '—' }),
+                el('td', { class: 'py-2 pr-4 text-right text-gray-400', text: p.last_restock ? relativeTime(p.last_restock) : '—' }),
+            ]);
+            tbody.appendChild(row);
+        });
+        table.appendChild(tbody);
+        container.appendChild(table);
+    } catch (e) {
+        container.innerHTML = '';
+        container.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
+    }
+}
+
+function stockBadge(inStock) {
+    return el('span', {
+        class: inStock
+            ? 'inline-flex items-center gap-1 text-xs font-semibold text-green-400'
+            : 'inline-flex items-center gap-1 text-xs text-gray-500',
+    }, [
+        el('span', { class: `w-2 h-2 rounded-full ${inStock ? 'bg-green-500' : 'bg-gray-600'}` }),
+        inStock ? 'In stock' : 'Out',
     ]);
 }
 
-async function loadRestockPatterns(planCode, days) {
-    const container = document.getElementById('restock-pattern');
+async function loadInsightsDetail(planCode, days) {
+    const [histRes, priceRes] = await Promise.allSettled([
+        apiRequest('GET', `/insights/history/${encodeURIComponent(planCode)}?days=${days}`),
+        apiRequest('GET', `/insights/price/${encodeURIComponent(planCode)}`),
+    ]);
+    const eventsDesc = (histRes.status === 'fulfilled' ? histRes.value?.events : []) || [];
+    const priceHistory = (priceRes.status === 'fulfilled' ? priceRes.value?.history : []) || [];
+    const eventsAsc = [...eventsDesc].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    const windows = computeAvailabilityWindows(eventsAsc);
+    renderInsightsSummary(eventsAsc, windows, priceHistory);
+    renderRestockHeatmap(eventsAsc);
+    renderInsightsWindows(windows);
+    renderInsightsActivity(eventsDesc);
+    renderPriceTrend(planCode, priceHistory);
+}
+
+// Pair each `available` event with the following `unavailable` for the same
+// config to measure how long it stayed orderable. Unclosed pairs are still
+// in stock now.
+function computeAvailabilityWindows(eventsAsc) {
+    const open = {};
+    const windows = [];
+    eventsAsc.forEach(e => {
+        const ts = new Date(e.timestamp);
+        if (e.event_type === 'available') {
+            if (!(e.fqn in open)) open[e.fqn] = ts;
+        } else if (e.fqn in open) {
+            const start = open[e.fqn];
+            delete open[e.fqn];
+            windows.push({ fqn: e.fqn, start, end: ts, durationSec: (ts - start) / 1000, open: false });
+        }
+    });
+    Object.entries(open).forEach(([fqn, start]) => {
+        windows.push({ fqn, start, end: null, durationSec: (Date.now() - start) / 1000, open: true });
+    });
+    windows.sort((a, b) => b.start - a.start);
+    return windows;
+}
+
+function statTile(label, value, sub, accent = 'text-gray-100') {
+    return el('div', { class: 'bg-gray-800 rounded-lg p-3' }, [
+        el('div', { class: 'text-xs text-gray-400 mb-1', text: label }),
+        el('div', { class: `text-lg font-bold leading-tight ${accent}`, text: value }),
+        sub ? el('div', { class: 'text-xs text-gray-500 mt-0.5', text: sub }) : null,
+    ]);
+}
+
+function renderInsightsSummary(eventsAsc, windows, priceHistory) {
+    const container = document.getElementById('insights-summary');
     if (!container) return;
     container.innerHTML = '';
-    try {
-        const data = await apiRequest('GET', `/insights/patterns/${encodeURIComponent(planCode)}?days=${days}`);
-        const counts = data?.hourly_counts || [];
-        if (!counts.length) {
-            container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No restock events logged for this plan yet.' }));
-            return;
-        }
-        const max = Math.max(...counts.map(c => c.count), 1);
-        const byHour = Object.fromEntries(counts.map(c => [c.hour, c.count]));
-        const grid = el('div', { class: 'grid grid-cols-12 gap-1' });
+    const restocks = eventsAsc.filter(e => e.event_type === 'available').length;
+    const inStock = windows.some(w => w.open);
+    const closed = windows.filter(w => !w.open).map(w => w.durationSec);
+    const med = median(closed);
+    const lastAvail = eventsAsc.filter(e => e.event_type === 'available').slice(-1)[0];
+    let priceNow = '—', priceSub = '';
+    if (priceHistory.length) {
+        const latest = priceHistory[0];
+        const units = priceHistory.map(h => convertMicrocents(h.price_in_ucents, h.currency_code || state.catalogCurrency));
+        priceNow = formatCurrency(convertMicrocents(latest.price_in_ucents, latest.currency_code || state.catalogCurrency));
+        priceSub = `min ${formatCurrency(Math.min(...units))} · max ${formatCurrency(Math.max(...units))}`;
+    }
+    container.appendChild(statTile('Availability', inStock ? 'In stock' : 'Out of stock', inStock ? 'orderable now' : 'not orderable', inStock ? 'text-green-400' : 'text-gray-400'));
+    container.appendChild(statTile('Restocks', String(restocks), 'in selected period'));
+    container.appendChild(statTile('Typical time in stock', med != null ? formatDuration(med) : '—', med != null ? 'median window' : 'no closed windows'));
+    container.appendChild(statTile('Last restock', lastAvail ? relativeTime(lastAvail.timestamp) : '—', lastAvail ? new Date(lastAvail.timestamp).toLocaleString() : 'none yet'));
+    container.appendChild(statTile('Price', priceNow, priceSub || 'no price logged', 'text-blue-300'));
+}
+
+const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+// Sequential single-hue (blue) heatmap of restock frequency by weekday × hour,
+// in the viewer's local time.
+function renderRestockHeatmap(eventsAsc) {
+    const container = document.getElementById('insights-heatmap');
+    if (!container) return;
+    container.innerHTML = '';
+    const avail = eventsAsc.filter(e => e.event_type === 'available');
+    if (!avail.length) {
+        container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No restocks logged yet for this range.' }));
+        return;
+    }
+    // grid[dayMon0][hour]
+    const grid = Array.from({ length: 7 }, () => new Array(24).fill(0));
+    avail.forEach(e => {
+        const d = new Date(e.timestamp);
+        const day = (d.getDay() + 6) % 7;  // JS Sun=0 → Mon=0
+        grid[day][d.getHours()]++;
+    });
+    let max = 0, peak = { day: 0, hour: 0, count: 0 };
+    for (let dy = 0; dy < 7; dy++) {
         for (let h = 0; h < 24; h++) {
-            const c = byHour[h] || 0;
-            const heightPct = Math.round((c / max) * 100);
-            const bar = el('div', {
-                class: 'bg-blue-600 rounded-t',
-                style: `height: ${Math.max(heightPct, 4)}%; min-height: 4px;`,
-                title: `${h}:00 - ${c} events`,
-            });
-            const cell = el('div', { class: 'flex flex-col items-center justify-end h-16' }, [
-                bar,
-                el('span', { class: 'text-gray-500 text-xs mt-1', text: `${h}` }),
-            ]);
-            grid.appendChild(cell);
+            if (grid[dy][h] > max) max = grid[dy][h];
+            if (grid[dy][h] > peak.count) peak = { day: dy, hour: h, count: grid[dy][h] };
         }
-        container.appendChild(grid);
-        container.appendChild(el('p', { class: 'text-gray-400 text-xs mt-2', text: `Bars show restock count per hour over the last ${days} days (UTC). Peak hour: ${peakHour(counts)}:00 with ${max} events.` }));
-    } catch (e) {
-        container.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
+    }
+    const cellColor = (c) => {
+        if (!c) return 'rgba(148,163,184,0.10)';  // faint slate for zero
+        const a = 0.25 + 0.75 * (c / max);        // sequential blue-500 ramp
+        return `rgba(59,130,246,${a.toFixed(3)})`;
+    };
+    const scroll = el('div', { class: 'overflow-x-auto' });
+    const table = el('div', { class: 'inline-block min-w-full' });
+    // Hour axis (label every 3h)
+    const axis = el('div', { class: 'flex mb-1' }, [el('div', { class: 'w-9 shrink-0' })]);
+    for (let h = 0; h < 24; h++) {
+        axis.appendChild(el('div', { class: 'flex-1 text-center text-[10px] text-gray-500', text: h % 3 === 0 ? String(h) : '' }));
+    }
+    table.appendChild(axis);
+    for (let dy = 0; dy < 7; dy++) {
+        const row = el('div', { class: 'flex items-center mb-0.5' }, [
+            el('div', { class: 'w-9 shrink-0 text-[11px] text-gray-400', text: WEEKDAYS[dy] }),
+        ]);
+        for (let h = 0; h < 24; h++) {
+            const c = grid[dy][h];
+            row.appendChild(el('div', {
+                class: 'flex-1 h-5 rounded-sm mx-px',
+                style: `background:${cellColor(c)}`,
+                title: `${WEEKDAYS[dy]} ${String(h).padStart(2, '0')}:00 — ${c} restock${c === 1 ? '' : 's'}`,
+            }));
+        }
+        table.appendChild(row);
+    }
+    scroll.appendChild(table);
+    container.appendChild(scroll);
+    if (peak.count) {
+        container.appendChild(el('p', { class: 'text-xs text-gray-300 mt-3' }, [
+            'Most restocks land on ',
+            el('span', { class: 'font-semibold text-blue-300', text: `${WEEKDAYS[peak.day]} around ${String(peak.hour).padStart(2, '0')}:00` }),
+            ` (${peak.count} in this range).`,
+        ]));
     }
 }
 
-function peakHour(counts) {
-    if (!counts.length) return '—';
-    return counts.reduce((a, b) => (b.count > a.count ? b : a)).hour;
-}
-
-async function loadPriceHistoryView(planCode) {
-    const container = document.getElementById('price-history');
+function renderInsightsWindows(windows) {
+    const container = document.getElementById('insights-windows');
     if (!container) return;
     container.innerHTML = '';
-    try {
-        const data = await apiRequest('GET', `/insights/price/${encodeURIComponent(planCode)}`);
-        const history = data?.history || [];
-        const refreshBtn = el('button', {
-            class: 'bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm mb-3',
-            text: 'Refresh price now',
-            onclick: async () => {
-                try {
-                    await apiRequest('POST', `/insights/price/${encodeURIComponent(planCode)}/refresh`);
-                    showToast('Price refreshed.');
-                    await loadPriceHistoryView(planCode);
-                } catch (e) {
-                    showError(e.message);
-                }
-            },
-        });
-        container.appendChild(refreshBtn);
-        if (!history.length) {
-            container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No price history yet. Click "Refresh price now" to log the current price.' }));
-            return;
-        }
-        // Simple text table; no chart library in the project.
-        const list = el('div', { class: 'space-y-1' });
-        history.slice(0, 20).forEach(h => {
-            const time = new Date(h.timestamp).toLocaleString();
-            // Convert from the currency the row was actually logged in, not
-            // today's session currency - older rows predating per-row
-            // currency tracking fall back to the current catalog currency.
-            const fromCode = h.currency_code || state.catalogCurrency;
-            const price = formatCurrency(convertMicrocents(h.price_in_ucents, fromCode));
-            list.appendChild(el('div', { class: 'flex justify-between bg-gray-700 rounded px-2 py-1 text-sm' }, [
-                el('span', { class: 'text-gray-400', text: time }),
-                el('span', { class: 'text-green-400 font-bold', text: price }),
-            ]));
-        });
-        container.appendChild(list);
-    } catch (e) {
-        container.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
+    if (!windows.length) {
+        container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No in-stock windows recorded yet.' }));
+        return;
     }
+    windows.slice(0, 60).forEach(w => {
+        container.appendChild(el('div', {
+            class: `flex justify-between items-center gap-3 rounded px-3 py-2 ${w.open ? 'bg-green-900/25 border border-green-700/60' : 'bg-gray-700/60'}`,
+        }, [
+            el('div', { class: 'min-w-0' }, [
+                el('div', { class: 'text-sm text-gray-200 truncate', text: humanizeFqn(w.fqn) }),
+                el('div', { class: 'text-xs text-gray-500', text: relativeTime(w.start) }),
+            ]),
+            el('div', { class: `text-sm font-semibold shrink-0 ${w.open ? 'text-green-400' : 'text-gray-300'}`, text: w.open ? `in stock ${formatDuration(w.durationSec)}` : formatDuration(w.durationSec) }),
+        ]));
+    });
 }
 
-async function loadStockEvents(planCode, days) {
-    const container = document.getElementById('stock-events');
+function renderInsightsActivity(eventsDesc) {
+    const container = document.getElementById('insights-activity');
     if (!container) return;
     container.innerHTML = '';
-    try {
-        const data = await apiRequest('GET', `/insights/history/${encodeURIComponent(planCode)}?days=${days}`);
-        const events = data?.events || [];
-        if (!events.length) {
-            container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No stock events logged for this plan yet.' }));
-            return;
-        }
-        events.slice(0, 200).forEach(e => {
-            const time = new Date(e.timestamp).toLocaleString();
-            const available = e.event_type === 'available';
-            container.appendChild(el('div', {
-                class: `flex justify-between rounded px-2 py-1 text-sm ${available ? 'bg-green-900/30 border border-green-700' : 'bg-gray-700'}`,
-            }, [
-                el('span', { class: 'text-gray-300 font-mono text-xs', text: e.fqn }),
-                el('span', { class: `text-xs ${available ? 'text-green-400' : 'text-gray-500'}`, text: `${e.event_type} · ${time}` }),
-            ]));
-        });
-    } catch (e) {
-        container.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
+    if (!eventsDesc.length) {
+        container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No stock changes logged yet.' }));
+        return;
     }
+    eventsDesc.slice(0, 100).forEach(e => {
+        const available = e.event_type === 'available';
+        container.appendChild(el('div', { class: 'flex justify-between items-center gap-3 px-2 py-1.5 rounded hover:bg-gray-700/40' }, [
+            el('div', { class: 'flex items-center gap-2 min-w-0' }, [
+                el('span', { class: `w-2 h-2 rounded-full shrink-0 ${available ? 'bg-green-500' : 'bg-gray-600'}` }),
+                el('span', { class: 'text-sm text-gray-300 truncate', text: humanizeFqn(e.fqn) }),
+            ]),
+            el('div', { class: 'flex items-center gap-2 shrink-0' }, [
+                el('span', { class: `text-xs ${available ? 'text-green-400' : 'text-gray-500'}`, text: available ? 'restocked' : 'sold out' }),
+                el('span', { class: 'text-xs text-gray-500', text: relativeTime(e.timestamp) }),
+            ]),
+        ]));
+    });
+}
+
+function renderPriceTrend(planCode, history) {
+    const container = document.getElementById('insights-price');
+    if (!container) return;
+    container.innerHTML = '';
+    const refreshBtn = el('button', {
+        class: 'bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm mb-3',
+        text: 'Refresh price now',
+        onclick: async () => {
+            try {
+                await apiRequest('POST', `/insights/price/${encodeURIComponent(planCode)}/refresh`);
+                showToast('Price refreshed.');
+                loadInsightsDetail(planCode, insightsDays());
+            } catch (e) {
+                showError(e.message);
+            }
+        },
+    });
+    container.appendChild(refreshBtn);
+    if (!history.length) {
+        container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No price history yet. Click "Refresh price now" to log the current price.' }));
+        return;
+    }
+    // API returns newest first; chart oldest→newest.
+    const rows = [...history].reverse();
+    const pts = rows.map(h => ({
+        t: new Date(h.timestamp).getTime(),
+        v: convertMicrocents(h.price_in_ucents, h.currency_code || state.catalogCurrency),
+        label: new Date(h.timestamp).toLocaleString(),
+    }));
+    const vals = pts.map(p => p.v);
+    const min = Math.min(...vals), max = Math.max(...vals);
+    if (pts.length >= 2) {
+        container.appendChild(buildSparkline(pts, min, max));
+    }
+    const latest = pts[pts.length - 1].v;
+    const stat = el('div', { class: 'flex gap-4 mt-3 text-sm' }, [
+        el('div', {}, [el('span', { class: 'text-gray-500', text: 'now ' }), el('span', { class: 'text-blue-300 font-bold', text: formatCurrency(latest) })]),
+        el('div', {}, [el('span', { class: 'text-gray-500', text: 'min ' }), el('span', { class: 'text-gray-200', text: formatCurrency(min) })]),
+        el('div', {}, [el('span', { class: 'text-gray-500', text: 'max ' }), el('span', { class: 'text-gray-200', text: formatCurrency(max) })]),
+    ]);
+    container.appendChild(stat);
+}
+
+// Inline SVG line chart (no chart library). 2px line, min/max gridlines,
+// per-point hover via <title>.
+function buildSparkline(pts, min, max) {
+    const W = 400, H = 96, padX = 6, padY = 10;
+    const span = (max - min) || 1;
+    const n = pts.length;
+    const x = i => padX + (i / (n - 1)) * (W - 2 * padX);
+    const y = v => padY + (1 - (v - min) / span) * (H - 2 * padY);
+    const line = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.v).toFixed(1)}`).join(' ');
+    const area = `${line} L${x(n - 1).toFixed(1)},${(H - padY).toFixed(1)} L${x(0).toFixed(1)},${(H - padY).toFixed(1)} Z`;
+    const dots = pts.map((p, i) =>
+        `<circle cx="${x(i).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="3.5" fill="#60a5fa"><title>${p.label} — ${formatCurrency(p.v)}</title></circle>`
+    ).join('');
+    const wrap = el('div', { class: 'w-full' });
+    wrap.innerHTML =
+        `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="none" role="img" aria-label="Price over time">
+            <line x1="${padX}" y1="${padY}" x2="${W - padX}" y2="${padY}" stroke="#374151" stroke-width="1" stroke-dasharray="3 3"/>
+            <line x1="${padX}" y1="${H - padY}" x2="${W - padX}" y2="${H - padY}" stroke="#374151" stroke-width="1" stroke-dasharray="3 3"/>
+            <path d="${area}" fill="rgba(59,130,246,0.12)"/>
+            <path d="${line}" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+            ${dots}
+        </svg>`;
+    return wrap;
 }
 
 // Init

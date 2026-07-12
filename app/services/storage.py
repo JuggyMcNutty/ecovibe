@@ -587,6 +587,39 @@ class Storage:
             rows = cur.fetchall()
         return [{"hour": r["hour"], "count": r["count"]} for r in rows]
 
+    def load_account_stock_events(
+        self, since: datetime, account_id: str | None = None, limit: int = 5000
+    ) -> list[dict[str, Any]]:
+        """Return all stock events for an account since ``since``, oldest first.
+
+        Used by the insights summary to derive per-plan aggregates
+        (restock counts, availability windows, current in-stock state).
+        When ``account_id`` is None, events are not filtered by account.
+        """
+        where = "timestamp >= ?"
+        params: list[Any] = [_iso(since)]
+        if account_id is not None:
+            where += " AND account_id = ?"
+            params.append(account_id)
+        params.append(limit)
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                f"SELECT plan_code, fqn, event_type, timestamp FROM stock_events "
+                f"WHERE {where} ORDER BY timestamp ASC LIMIT ?",
+                params,
+            )
+            rows = cur.fetchall()
+        return [
+            {
+                "plan_code": r["plan_code"],
+                "fqn": r["fqn"],
+                "event_type": r["event_type"],
+                "timestamp": r["timestamp"],
+            }
+            for r in rows
+        ]
+
     # ----- price history -----
 
     def log_price(self, plan_code: str, price_in_ucents: int, timestamp: datetime,

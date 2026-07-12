@@ -180,6 +180,41 @@ def test_insights_endpoints(client):
     assert "orders" in r.json()
 
 
+def test_insights_summary_aggregates(client):
+    """The cross-plan summary derives restock counts, in-stock state, and
+    availability-window durations from raw stock events."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.services.storage import get_storage
+
+    acct = _create_account(client)
+    aid = acct["id"]
+    storage = get_storage()
+    now = datetime.now(timezone.utc)
+    plan = "24ska10"
+    fqn = f"{plan}.ram-32g-ecc-2400-x.softraid-2x480ssd-x"
+    fqn2 = f"{plan}.ram-64g-ecc-2400-x.softraid-2x960nvme-x"
+    # Two closed windows for fqn: 6 minutes and 12 minutes (avg/median = 9 min).
+    storage.log_stock_event(plan, fqn, "available", now - timedelta(hours=5), account_id=aid)
+    storage.log_stock_event(plan, fqn, "unavailable", now - timedelta(hours=5) + timedelta(minutes=6), account_id=aid)
+    storage.log_stock_event(plan, fqn, "available", now - timedelta(hours=2), account_id=aid)
+    storage.log_stock_event(plan, fqn, "unavailable", now - timedelta(hours=2) + timedelta(minutes=12), account_id=aid)
+    # fqn2 is still open → currently in stock.
+    storage.log_stock_event(plan, fqn2, "available", now - timedelta(minutes=10), account_id=aid)
+
+    r = client.get("/api/insights/summary?days=30")
+    assert r.status_code == 200
+    plans = r.json()["plans"]
+    assert len(plans) == 1
+    p = plans[0]
+    assert p["plan_code"] == plan
+    assert p["restocks"] == 3
+    assert p["configs"] == 2
+    assert p["in_stock_now"] is True
+    assert abs(p["avg_window_seconds"] - 540) < 1
+    assert abs(p["median_window_seconds"] - 540) < 1
+
+
 def test_rush_order_unconfigured_returns_503(client):
     r = client.post(
         "/api/checkout/rush",

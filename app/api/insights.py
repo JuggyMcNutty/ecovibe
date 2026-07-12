@@ -14,6 +14,80 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/insights", tags=["insights"])
 
 
+def _parse_ts(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def _summarize_events(events: list[dict]) -> dict:
+    """Derive per-plan aggregates from a plan's stock events (oldest first).
+
+    Pairs each ``available`` event for a config (fqn) with the following
+    ``unavailable`` to measure how long it stayed orderable. Returns restock
+    count, distinct config count, last restock time, current in-stock state,
+    and closed-window durations (seconds).
+    """
+    open_since: dict[str, datetime] = {}
+    durations: list[float] = []
+    restocks = 0
+    configs: set[str] = set()
+    last_restock: datetime | None = None
+    for e in events:
+        ts = _parse_ts(e["timestamp"])
+        if ts is None:
+            continue
+        fqn = e["fqn"]
+        configs.add(fqn)
+        if e["event_type"] == "available":
+            restocks += 1
+            if last_restock is None or ts > last_restock:
+                last_restock = ts
+            open_since.setdefault(fqn, ts)
+        else:  # unavailable — close an open window if we have one
+            started = open_since.pop(fqn, None)
+            if started is not None:
+                durations.append(max((ts - started).total_seconds(), 0.0))
+    avg = sum(durations) / len(durations) if durations else None
+    median = None
+    if durations:
+        s = sorted(durations)
+        mid = len(s) // 2
+        median = s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2
+    return {
+        "restocks": restocks,
+        "configs": len(configs),
+        "last_restock": last_restock.isoformat() if last_restock else None,
+        "in_stock_now": len(open_since) > 0,
+        "avg_window_seconds": avg,
+        "median_window_seconds": median,
+    }
+
+
+@router.get("/summary")
+async def insights_summary(days: int = Query(default=30, ge=1, le=365)) -> dict:
+    """Cross-plan overview for the active account: one row per plan with
+    restock count, last restock, current in-stock state, and typical
+    time-in-stock. Lets the user scan all monitored plans without drilling
+    into each one."""
+    storage = get_storage()
+    service = get_active_ovh_service()
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    events = storage.load_account_stock_events(since, account_id=service.account_id)
+    by_plan: dict[str, list[dict]] = {}
+    for e in events:
+        by_plan.setdefault(e["plan_code"], []).append(e)
+    plans = []
+    for plan_code, plan_events in by_plan.items():
+        summary = _summarize_events(plan_events)
+        summary["plan_code"] = plan_code
+        plans.append(summary)
+    # Most recently active first; plans with no restock sink to the bottom.
+    plans.sort(key=lambda p: (p["last_restock"] or ""), reverse=True)
+    return {"days": days, "plans": plans}
+
+
 @router.get("/history/{plan_code}")
 async def stock_history(
     plan_code: str,

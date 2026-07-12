@@ -299,3 +299,25 @@ def test_insights_orders_scoped_to_active_account(client):
     _switch(client, b["id"])
     orders_b = client.get("/api/insights/orders").json()["orders"]
     assert {o["order_id"] for o in orders_b} == {2}
+
+
+def test_insights_summary_scoped_to_active_account(client):
+    """GET /api/insights/summary must only aggregate the active account's events."""
+    from datetime import datetime, timezone
+
+    from app.services.storage import get_storage
+
+    a = _create_account(client, label="A")
+    b = _create_account(client, label="B", endpoint="ovh-us")
+    storage = get_storage()
+    now = datetime.now(timezone.utc)
+    storage.log_stock_event("plan-a", "plan-a.ram-16g-x", "available", now, account_id=a["id"])
+    storage.log_stock_event("plan-b", "plan-b.ram-16g-x", "available", now, account_id=b["id"])
+
+    _switch(client, a["id"])
+    plans_a = client.get("/api/insights/summary").json()["plans"]
+    assert {p["plan_code"] for p in plans_a} == {"plan-a"}
+
+    _switch(client, b["id"])
+    plans_b = client.get("/api/insights/summary").json()["plans"]
+    assert {p["plan_code"] for p in plans_b} == {"plan-b"}
