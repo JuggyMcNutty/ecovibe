@@ -3025,7 +3025,7 @@ function renderOrdersList() {
         });
         const topRow = el('div', { class: 'flex justify-between items-center gap-2' }, [
             el('div', { class: 'min-w-0 flex-1' }, [
-                el('span', { class: 'text-blue-400 font-bold text-sm', text: o.server_name || o.plan_code || '(unknown)' }),
+                el('span', { class: 'text-blue-400 font-bold text-sm', text: o.server_name || o.plan_code || 'OVH order' }),
                 el('span', { class: 'text-gray-400 ml-2 text-xs', text: `#${o.order_id || '?'}` }),
             ]),
             orderStatusBadge(o.status),

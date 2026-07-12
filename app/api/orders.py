@@ -41,6 +41,40 @@ def _extract_server_name(order: dict) -> str | None:
     return None
 
 
+def _name_from_details(details: list[dict]) -> str | None:
+    """Derive a server name from an order's line items.
+
+    OVH dedicated-server orders carry no name on the top-level order object;
+    the human-readable name lives on the line-item details (``description``,
+    e.g. "Dedicated Server KS-A | ...", or ``domain``). Prefer a description,
+    then a domain, skipping empty and placeholder ('*') values.
+    """
+    for key in ("description", "domain"):
+        for d in details:
+            val = d.get(key)
+            if val and val != "*":
+                return val
+    return None
+
+
+async def _order_name_from_details(service, order_id: int) -> str | None:
+    """Fetch up to the first few line items of an order and extract a name.
+
+    Used when the order object itself yields no name. Capped so an order with
+    many line items doesn't explode the per-order request count."""
+    try:
+        detail_ids = await asyncio.to_thread(service.get, f"/me/order/{order_id}/details")
+    except OVHServiceError:
+        return None
+    picked: list[dict] = []
+    for did in (detail_ids or [])[:3]:
+        try:
+            picked.append(await asyncio.to_thread(service.get, f"/me/order/{order_id}/details/{did}"))
+        except OVHServiceError:
+            continue
+    return _name_from_details(picked)
+
+
 @router.get("")
 async def list_orders(
     limit: int = Query(default=30, ge=1, le=100),
@@ -95,6 +129,14 @@ async def list_orders(
                     status = await asyncio.to_thread(service.get_order_status, oid)
                     price_ucents, currency_code = _extract_price(order_obj)
                     server_name = _extract_server_name(order_obj)
+                    if not server_name:
+                        # The name lives on the line items for OVH server orders.
+                        # Reuse a previously-persisted name to avoid re-fetching
+                        # details on every list load (short-circuits the await).
+                        server_name = (
+                            local_by_id.get(oid, {}).get("server_name")
+                            or await _order_name_from_details(service, oid)
+                        )
                     retraction_date = order_obj.get("retractionDate")
                     expiration_date = order_obj.get("expirationDate")
                     pdf_url = order_obj.get("pdfUrl")
@@ -217,6 +259,8 @@ async def refresh_order(order_id: int) -> dict:
         order_obj = await asyncio.to_thread(service.get_order, order_id)
         price_ucents, currency_code = _extract_price(order_obj)
         server_name = _extract_server_name(order_obj)
+        if not server_name:
+            server_name = await _order_name_from_details(service, order_id)
         storage = get_storage()
         storage.upsert_order_enriched(
             order_id,
