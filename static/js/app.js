@@ -3000,13 +3000,13 @@ async function openOrderInTab(orderId) {
     loadOrderDetail(orderId);
 }
 
-async function loadOrdersTab() {
+async function loadOrdersTab(refresh = false) {
     const container = document.getElementById('orders-full-list');
     if (!container) return;
     container.innerHTML = '';
     container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'Loading orders from OVH...' }));
     try {
-        const data = await apiRequest('GET', '/orders?limit=50&days=90');
+        const data = await apiRequest('GET', `/orders?limit=50&days=90${refresh ? '&refresh=true' : ''}`);
         state.allOrders = data?.orders || [];
         renderOrdersList();
     } catch (e) {
@@ -3810,7 +3810,7 @@ async function init() {
         renderOrdersList();
     });
     document.getElementById('orders-refresh-btn')?.addEventListener('click', () => {
-        loadOrdersTab();
+        loadOrdersTab(true);
     });
 
     document.getElementById('catalog-autorefresh')?.addEventListener('change', (e) => {

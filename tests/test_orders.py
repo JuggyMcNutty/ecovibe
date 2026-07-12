@@ -76,6 +76,9 @@ class _FakeSvc:
     def get(self, path, **kwargs):  # detail lookups — shouldn't matter here
         return []
 
+    def get_order_details(self, oid):
+        return _ORDER_22135744_DETAILS
+
 
 def test_orders_never_dropped_on_enrichment_timeout(client, monkeypatch):
     """A slow/timed-out enrichment must never make an OVH order disappear
@@ -138,6 +141,30 @@ def test_group_line_items_collapses_duplicates():
     bandwidth = items[1]
     assert bandwidth["label"] == "500Mbps unmetered public bandwidth"
     assert bandwidth["setup_price"] is None
+
+
+def test_refresh_rederives_stale_server_name(client, monkeypatch):
+    """`?refresh=true` must re-derive a title that was cached wrong (as the RAM
+    option) instead of trusting the persisted value; a plain load keeps it."""
+    from app.services.storage import get_storage
+    monkeypatch.setattr("app.api.orders.get_active_ovh_service", lambda: _FakeSvc())
+    get_storage().upsert_order_enriched(
+        101, status="notPaid", server_name="32GB DDR3 ECC 1333MHz", account_id="acct-x"
+    )
+
+    # Plain load trusts the (wrong) cached name.
+    o = next(o for o in client.get("/api/orders").json()["orders"] if o["order_id"] == 101)
+    assert o["server_name"] == "32GB DDR3 ECC 1333MHz"
+
+    # Refresh re-derives the server from the line items and persists it.
+    o = next(o for o in client.get("/api/orders?refresh=true").json()["orders"] if o["order_id"] == 101)
+    assert o["server_name"] == "KS-C - Intel Xeon E5-1650v2"
+
+
+def test_name_from_details_picks_server_not_option():
+    """Regression: an order's list title showed the RAM option instead of the
+    server. The server is the priciest line item, not the first detail row."""
+    assert _name_from_details(_ORDER_22135744_DETAILS) == "KS-C - Intel Xeon E5-1650v2"
 
 
 def test_pick_label_prefers_clean_non_rental_description():

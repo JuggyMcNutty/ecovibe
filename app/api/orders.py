@@ -42,18 +42,33 @@ def _extract_server_name(order: dict) -> str | None:
 
 
 def _name_from_details(details: list[dict]) -> str | None:
-    """Derive a server name from an order's line items.
+    """Derive the *server* name from an order's line items.
 
     OVH dedicated-server orders carry no name on the top-level order object;
-    the human-readable name lives on the line-item details (``description``,
-    e.g. "Dedicated Server KS-A | ...", or ``domain``). Prefer a description,
-    then a domain, skipping empty and placeholder ('*') values.
+    the human-readable name lives on the line-item details. An order has many
+    detail rows (server + RAM/storage/bandwidth options), so picking the first
+    row's description shows an option (e.g. the RAM) instead of the server.
+    Group the rows and pick the server line — the priciest item, since the
+    options are included/$0 — falling back to a real ``domain`` hostname when
+    no row carries a usable description.
     """
-    for key in ("description", "domain"):
-        for d in details:
-            val = d.get(key)
-            if val and val != "*":
-                return val
+    items = _group_line_items(details)
+    named = [it for it in items if it["label"] != "(line item)"]
+    if named:
+        def _total(it: dict) -> float:
+            return ((it["setup_price"] or {}).get("value") or 0) + \
+                   ((it["recurring_price"] or {}).get("value") or 0)
+
+        # Priciest line first; tie-break by domain so the root/server line wins
+        # for zero-price pending orders.
+        named.sort(key=lambda it: (-_total(it), it["domain"]))
+        return named[0]["label"]
+    # No usable description anywhere → fall back to a real server hostname
+    # (skip OVH's '*'/'*001' placeholder domains, which aren't names).
+    for d in details:
+        dom = d.get("domain")
+        if dom and not dom.startswith("*"):
+            return dom
     return None
 
 
@@ -138,27 +153,25 @@ def _group_line_items(details: list[dict]) -> list[dict]:
 
 
 async def _order_name_from_details(service, order_id: int) -> str | None:
-    """Fetch up to the first few line items of an order and extract a name.
+    """Fetch an order's line items and derive the server name.
 
-    Used when the order object itself yields no name. Capped so an order with
-    many line items doesn't explode the per-order request count."""
+    Used when the order object itself yields no name. Fetches the full detail
+    set (needed so the server line can be told apart from its options by price)
+    — the derived name is persisted, so this runs once per order, and the
+    per-request cap in ``list_orders`` (``name_budget``) bounds how many
+    unnamed orders pay this cost on any single load."""
     try:
-        detail_ids = await asyncio.to_thread(service.get, f"/me/order/{order_id}/details")
+        details = await asyncio.to_thread(service.get_order_details, order_id)
     except OVHServiceError:
         return None
-    picked: list[dict] = []
-    for did in (detail_ids or [])[:3]:
-        try:
-            picked.append(await asyncio.to_thread(service.get, f"/me/order/{order_id}/details/{did}"))
-        except OVHServiceError:
-            continue
-    return _name_from_details(picked)
+    return _name_from_details(details)
 
 
 @router.get("")
 async def list_orders(
     limit: int = Query(default=30, ge=1, le=100),
     days: int = Query(default=90, ge=1, le=365),
+    refresh: bool = Query(default=False),
 ) -> dict:
     """Return a merged list of local + live OVH orders.
 
@@ -167,6 +180,10 @@ async def list_orders(
     orders (which carry the plan_code context), and persists the enriched
     data back to the local DB. An overall timeout prevents the endpoint from
     hanging if OVH is slow; partial results are returned on timeout.
+
+    ``refresh=true`` (the "Refresh all" button) re-derives server names from
+    the line items instead of trusting the persisted value, so a title that was
+    cached wrong self-heals; it stays budget-limited so the request can't hang.
     """
     service = get_active_ovh_service()
     if not service.is_configured():
@@ -217,12 +234,18 @@ async def list_orders(
                     server_name = _extract_server_name(order_obj)
                     if not server_name:
                         # The name lives on the line items for OVH server orders.
-                        # Reuse a previously-persisted name; only pay for a
-                        # details fetch while we have budget left this request.
-                        server_name = local_by_id.get(oid, {}).get("server_name")
+                        # Reuse a previously-persisted name (unless refreshing);
+                        # only pay for a details fetch while we have budget left.
+                        cached_name = local_by_id.get(oid, {}).get("server_name")
+                        if not refresh:
+                            server_name = cached_name
                         if not server_name and name_budget > 0:
                             name_budget -= 1
                             server_name = await _order_name_from_details(service, oid)
+                        # Refresh past the budget → keep the prior name rather
+                        # than regressing the display to the plan code.
+                        if not server_name:
+                            server_name = cached_name
                     retraction_date = order_obj.get("retractionDate")
                     expiration_date = order_obj.get("expirationDate")
                     pdf_url = order_obj.get("pdfUrl")
