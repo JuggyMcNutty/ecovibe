@@ -167,6 +167,47 @@ def test_name_from_details_picks_server_not_option():
     assert _name_from_details(_ORDER_22135744_DETAILS) == "KS-C - Intel Xeon E5-1650v2"
 
 
+# ovh-us reports order details differently from ovh-ca/eu: every row's `domain`
+# is "*" (no hierarchy) and there is NO `detailType` — the setup vs monthly
+# split is encoded only in the description ("X" vs "X - 1 month"). Real rows
+# from the unpaid US order 8336243 (KS-1 server, 2x2TB HDD, 32GB RAM, 500Mbps).
+_ORDER_8336243_DETAILS_US = [
+    {"domain": "*", "description": "KS-1 | Intel Xeon-D 1520", "quantity": "1", "cancelled": False, "totalPrice": _price(20)},
+    {"domain": "*", "description": "KS-1 | Intel Xeon-D 1520 - 1 month", "quantity": "1", "cancelled": False, "totalPrice": _price(20)},
+    {"domain": "*", "description": "2x 2TB HDD Soft RAID", "quantity": "1", "cancelled": False, "totalPrice": _price(0)},
+    {"domain": "*", "description": "2x 2TB HDD Soft RAID - 1 month", "quantity": "1", "cancelled": False, "totalPrice": _price(0)},
+    {"domain": "*", "description": "32GB DDR4 ECC 2133MHz", "quantity": "1", "cancelled": False, "totalPrice": _price(0)},
+    {"domain": "*", "description": "32GB DDR4 ECC 2133MHz - 1 month", "quantity": "1", "cancelled": False, "totalPrice": _price(0)},
+    {"domain": "*", "description": "500Mbps unmetered public bandwidth", "quantity": "1", "cancelled": False, "totalPrice": _price(0)},
+    {"domain": "*", "description": "500Mbps unmetered public bandwidth - 1 month", "quantity": "1", "cancelled": False, "totalPrice": _price(0)},
+]
+
+
+def test_group_line_items_us_format_by_description():
+    """ovh-us has no detailType and domain '*' for every row, so grouping falls
+    back to the product label and the setup/monthly split is read from the
+    '- 1 month' suffix. 8 rows collapse to 4 items, server first."""
+    items = _group_line_items(_ORDER_8336243_DETAILS_US)
+    assert [i["label"] for i in items] == [
+        "KS-1 | Intel Xeon-D 1520",
+        "2x 2TB HDD Soft RAID",
+        "32GB DDR4 ECC 2133MHz",
+        "500Mbps unmetered public bandwidth",
+    ]
+    server = items[0]
+    assert server["setup_price"]["value"] == 20
+    assert server["recurring_price"]["value"] == 20  # $20 setup + $20/mo = $40 total
+    # Options are included ($0 setup + $0 monthly), not missing.
+    assert items[1]["setup_price"]["value"] == 0
+    assert items[1]["recurring_price"]["value"] == 0
+
+
+def test_name_from_details_us_picks_server():
+    """ovh-us title must be the server, not an option (regression: showed the
+    HDD because all rows share domain '*' and carry no price differentiation)."""
+    assert _name_from_details(_ORDER_8336243_DETAILS_US) == "KS-1 | Intel Xeon-D 1520"
+
+
 def test_pick_label_prefers_clean_non_rental_description():
     assert _pick_label([
         "KS-C | Intel Xeon E5-1650v2 rental - datacenter gra - 1 month",

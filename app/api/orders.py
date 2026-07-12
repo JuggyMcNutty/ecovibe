@@ -101,15 +101,32 @@ def _pick_label(descs: list[str]) -> str:
     return "(line item)"
 
 
-def _merge_price(rows: list[dict], detail_type: str) -> dict | None:
-    """Merge the ``totalPrice`` of all rows of one detailType in a domain.
+def _row_kind(d: dict) -> str:
+    """Classify a detail row as ``setup`` (one-time) or ``recurring`` (monthly).
 
-    Sums the values (a domain can carry several rows of a type — e.g. the
-    server has two INSTALLATION rows) and reuses the dominant (max-abs-value)
-    row's OVH-formatted ``text``/``currencyCode`` so currency formatting matches
-    OVH exactly. Returns ``None`` when no row of that type exists.
+    Prefer OVH's ``detailType`` (ovh-ca/eu tag rows ``INSTALLATION``/``DURATION``);
+    ovh-us omits it entirely and instead suffixes the recurring row's description
+    with ``- 1 month`` (the setup row carries the bare product name).
     """
-    priced = [r for r in rows if r.get("detailType") == detail_type]
+    dt = d.get("detailType")
+    if dt == "INSTALLATION":
+        return "setup"
+    if dt == "DURATION":
+        return "recurring"
+    if (d.get("description") or "").endswith("- 1 month"):
+        return "recurring"
+    return "setup"
+
+
+def _merge_price(rows: list[dict], kind: str) -> dict | None:
+    """Merge the ``totalPrice`` of a group's rows of one kind (setup/recurring).
+
+    Sums the values (a group can carry several rows of a kind — e.g. the server
+    has two setup rows) and reuses the dominant (max-abs-value) row's
+    OVH-formatted ``text``/``currencyCode`` so currency formatting matches OVH
+    exactly. Returns ``None`` when no row of that kind exists.
+    """
+    priced = [r for r in rows if _row_kind(r) == kind]
     if not priced:
         return None
     total = sum((r.get("totalPrice") or {}).get("value") or 0 for r in priced)
@@ -121,32 +138,44 @@ def _merge_price(rows: list[dict], detail_type: str) -> dict | None:
 def _group_line_items(details: list[dict]) -> list[dict]:
     """Collapse OVH's raw order details into one row per physical item.
 
-    OVH splits each ordered component into separate detail rows by
-    ``detailType`` (``INSTALLATION`` = one-time setup fee, ``DURATION`` =
-    recurring monthly rental) grouped under a hierarchical ``domain``
-    (``*001`` = the server, ``*001.001``, ``*001.002``, ... = its options).
-    Rendering the raw rows shows the same component 2-3x. Group by domain and
-    merge the setup/recurring prices into a single line, sorted by domain so
-    the server precedes its options.
+    OVH splits each ordered component into a setup row (one-time fee) and a
+    recurring row (monthly rental), so rendering raw rows shows every component
+    twice. The rows are grouped differently per region:
+
+    - **ovh-ca/eu** tag rows with a hierarchical ``domain`` (``*001`` = server,
+      ``*001.001``, ``*001.002``, ... = options) — group by domain, sorted so
+      the server precedes its options.
+    - **ovh-us** leaves every row's ``domain`` as ``*`` and differs only by
+      description — group by the cleaned product label, in OVH's order (server
+      first).
+
+    Prices are merged via :func:`_row_kind`, which works for both.
     """
+    # Use domain as the grouping key only when it actually distinguishes items.
+    by_domain = any(d.get("domain") and d.get("domain") != "*" for d in details)
+
     groups: dict[str, list[dict]] = {}
     order: list[str] = []
     for d in details:
-        dom = str(d.get("domain") or d.get("orderDetailId") or "")
-        if dom not in groups:
-            groups[dom] = []
-            order.append(dom)
-        groups[dom].append(d)
+        if by_domain:
+            key = str(d.get("domain") or d.get("orderDetailId") or "")
+        else:
+            key = _clean_item_label(d.get("description") or "") or str(d.get("orderDetailId") or "")
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(d)
 
+    keys = sorted(order) if by_domain else order
     items: list[dict] = []
-    for dom in sorted(order):
-        rows = groups[dom]
+    for key in keys:
+        rows = groups[key]
         items.append({
             "label": _pick_label([r.get("description") for r in rows]),
-            "domain": dom,
+            "domain": rows[0].get("domain") or "",
             "quantity": rows[0].get("quantity"),
-            "setup_price": _merge_price(rows, "INSTALLATION"),
-            "recurring_price": _merge_price(rows, "DURATION"),
+            "setup_price": _merge_price(rows, "setup"),
+            "recurring_price": _merge_price(rows, "recurring"),
             "cancelled": all(r.get("cancelled") for r in rows),
         })
     return items
