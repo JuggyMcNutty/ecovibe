@@ -226,7 +226,7 @@ class MonitorService:
         self._alerts: dict[str, StockAlert] = {}
         self._stock_cache: dict[str, list[StockStatus]] = {}
         self._last_stock: dict[str, dict[str, bool]] = {}
-        self._poll_interval = 3  # clamped to [1, 10]
+        self._poll_interval = 3  # clamped to [1, 60]
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._subscribers: list[asyncio.Queue] = []
@@ -423,8 +423,8 @@ class MonitorService:
         return alert
 
     def set_poll_interval(self, seconds: int) -> int:
-        """Set the poll interval, clamped to [1, 10] seconds. Persists to storage."""
-        self._poll_interval = max(1, min(10, seconds))
+        """Set the poll interval, clamped to [1, 60] seconds. Persists to storage."""
+        self._poll_interval = max(1, min(60, seconds))
         storage = self._storage_get()
         if storage:
             try:

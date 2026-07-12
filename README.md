@@ -101,7 +101,7 @@ Generate the `.htpasswd` file with `htpasswd -c /etc/nginx/.htpasswd admin`.
 - **Browser notifications** when desired configs become available
 - **Multi-channel notifications** (Telegram, Discord, Slack, email) - never miss a flash sale when away from the browser
 - **Sound alerts** - audio notification (requires a user gesture first, e.g. clicking "Start Monitor")
-- **1-10 second polling** configurable interval (persisted across restarts)
+- **1-60 second polling** configurable interval (persisted across restarts)
 - **One-click Rush Order** when stock is detected
 - **Alert pause/resume** - disable alerts without deleting them
 
@@ -240,7 +240,7 @@ GET  /api/catalog/stock?plan_code=XX       - Live stock levels per RAM+storage c
 GET  /api/monitor/stream                    - SSE real-time stock updates
 GET  /api/monitor/availability?plans=XX,YY  - Current stock for plans
 GET  /api/monitor/status                    - Monitor status (interval, alert count)
-PUT  /api/monitor/poll-interval             - Set poll interval (body: {poll_interval: 1-10})
+PUT  /api/monitor/poll-interval             - Set poll interval (body: {poll_interval: 1-60})
 POST /api/monitor/poll-interval             - Alias for PUT
 
 # Alerts

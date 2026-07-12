@@ -109,7 +109,8 @@ async def test_set_alert_enabled(monitor):
 
 def test_set_poll_interval_clamps(monitor):
     assert monitor.set_poll_interval(0) == 1
-    assert monitor.set_poll_interval(99) == 10
+    assert monitor.set_poll_interval(99) == 60
+    assert monitor.set_poll_interval(60) == 60
     assert monitor.set_poll_interval(5) == 5
 
 

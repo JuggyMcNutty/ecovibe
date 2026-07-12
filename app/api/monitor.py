@@ -96,7 +96,7 @@ async def get_status() -> dict[str, Any]:
 
 @router.put("/poll-interval")
 async def set_poll_interval(request: PollIntervalRequest) -> dict[str, Any]:
-    """Set the poll interval (1-10 seconds). Persists across restarts."""
+    """Set the poll interval (1-60 seconds). Persists across restarts."""
     monitor = get_monitor_service()
     monitor.set_poll_interval(request.poll_interval)
     return {"poll_interval": monitor.get_poll_interval()}

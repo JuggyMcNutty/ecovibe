@@ -80,8 +80,14 @@ def test_set_poll_interval(client):
 def test_set_poll_interval_validation(client):
     r = client.put("/api/monitor/poll-interval", json={"poll_interval": 99})
     assert r.status_code == 422
+    r = client.put("/api/monitor/poll-interval", json={"poll_interval": 61})
+    assert r.status_code == 422
     r = client.put("/api/monitor/poll-interval", json={"poll_interval": 0})
     assert r.status_code == 422
+    # 60s is the new upper bound and must be accepted.
+    r = client.put("/api/monitor/poll-interval", json={"poll_interval": 60})
+    assert r.status_code == 200
+    assert r.json()["poll_interval"] == 60
 
 
 def test_alert_crud(client):
