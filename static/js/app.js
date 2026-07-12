@@ -937,8 +937,10 @@ function renderCatalogList() {
         const regionSpan = region ? el('span', { class: 'text-yellow-400 ml-1 text-xs', text: `[${region}]` }) : null;
         const code = el('span', { class: 'text-gray-400 ml-2 text-xs', text: plan.planCode });
         const left = el('div', {}, [name, stockBadge, regionSpan, code].filter(Boolean));
+        // Out-of-stock rows still show a readable price — the red badge marks
+        // availability, so the price stays legible (muted, no dimming/strike).
         const price = el('span', {
-            class: inStock ? 'text-green-400 text-sm' : 'text-gray-600 text-sm line-through',
+            class: inStock ? 'text-green-400 text-sm' : 'text-gray-300 text-sm',
             text: priceText,
         });
 
@@ -946,7 +948,7 @@ function renderCatalogList() {
         const div = el('div', {
             class: [
                 'rounded p-2 text-sm flex justify-between items-center cursor-pointer transition-colors',
-                inStock ? 'hover:bg-gray-600' : 'hover:bg-gray-600 opacity-60',
+                'hover:bg-gray-600',
                 isSelected
                     ? 'bg-blue-600/40 border border-blue-500'
                     : inStock
