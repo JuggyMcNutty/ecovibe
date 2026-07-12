@@ -791,6 +791,9 @@ function formatPrice(priceValue) {
 }
 
 // Region suffixes on planCode (e.g. "24sk10-eu") map to readable labels.
+// This is the single source of truth for "is this planCode segment a region?"
+// — version/generation segments like "v1"/"v3" are NOT regions and must not be
+// matched here, otherwise they'd be mislabelled as a region badge.
 const REGION_LABELS = {
     'eu': 'Europe',
     'us': 'US',
@@ -798,17 +801,29 @@ const REGION_LABELS = {
     'sgp': 'Singapore',
     'syd': 'Sydney',
     'lon': 'London',
+    'mum': 'Mumbai',
+    'fr': 'France',
+    'de': 'Germany',
+    'gb': 'UK',
+    'es': 'Spain',
+    'pl': 'Poland',
+    'it': 'Italy',
+    'pt': 'Portugal',
+    'cz': 'Czechia',
+    'fi': 'Finland',
+    'ie': 'Ireland',
 };
 
 function planRegion(planCode) {
-    // planCode looks like "24sk102-ca" → extract "ca" → "Canada"
+    // planCode looks like "24sk102-ca" → extract "ca" → "Canada".
+    // PlanCodes may also carry a version/generation segment (e.g. "26sk10b-v1"
+    // or "24rise04-v1-mum") where "v1" is NOT a region. Only return a label
+    // for suffixes that are known regions; unknown suffixes (versions, etc.)
+    // get no region badge rather than being mislabelled.
     const parts = (planCode || '').split('-');
-    if (parts.length > 1) {
-        const suffix = parts[parts.length - 1].toLowerCase();
-        if (REGION_LABELS[suffix]) return REGION_LABELS[suffix];
-        return suffix.toUpperCase();
-    }
-    return '';
+    if (parts.length <= 1) return '';
+    const suffix = parts[parts.length - 1].toLowerCase();
+    return REGION_LABELS[suffix] || '';
 }
 
 function planLabel(plan) {
@@ -841,6 +856,10 @@ function planMatchesEndpoint(planCode, endpoint) {
     const parts = (planCode || '').split('-');
     if (parts.length <= 1) return true;
     const suffix = parts[parts.length - 1].toLowerCase();
+    // A trailing segment that isn't a known region (e.g. a version/generation
+    // marker like "v1"/"v3" on "26sk10b-v1") means the plan has no region
+    // restriction — it's orderable on any endpoint, like a suffixless plan.
+    if (!(suffix in REGION_LABELS)) return true;
     return suffixes.includes(suffix);
 }
 
