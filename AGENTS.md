@@ -168,9 +168,12 @@ were created under (`account_id` column on each table).
 - **Notifier + checkout_defaults**: global (not per-account).
 - **Frontend account switch**: `switchAccount()` in `app.js` tears down
   the SSE monitor + catalog auto-refresh, resets 8 account-scoped state
-  fields, and uses a request-generation token (`_switchGen`) so stale
-  async responses from the previous account are ignored after each
-  `await`.
+  fields, reloads all scoped data for the new account, and uses a
+  request-generation token (`_switchGen`) so stale async responses from the
+  previous account are ignored after each `await`. The full Orders tab is
+  lazy-loaded on tab switch, so `switchAccount()` also reloads it in place
+  (`loadOrdersTab()`) when it's the visible tab — otherwise it would keep
+  showing the previous account's orders until the user re-opened the tab.
 - **Network error wrapping**: `OVHService._do_call` wraps non-`APIError`
   exceptions (`ConnectionError`, `TimeoutError`, `SSLError`) in
   `OVHServiceError` so they surface as proper error responses instead of
