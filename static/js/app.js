@@ -814,21 +814,34 @@ const REGION_LABELS = {
     'ie': 'Ireland',
 };
 
-function planRegion(planCode) {
+// Endpoint -> its "home" region label. OVH is inconsistent about region
+// suffixes: ovh-us tags every plan (-us/-eu/-sgp/...), but ovh-ca leaves its
+// Canadian plans suffixless (bare "24sk102", or version-only "24rise01-v1")
+// and only tags the APAC variants (-sgp/-syd/-mum). A plan with no explicit
+// region suffix is the home-region offering for the active endpoint, so it
+// gets the endpoint's home-region badge rather than no badge at all.
+const ENDPOINT_HOME_REGION = {
+    'ovh-eu': 'Europe',
+    'ovh-us': 'US',
+    'ovh-ca': 'Canada',
+};
+
+function planRegion(planCode, endpoint) {
     // planCode looks like "24sk102-ca" → extract "ca" → "Canada".
     // PlanCodes may also carry a version/generation segment (e.g. "26sk10b-v1"
-    // or "24rise04-v1-mum") where "v1" is NOT a region. Only return a label
-    // for suffixes that are known regions; unknown suffixes (versions, etc.)
-    // get no region badge rather than being mislabelled.
+    // or "24rise04-v1-mum") where "v1" is NOT a region. When the trailing
+    // segment is a known region, use it; otherwise the plan carries no explicit
+    // region and belongs to the endpoint's home region — fall back to that
+    // (never mislabel a version like "v1" as a region).
     const parts = (planCode || '').split('-');
-    if (parts.length <= 1) return '';
-    const suffix = parts[parts.length - 1].toLowerCase();
-    return REGION_LABELS[suffix] || '';
+    const suffix = parts.length > 1 ? parts[parts.length - 1].toLowerCase() : '';
+    if (suffix in REGION_LABELS) return REGION_LABELS[suffix];
+    return ENDPOINT_HOME_REGION[endpoint] || '';
 }
 
 function planLabel(plan) {
     const name = plan.invoiceName || plan.planCode;
-    const region = planRegion(plan.planCode);
+    const region = planRegion(plan.planCode, state.endpoint);
     return region ? `${name} [${region}]` : name;
 }
 
@@ -836,31 +849,37 @@ function renderPlanSelect() {
     const select = document.getElementById('plan-select');
     select.innerHTML = '';
     select.appendChild(el('option', { value: '', text: 'Select a plan...' }));
+    // List every plan in the catalog — all of them are orderable on the active
+    // endpoint's account (OVH scopes the catalog to the account's subsidiary).
+    // Do NOT filter by home region here: that would make foreign-datacenter
+    // plans (e.g. Singapore/Sydney on a Canada/WORLD account) un-alertable,
+    // which are exactly the flash-sale targets users watch for.
     state.plans.forEach(plan => {
-        if (!planMatchesEndpoint(plan.planCode, state.endpoint)) return;
         const opt = el('option', { value: plan.planCode, text: planLabel(plan) });
         select.appendChild(opt);
     });
 }
 
-// Map OVH endpoint -> region suffixes that can be ordered on that endpoint.
-// Plans with no region suffix are orderable on any endpoint.
-const ENDPOINT_REGION_SUFFIXES = {
-    'ovh-eu': ['eu', 'fr', 'de', 'gb', 'es', 'pl', 'it', 'pt', 'cz', 'fi', 'ie'],
-    'ovh-us': ['us'],
-    'ovh-ca': ['ca'],
+// Region labels considered "my region" for each endpoint's "Only my region"
+// declutter. An endpoint's entity serves its home region (plus, for EU, the
+// individual European countries). NOTE: this is NOT an orderability gate.
+// OVH's global entities serve foreign *datacenter* regions too — e.g. a
+// Canada/WORLD account can order Singapore/Sydney/Mumbai servers, and OVH
+// returns those plans in the ovh-ca catalog. Those plans are fully orderable;
+// "Only my region" simply hides them as an opt-in view preference. Derived
+// through planRegion() so the filter and the region badge always agree.
+const ENDPOINT_REGIONS = {
+    'ovh-eu': new Set(['Europe', 'France', 'Germany', 'UK', 'Spain', 'Poland', 'Italy', 'Portugal', 'Czechia', 'Finland', 'Ireland']),
+    'ovh-us': new Set(['US']),
+    'ovh-ca': new Set(['Canada']),
 };
 
+// True when a plan belongs to the active endpoint's home region. Used ONLY by
+// the "Only my region" catalog declutter — never to gate orderability (every
+// plan in the fetched catalog is orderable on the active endpoint's account).
 function planMatchesEndpoint(planCode, endpoint) {
-    const suffixes = ENDPOINT_REGION_SUFFIXES[endpoint] || ENDPOINT_REGION_SUFFIXES['ovh-eu'];
-    const parts = (planCode || '').split('-');
-    if (parts.length <= 1) return true;
-    const suffix = parts[parts.length - 1].toLowerCase();
-    // A trailing segment that isn't a known region (e.g. a version/generation
-    // marker like "v1"/"v3" on "26sk10b-v1") means the plan has no region
-    // restriction — it's orderable on any endpoint, like a suffixless plan.
-    if (!(suffix in REGION_LABELS)) return true;
-    return suffixes.includes(suffix);
+    const regions = ENDPOINT_REGIONS[endpoint] || ENDPOINT_REGIONS['ovh-eu'];
+    return regions.has(planRegion(planCode, endpoint));
 }
 
 function getFilteredPlans() {
@@ -923,7 +942,7 @@ function renderCatalogList() {
             class: 'ml-1 bg-red-600/30 text-red-400 text-xs px-1.5 py-0.5 rounded font-bold',
             text: 'OUT OF STOCK',
         });
-        const region = planRegion(plan.planCode);
+        const region = planRegion(plan.planCode, state.endpoint);
         const regionSpan = region ? el('span', { class: 'text-yellow-400 ml-1 text-xs', text: `[${region}]` }) : null;
         const code = el('span', { class: 'text-gray-400 ml-2 text-xs', text: plan.planCode });
         const left = el('div', {}, [name, stockBadge, regionSpan, code].filter(Boolean));
@@ -1230,7 +1249,7 @@ function renderCatalogDetail(plan) {
     const setup = getPlanSetupFee(plan);
     const priceText = displayPrice(monthly?.price, monthly?.formattedPrice, monthly?.currencyCode || state.catalogCurrency);
     const setupText = displayPrice(setup?.price, setup?.formattedPrice, setup?.currencyCode || state.catalogCurrency);
-    const region = planRegion(plan.planCode);
+    const region = planRegion(plan.planCode, state.endpoint);
 
     // Parse server name + CPU from invoiceName (format: "MODEL | CPU")
     const parts = (plan.invoiceName || plan.planCode).split('|');
