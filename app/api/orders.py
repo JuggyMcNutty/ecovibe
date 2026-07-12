@@ -120,7 +120,13 @@ async def list_orders(
     # partial results (whatever was enriched before the timeout) rather than
     # an error.
     enriched: list[dict] = []
+    enriched_ids: set[int] = set()
     timed_out = False
+    # Every OVH call serialises on the service lock, so fetching line-item
+    # details for names is expensive. Cap it per request (names are persisted,
+    # so unnamed orders fill in over subsequent loads) to avoid blowing the
+    # timeout — a timeout must never make an order disappear.
+    name_budget = 8
     try:
         async with asyncio.timeout(30):
             for oid in ovh_ids:
@@ -131,12 +137,12 @@ async def list_orders(
                     server_name = _extract_server_name(order_obj)
                     if not server_name:
                         # The name lives on the line items for OVH server orders.
-                        # Reuse a previously-persisted name to avoid re-fetching
-                        # details on every list load (short-circuits the await).
-                        server_name = (
-                            local_by_id.get(oid, {}).get("server_name")
-                            or await _order_name_from_details(service, oid)
-                        )
+                        # Reuse a previously-persisted name; only pay for a
+                        # details fetch while we have budget left this request.
+                        server_name = local_by_id.get(oid, {}).get("server_name")
+                        if not server_name and name_budget > 0:
+                            name_budget -= 1
+                            server_name = await _order_name_from_details(service, oid)
                     retraction_date = order_obj.get("retractionDate")
                     expiration_date = order_obj.get("expirationDate")
                     pdf_url = order_obj.get("pdfUrl")
@@ -171,6 +177,7 @@ async def list_orders(
                         "expiration_date": expiration_date,
                         "placed_at": local.get("placed_at"),
                     })
+                    enriched_ids.add(oid)
                 except OVHServiceError as e:
                     logger.info("Failed to enrich order %s: %s", oid, e)
                     local = local_by_id.get(oid, {})
@@ -188,9 +195,32 @@ async def list_orders(
                         "expiration_date": local.get("expiration_date"),
                         "placed_at": local.get("placed_at"),
                     })
+                    enriched_ids.add(oid)
     except TimeoutError:
         timed_out = True
         logger.warning("Order enrichment timed out after 30s (%d/%d done)", len(enriched), len(ovh_ids))
+
+    # Any OVH order not enriched because the loop timed out before reaching it
+    # must still appear — never drop an order just because enrichment didn't
+    # finish (budget-skipped orders are still enriched, only without a name).
+    for oid in ovh_ids:
+        if oid in enriched_ids:
+            continue
+        local = local_by_id.get(oid, {})
+        enriched.append({
+            "order_id": oid,
+            "date": local.get("placed_at"),
+            "status": local.get("status") or "unknown",
+            "price_with_tax": local.get("price_with_tax"),
+            "currency_code": local.get("currency_code"),
+            "plan_code": local.get("plan_code", ""),
+            "server_name": local.get("server_name") or local.get("plan_code", ""),
+            "url": local.get("url"),
+            "pdf_url": local.get("pdf_url"),
+            "retraction_date": local.get("retraction_date"),
+            "expiration_date": local.get("expiration_date"),
+            "placed_at": local.get("placed_at"),
+        })
 
     # Also include local orders not returned by OVH (e.g. very recent orders
     # that haven't propagated yet, or orders past the date window).

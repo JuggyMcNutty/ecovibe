@@ -1,5 +1,16 @@
 """Order name/price extraction tests."""
+import asyncio
+
+import pytest
+from fastapi.testclient import TestClient
+
 from app.api.orders import _extract_price, _extract_server_name, _name_from_details
+from app.main import app
+
+
+@pytest.fixture
+def client():
+    return TestClient(app)
 
 
 def test_extract_server_name_from_order_object():
@@ -37,3 +48,43 @@ def test_extract_price():
     assert _extract_price({}) == (None, None)
     # Missing currency → treated as no price.
     assert _extract_price({"priceWithTax": {"priceInUcents": 100}}) == (None, None)
+
+
+class _FakeSvc:
+    """Minimal OVH service stub for the orders-list endpoint."""
+    account_id = "acct-x"
+    endpoint = "ovh-ca"
+
+    def is_configured(self):
+        return True
+
+    def list_orders(self, date_from, date_to):
+        return [101, 102, 103]
+
+    def get_order(self, oid):
+        return {"date": "2026-06-01T00:00:00+00:00", "priceWithTax": {}}
+
+    def get_order_status(self, oid):
+        return "notPaid"
+
+    def get(self, path, **kwargs):  # detail lookups — shouldn't matter here
+        return []
+
+
+def test_orders_never_dropped_on_enrichment_timeout(client, monkeypatch):
+    """A slow/timed-out enrichment must never make an OVH order disappear
+    (regression: an unpaid order stopped showing when enrichment timed out)."""
+    monkeypatch.setattr("app.api.orders.get_active_ovh_service", lambda: _FakeSvc())
+    # Force the enrichment loop to time out immediately so no order gets
+    # enriched inside the timeout block. Capture the real timeout first —
+    # asyncio is a shared module, so patching it in place would otherwise
+    # recurse into this lambda.
+    real_timeout = asyncio.timeout
+    monkeypatch.setattr("app.api.orders.asyncio.timeout", lambda _t: real_timeout(0))
+
+    r = client.get("/api/orders")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["timed_out"] is True
+    # All three OVH orders must still be present.
+    assert {o["order_id"] for o in body["orders"]} == {101, 102, 103}
