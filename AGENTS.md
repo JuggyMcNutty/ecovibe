@@ -240,6 +240,14 @@ were created under (`account_id` column on each table).
   1 month" boilerplate via `_pick_label`); `get_order_detail` returns
   both the raw `details` and grouped `line_items`, and the frontend renders
   `line_items` (falling back to `details`).
+- **Order title (server name)**: OVH server orders carry no name on the order
+  object, so the list title is derived from the line items. `_name_from_details`
+  picks the **server** line — the priciest grouped item (options are
+  included/$0), *not* the first detail row (which is often the RAM) — falling
+  back to a real `domain` hostname. The derived name is persisted; a title cached
+  wrong won't self-heal on a plain list load, so the "Refresh all" button hits
+  `GET /api/orders?refresh=true`, which re-derives names instead of trusting the
+  cache (still `name_budget`-limited so it can't hang).
 - **Frontend**: no framework, no build step for JS. `app.js` is a
   ~3300-line vanilla SPA using a custom `el()` DOM helper. Cache
   busting is automatic via content-hash query strings
