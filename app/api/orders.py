@@ -57,6 +57,86 @@ def _name_from_details(details: list[dict]) -> str | None:
     return None
 
 
+def _clean_item_label(desc: str) -> str:
+    """Strip OVH's trailing rental boilerplate from a line-item description.
+
+    OVH's DURATION rows suffix the product name with ``rental - 1 month`` (and
+    the server's INSTALLATION row leaves a dangling ``... - ``), which is noise
+    once setup/recurring prices are shown separately.
+    """
+    for suffix in (" rental - 1 month", " - 1 month"):
+        if desc.endswith(suffix):
+            desc = desc[: -len(suffix)]
+    return desc.strip().strip("-").strip()
+
+
+def _pick_label(descs: list[str]) -> str:
+    """Pick the cleanest label from a domain's line-item descriptions.
+
+    Prefer a description without ``rental`` (OVH's INSTALLATION rows carry the
+    bare product name, e.g. "32GB DDR3 ECC 1333MHz"); otherwise clean the
+    shortest rental description.
+    """
+    clean = [d for d in descs if d and " rental" not in d]
+    if clean:
+        return _clean_item_label(min(clean, key=len))
+    rentals = [d for d in descs if d]
+    if rentals:
+        return _clean_item_label(min(rentals, key=len))
+    return "(line item)"
+
+
+def _merge_price(rows: list[dict], detail_type: str) -> dict | None:
+    """Merge the ``totalPrice`` of all rows of one detailType in a domain.
+
+    Sums the values (a domain can carry several rows of a type — e.g. the
+    server has two INSTALLATION rows) and reuses the dominant (max-abs-value)
+    row's OVH-formatted ``text``/``currencyCode`` so currency formatting matches
+    OVH exactly. Returns ``None`` when no row of that type exists.
+    """
+    priced = [r for r in rows if r.get("detailType") == detail_type]
+    if not priced:
+        return None
+    total = sum((r.get("totalPrice") or {}).get("value") or 0 for r in priced)
+    dominant = max(priced, key=lambda r: abs((r.get("totalPrice") or {}).get("value") or 0))
+    tp = dominant.get("totalPrice") or {}
+    return {"value": total, "text": tp.get("text"), "currencyCode": tp.get("currencyCode")}
+
+
+def _group_line_items(details: list[dict]) -> list[dict]:
+    """Collapse OVH's raw order details into one row per physical item.
+
+    OVH splits each ordered component into separate detail rows by
+    ``detailType`` (``INSTALLATION`` = one-time setup fee, ``DURATION`` =
+    recurring monthly rental) grouped under a hierarchical ``domain``
+    (``*001`` = the server, ``*001.001``, ``*001.002``, ... = its options).
+    Rendering the raw rows shows the same component 2-3x. Group by domain and
+    merge the setup/recurring prices into a single line, sorted by domain so
+    the server precedes its options.
+    """
+    groups: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for d in details:
+        dom = str(d.get("domain") or d.get("orderDetailId") or "")
+        if dom not in groups:
+            groups[dom] = []
+            order.append(dom)
+        groups[dom].append(d)
+
+    items: list[dict] = []
+    for dom in sorted(order):
+        rows = groups[dom]
+        items.append({
+            "label": _pick_label([r.get("description") for r in rows]),
+            "domain": dom,
+            "quantity": rows[0].get("quantity"),
+            "setup_price": _merge_price(rows, "INSTALLATION"),
+            "recurring_price": _merge_price(rows, "DURATION"),
+            "cancelled": all(r.get("cancelled") for r in rows),
+        })
+    return items
+
+
 async def _order_name_from_details(service, order_id: int) -> str | None:
     """Fetch up to the first few line items of an order and extract a name.
 
@@ -272,7 +352,13 @@ async def get_order_detail(order_id: int) -> dict:
     except OVHServiceError:
         status = "unknown"
 
-    return {"order": order, "status": status, "details": details, "followup": followup}
+    return {
+        "order": order,
+        "status": status,
+        "details": details,
+        "line_items": _group_line_items(details),
+        "followup": followup,
+    }
 
 
 @router.post("/{order_id}/refresh")

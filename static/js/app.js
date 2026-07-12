@@ -3190,18 +3190,23 @@ function renderOrderDetail(data) {
     }
     if (actionsRow.children.length) container.appendChild(actionsRow);
 
-    // Line items
-    if (details.length) {
+    // Line items. Prefer the backend's grouped `line_items` (one row per
+    // physical item, setup + monthly merged); fall back to raw `details`.
+    const lineItems = data.line_items || [];
+    if (lineItems.length) {
         const itemsSection = el('div', { class: 'mb-4' });
         itemsSection.appendChild(el('h4', { class: 'font-bold text-gray-400 text-sm uppercase mb-2', text: 'Line Items' }));
-        for (const d of details) {
-            const dTotal = d.totalPrice?.text || '';
+        for (const item of lineItems) {
+            const parts = [];
+            if (item.setup_price && item.setup_price.value) parts.push(`${item.setup_price.text} setup`);
+            if (item.recurring_price && item.recurring_price.value) parts.push(`${item.recurring_price.text}/mo`);
+            const priceText = parts.length ? parts.join(' + ') : 'Included';
+            const labelCls = 'text-gray-200 text-sm' + (item.cancelled ? ' line-through text-gray-500' : '');
             itemsSection.appendChild(el('div', { class: 'flex justify-between items-center bg-gray-700 rounded px-3 py-2 mb-1' }, [
                 el('div', { class: 'min-w-0 flex-1' }, [
-                    el('span', { class: 'text-gray-200 text-sm', text: d.description || d.domain || '(line item)' }),
-                    d.detailType ? el('span', { class: 'text-gray-500 ml-2 text-xs', text: d.detailType }) : null,
+                    el('span', { class: labelCls, text: item.label || '(line item)' }),
                 ]),
-                el('span', { class: 'text-gray-400 text-xs whitespace-nowrap', text: dTotal }),
+                el('span', { class: 'text-gray-400 text-xs whitespace-nowrap', text: priceText }),
             ]));
         }
         container.appendChild(itemsSection);

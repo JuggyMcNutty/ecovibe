@@ -4,7 +4,13 @@ import asyncio
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.orders import _extract_price, _extract_server_name, _name_from_details
+from app.api.orders import (
+    _extract_price,
+    _extract_server_name,
+    _group_line_items,
+    _name_from_details,
+    _pick_label,
+)
 from app.main import app
 
 
@@ -88,3 +94,57 @@ def test_orders_never_dropped_on_enrichment_timeout(client, monkeypatch):
     assert body["timed_out"] is True
     # All three OVH orders must still be present.
     assert {o["order_id"] for o in body["orders"]} == {101, 102, 103}
+
+
+def _price(value):
+    return {"value": value, "text": f"${value:.2f} USD", "currencyCode": "USD"}
+
+
+# The 8 raw detail rows OVH returned for the unpaid ovh-ca order 22135744
+# (KS-C server, 32GB RAM, 500Mbps bandwidth, 120GB SSD). Trimmed to the fields
+# the grouping logic reads.
+_ORDER_22135744_DETAILS = [
+    {"domain": "*001.002", "detailType": "INSTALLATION", "description": "32GB DDR3 ECC 1333MHz", "quantity": "1", "cancelled": False, "totalPrice": _price(0)},
+    {"domain": "*001", "detailType": "INSTALLATION", "description": "KS-C | Intel Xeon E5-1650v2 rental - datacenter gra - ", "quantity": "1", "cancelled": False, "totalPrice": _price(13.30)},
+    {"domain": "*001.001", "detailType": "DURATION", "description": "500Mbps unmetered public bandwidth rental - 1 month", "quantity": "1", "cancelled": False, "totalPrice": _price(0)},
+    {"domain": "*001", "detailType": "DURATION", "description": "KS-C | Intel Xeon E5-1650v2 rental - datacenter gra - 1 month", "quantity": "1", "cancelled": False, "totalPrice": _price(13.30)},
+    {"domain": "*001", "detailType": "INSTALLATION", "description": "KS-C - Intel Xeon E5-1650v2", "quantity": "1", "cancelled": False, "totalPrice": _price(0)},
+    {"domain": "*001.002", "detailType": "DURATION", "description": "32GB DDR3 ECC 1333MHz rental - 1 month", "quantity": "1", "cancelled": False, "totalPrice": _price(0)},
+    {"domain": "*001.003", "detailType": "INSTALLATION", "description": "1x 120GB SSD", "quantity": "1", "cancelled": False, "totalPrice": _price(0)},
+    {"domain": "*001.003", "detailType": "DURATION", "description": "1x 120GB SSD rental - 1 month", "quantity": "1", "cancelled": False, "totalPrice": _price(0)},
+]
+
+
+def test_group_line_items_collapses_duplicates():
+    """8 raw OVH rows collapse to 4 items, one per physical component, in
+    domain order (server first, then its options)."""
+    items = _group_line_items(_ORDER_22135744_DETAILS)
+    assert [i["domain"] for i in items] == ["*001", "*001.001", "*001.002", "*001.003"]
+
+    server = items[0]
+    assert server["label"] == "KS-C - Intel Xeon E5-1650v2"
+    # Setup sums both INSTALLATION rows ($0 + $13.30); monthly is the DURATION row.
+    assert server["setup_price"]["value"] == 13.30
+    assert server["setup_price"]["text"] == "$13.30 USD"
+    assert server["recurring_price"]["value"] == 13.30
+
+    # Included options: zero setup + zero monthly.
+    ram = items[2]
+    assert ram["label"] == "32GB DDR3 ECC 1333MHz"
+    assert ram["setup_price"]["value"] == 0
+    assert ram["recurring_price"]["value"] == 0
+
+    # Bandwidth has only a DURATION row → no setup price at all.
+    bandwidth = items[1]
+    assert bandwidth["label"] == "500Mbps unmetered public bandwidth"
+    assert bandwidth["setup_price"] is None
+
+
+def test_pick_label_prefers_clean_non_rental_description():
+    assert _pick_label([
+        "KS-C | Intel Xeon E5-1650v2 rental - datacenter gra - 1 month",
+        "KS-C - Intel Xeon E5-1650v2",
+    ]) == "KS-C - Intel Xeon E5-1650v2"
+    # Rental-only descriptions get the boilerplate stripped.
+    assert _pick_label(["32GB DDR3 ECC 1333MHz rental - 1 month"]) == "32GB DDR3 ECC 1333MHz"
+    assert _pick_label([]) == "(line item)"
