@@ -2596,6 +2596,7 @@ async function deleteAccount() {
     if (!confirm('Delete this account? Its alerts and profiles remain but become unscoped.')) {
         return;
     }
+    const wasActive = editingId === state.activeAccountId;
     try {
         await apiRequest('DELETE', `/accounts/${editingId}`);
         await loadAccounts();
@@ -2611,6 +2612,21 @@ async function deleteAccount() {
             return;
         }
         renderAccountList();
+        // If the deleted account was active, the backend fell back to another
+        // account (and reloaded its monitor). Re-sync the account-scoped data
+        // so the monitor/catalog/orders don't show the deleted account's state.
+        if (wasActive) {
+            state.endpoint = state.accounts.find(a => a.id === state.activeAccountId)?.endpoint || state.endpoint;
+            state._currencyUserSet = false;
+            populateCatalogCountries();
+            await loadFxRates();
+            await loadAccountInfo();
+            await loadAlerts();
+            await loadCatalog();
+            await loadProfiles();
+            await loadOrders();
+            await loadSniperStatus();
+        }
         showToast('Account deleted.');
     } catch (e) {
         showTestResult('acct-test-result', 'error', e.message);

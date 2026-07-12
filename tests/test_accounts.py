@@ -321,3 +321,21 @@ def test_insights_summary_scoped_to_active_account(client):
     _switch(client, b["id"])
     plans_b = client.get("/api/insights/summary").json()["plans"]
     assert {p["plan_code"] for p in plans_b} == {"plan-b"}
+
+
+def test_delete_active_account_reloads_monitor(client):
+    """Deleting the active account must reload the monitor for the fallback
+    account, not keep polling the deleted account's alerts."""
+    from app.services.monitor import get_monitor_service
+
+    a = _create_account(client, label="A")  # first account → active
+    _create_account(client, label="B", endpoint="ovh-us")
+    _create_alert(client, "24ska01")  # bound to active account A
+    monitor = get_monitor_service()
+    assert any(al.plan_code == "24ska01" for al in monitor.get_alerts())
+
+    r = client.delete(f"/api/accounts/{a['id']}", headers=XHR)
+    assert r.status_code == 200
+    # Active fell back to B (which has no alerts); A's alert must be gone from
+    # the in-memory monitor.
+    assert not any(al.plan_code == "24ska01" for al in monitor.get_alerts())

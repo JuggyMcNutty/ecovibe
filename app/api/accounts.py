@@ -193,6 +193,15 @@ async def delete_account(account_id: str) -> dict:
         remaining = storage.list_accounts()
         storage.set_active_account_id(remaining[0]["id"] if remaining else None)
         reset_ovh_service(None)
+        # The active account changed, so the monitor must drop the deleted
+        # account's alerts + stock cache and re-read the new active account's
+        # (mirrors PUT /accounts/active). Without this the poller keeps
+        # watching the deleted account's plans under the fallback account.
+        try:
+            from app.services.monitor import get_monitor_service
+            await get_monitor_service().reload()
+        except Exception:
+            logger.warning("monitor reload after account deletion failed", exc_info=True)
     logger.info("Account deleted: %s (was_active=%s)", account_id, was_active)
     return {"status": "deleted"}
 
