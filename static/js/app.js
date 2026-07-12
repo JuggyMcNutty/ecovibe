@@ -1231,6 +1231,35 @@ function addonCodesMatch(a, b) {
     return false;
 }
 
+// Standardize the order of catalog config options. OVH returns addonFamilies
+// (and the addons within each) in an arbitrary order; render them in a fixed
+// family sequence and, within each family, from included → small → large.
+const CATALOG_FAMILY_ORDER = ['memory', 'storage', 'bandwidth', 'vrack'];
+
+function addonCapacity(code) {
+    // A comparable size for tie-breaking same-priced options. Storage codes
+    // like 'softraid-2x960nvme' → 2*960; otherwise the first integer
+    // ('ram-32g' → 32, 'bandwidth-500' → 500); else 0.
+    const lower = (code || '').toLowerCase();
+    const nx = lower.match(/(\d+)x(\d+)/);
+    if (nx) return parseInt(nx[1], 10) * parseInt(nx[2], 10);
+    const m = lower.match(/(\d+)/);
+    return m ? parseInt(m[1], 10) : 0;
+}
+
+function compareAddonCodes(a, b) {
+    // Price ascending (included/$0 first, missing last), then capacity, then
+    // code — a deterministic, sensible ordering. Reuses the same price map the
+    // rest of the UI reads via getAddonPrice/addonPriceLabel.
+    const pa = state.addonPrices[a]?.price ?? Infinity;
+    const pb = state.addonPrices[b]?.price ?? Infinity;
+    if (pa !== pb) return pa - pb;
+    const ca = addonCapacity(a);
+    const cb = addonCapacity(b);
+    if (ca !== cb) return ca - cb;
+    return (a || '').localeCompare(b || '');
+}
+
 function renderCatalogDetail(plan) {
     state.selectedPlanCode = plan.planCode;
     const container = document.getElementById('catalog-detail');
@@ -1405,7 +1434,17 @@ function renderCatalogDetail(plan) {
     // cards would be misleading (the CA catalog includes them, the US one
     // doesn't, so filtering also makes both endpoints render consistently).
     const HARDWARE_FAMILIES = new Set(['memory', 'storage', 'bandwidth', 'vrack']);
-    const families = (plan.addonFamilies || []).filter(f => HARDWARE_FAMILIES.has(f.name));
+    // OVH returns families and their addons in arbitrary order. Standardize:
+    // fixed family sequence, and included→small→large within each. Shallow-clone
+    // so the shared state.plans[...].addonFamilies is never mutated. Both the
+    // option cards and the order-form dropdowns consume this same `families`
+    // array, so sorting here standardizes both.
+    const families = (plan.addonFamilies || [])
+        .filter(f => HARDWARE_FAMILIES.has(f.name))
+        .map(f => ({ ...f, addons: [...(f.addons || [])].sort(compareAddonCodes) }))
+        .sort((a, b) =>
+            ((CATALOG_FAMILY_ORDER.indexOf(a.name) + 1) || 99) -
+            ((CATALOG_FAMILY_ORDER.indexOf(b.name) + 1) || 99));
     const specsSection = el('div', { class: 'space-y-3 mb-4' });
     specsSection.appendChild(el('h3', { class: 'font-bold text-gray-400 text-sm uppercase mb-2', text: 'Configuration Options' }));
 
