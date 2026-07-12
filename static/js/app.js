@@ -253,7 +253,7 @@ function showView(viewName) {
 // Switch between the two settings pages (Accounts / Notifications) and
 // highlight the active sub-nav button.
 function showSettings(page) {
-    const target = page === 'notifications' ? 'notifications' : 'accounts';
+    const target = ['accounts', 'notifications', 'billing'].includes(page) ? page : 'accounts';
     document.querySelectorAll('[data-settings-nav]').forEach(btn => {
         const active = btn.dataset.settingsNav === target;
         btn.classList.toggle('bg-blue-600', active);
@@ -261,13 +261,10 @@ function showSettings(page) {
         btn.classList.toggle('bg-gray-700', !active);
         btn.classList.toggle('text-gray-300', !active);
     });
-    if (target === 'notifications') {
-        showView('notifications');
-        loadNotificationSettings();
-    } else {
-        showView('accounts');
-        loadAccountsPage();
-    }
+    showView(target);
+    if (target === 'notifications') loadNotificationSettings();
+    else if (target === 'billing') loadCheckoutDefaults();
+    else loadAccountsPage();
 }
 
 async function loadAccountsPage() {

@@ -308,15 +308,18 @@ were created under (`account_id` column on each table).
   after a 0.5s backoff, but **only for non-POST methods** — POST (e.g.
   checkout) is never retried to prevent duplicate orders when OVH
   processed the request but the response was lost.
-- **Settings UI**: three separate full-page views (not monitor tabs),
+- **Settings UI**: separate full-page views (not monitor tabs),
   each a direct child of `#app` toggled by `showView()`:
   `#setup-view` (first-run wizard, shown only when unconfigured — add the
   first account, then land on the monitor), `#accounts-view` (manage OVH
-  accounts: list + inline add/edit editor), and `#notifications-view`
-  (Telegram/Discord/Slack/SMTP). The header "Settings" gear opens
-  `#accounts-view` via `showSettings('accounts')`; a sub-nav of
-  `[data-settings-nav]` buttons switches between Accounts and
-  Notifications; `.settings-back-btn` returns to the monitor. The
+  accounts: list + inline add/edit editor), `#notifications-view`
+  (Telegram/Discord/Slack/SMTP), and `#billing-view` (Default Checkout
+  Preferences — the `checkout-defaults-form`, moved out of the monitor's
+  Billing tab, which now shows only OVH account info + payment methods).
+  The header "Settings" gear opens `#accounts-view` via
+  `showSettings('accounts')`; a sub-nav of `[data-settings-nav]` buttons
+  switches between Accounts / Notifications / Billing (`showSettings(page)`
+  also loads that page's data); `.settings-back-btn` returns to the monitor. The
   setup wizard has NO skip — an account is required. Setup uses
   `setup-*` field ids and `saveSetupAccount()` (onboarding: activate +
   go to monitor); the accounts editor uses `acct-*` ids and
