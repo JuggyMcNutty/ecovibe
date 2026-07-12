@@ -860,36 +860,19 @@ function renderPlanSelect() {
     });
 }
 
-// Region labels considered "my region" for each endpoint's "Only my region"
-// declutter. An endpoint's entity serves its home region (plus, for EU, the
-// individual European countries). NOTE: this is NOT an orderability gate.
-// OVH's global entities serve foreign *datacenter* regions too — e.g. a
-// Canada/WORLD account can order Singapore/Sydney/Mumbai servers, and OVH
-// returns those plans in the ovh-ca catalog. Those plans are fully orderable;
-// "Only my region" simply hides them as an opt-in view preference. Derived
-// through planRegion() so the filter and the region badge always agree.
-const ENDPOINT_REGIONS = {
-    'ovh-eu': new Set(['Europe', 'France', 'Germany', 'UK', 'Spain', 'Poland', 'Italy', 'Portugal', 'Czechia', 'Finland', 'Ireland']),
-    'ovh-us': new Set(['US']),
-    'ovh-ca': new Set(['Canada']),
-};
-
-// True when a plan belongs to the active endpoint's home region. Used ONLY by
-// the "Only my region" catalog declutter — never to gate orderability (every
-// plan in the fetched catalog is orderable on the active endpoint's account).
-function planMatchesEndpoint(planCode, endpoint) {
-    const regions = ENDPOINT_REGIONS[endpoint] || ENDPOINT_REGIONS['ovh-eu'];
-    return regions.has(planRegion(planCode, endpoint));
-}
-
 function getFilteredPlans() {
     const q = (document.getElementById('catalog-search')?.value || '').trim().toLowerCase();
     const sort = document.getElementById('catalog-sort')?.value || 'default';
-    const regionFilter = document.getElementById('catalog-region-filter')?.checked;
+    const orderableOnly = document.getElementById('catalog-orderable-filter')?.checked;
     const stockFirst = document.getElementById('catalog-stock-first')?.checked;
     let plans = state.plans.slice();
-    if (regionFilter) {
-        plans = plans.filter(p => planMatchesEndpoint(p.planCode, state.endpoint));
+    if (orderableOnly) {
+        // Show only servers that are actually orderable right now — i.e. their
+        // default config has live availability in at least one datacenter.
+        // `_inStock` is set from the datacenter availabilities API; it is only
+        // false when the plan is confirmed out of stock (unknown/unfetched
+        // stock stays visible so nothing is hidden before stock loads).
+        plans = plans.filter(p => p._inStock !== false);
     }
     if (q) {
         plans = plans.filter(p =>
@@ -3809,7 +3792,7 @@ async function init() {
 
     document.getElementById('catalog-search')?.addEventListener('input', renderCatalogList);
     document.getElementById('catalog-sort')?.addEventListener('change', renderCatalogList);
-    document.getElementById('catalog-region-filter')?.addEventListener('change', renderCatalogList);
+    document.getElementById('catalog-orderable-filter')?.addEventListener('change', renderCatalogList);
     document.getElementById('catalog-stock-first')?.addEventListener('change', renderCatalogList);
 
     document.getElementById('catalog-refresh-btn')?.addEventListener('click', () => {
