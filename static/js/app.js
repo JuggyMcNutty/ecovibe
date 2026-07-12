@@ -439,6 +439,14 @@ async function switchAccount(accountId) {
         if (gen !== state._switchGen) return;
         await loadOrders();
         if (gen !== state._switchGen) return;
+        // The full Orders tab is otherwise only (re)loaded lazily on tab
+        // switch, so if it's the active tab during an account switch it would
+        // keep showing the previous account's orders. Reload it in place.
+        const ordersTabVisible = !document.getElementById('orders-tab')?.classList.contains('hidden');
+        if (ordersTabVisible) {
+            await loadOrdersTab();
+            if (gen !== state._switchGen) return;
+        }
         await loadSniperStatus();
         if (gen !== state._switchGen) return;
         if (state.billingLoaded) {
