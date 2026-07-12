@@ -308,9 +308,20 @@ were created under (`account_id` column on each table).
   after a 0.5s backoff, but **only for non-POST methods** — POST (e.g.
   checkout) is never retried to prevent duplicate orders when OVH
   processed the request but the response was lost.
-- **Settings UI**: notification settings live in the credentials-view
-  (accessed via the Settings button in the header), NOT as a tab. A
-  back button returns to the monitor view.
+- **Settings UI**: three separate full-page views (not monitor tabs),
+  each a direct child of `#app` toggled by `showView()`:
+  `#setup-view` (first-run wizard, shown only when unconfigured — add the
+  first account, then land on the monitor), `#accounts-view` (manage OVH
+  accounts: list + inline add/edit editor), and `#notifications-view`
+  (Telegram/Discord/Slack/SMTP). The header "Settings" gear opens
+  `#accounts-view` via `showSettings('accounts')`; a sub-nav of
+  `[data-settings-nav]` buttons switches between Accounts and
+  Notifications; `.settings-back-btn` returns to the monitor. The
+  setup wizard has NO skip — an account is required. Setup uses
+  `setup-*` field ids and `saveSetupAccount()` (onboarding: activate +
+  go to monitor); the accounts editor uses `acct-*` ids and
+  `saveManagedAccount()` (never changes the active account); both share
+  `submitAccount()`. Deleting the last account returns to `#setup-view`.
 - **Currency (display-only)**: a currency selector (EUR/USD/GBP/CAD)
   converts prices for display via cached ECB/Frankfurter FX rates
   (`app/services/currency.py`, 24h cache, EUR-base). It defaults to the

@@ -250,6 +250,32 @@ function showView(viewName) {
     state.view = viewName;
 }
 
+// Switch between the two settings pages (Accounts / Notifications) and
+// highlight the active sub-nav button.
+function showSettings(page) {
+    const target = page === 'notifications' ? 'notifications' : 'accounts';
+    document.querySelectorAll('[data-settings-nav]').forEach(btn => {
+        const active = btn.dataset.settingsNav === target;
+        btn.classList.toggle('bg-blue-600', active);
+        btn.classList.toggle('text-white', active);
+        btn.classList.toggle('bg-gray-700', !active);
+        btn.classList.toggle('text-gray-300', !active);
+    });
+    if (target === 'notifications') {
+        showView('notifications');
+        loadNotificationSettings();
+    } else {
+        showView('accounts');
+        loadAccountsPage();
+    }
+}
+
+async function loadAccountsPage() {
+    closeAccountEditor();
+    await loadAccounts();
+    renderAccountList();
+}
+
 function showLoading() {
     document.getElementById('loading-overlay').classList.remove('hidden');
 }
@@ -430,11 +456,11 @@ async function switchAccount(accountId) {
 }
 
 function renderAccountList() {
-    const container = document.getElementById('account-list');
+    const container = document.getElementById('accounts-list');
     if (!container) return;
     container.innerHTML = '';
     if (!state.accounts.length) {
-        container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No accounts yet. Add one below.' }));
+        container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No accounts yet. Click "+ Add account" to create one.' }));
         return;
     }
     state.accounts.forEach(a => {
@@ -457,7 +483,7 @@ function renderAccountList() {
                 el('button', {
                     class: 'bg-gray-600 hover:bg-gray-500 px-3 py-1 rounded text-sm',
                     text: 'Edit',
-                    onclick: () => editAccount(a.id),
+                    onclick: () => openAccountEditor(a.id),
                 }),
             ]),
         ]);
@@ -465,34 +491,39 @@ function renderAccountList() {
     });
 }
 
-function editAccount(accountId) {
-    const a = state.accounts.find(x => x.id === accountId);
-    if (!a) return;
-    state.editingAccountId = accountId;
-    document.getElementById('setup-title').textContent = 'Edit Account';
-    document.getElementById('setup-description').textContent = `Editing "${a.label}". Leave the secret blank to keep the stored one.`;
-    document.getElementById('cred-label').value = a.label;
-    document.getElementById('ovh-region-select').value = a.endpoint;
-    document.getElementById('cred-app-key').value = '';
-    document.getElementById('cred-app-secret').value = '';
-    document.getElementById('cred-consumer-key').value = '';
-    document.getElementById('delete-credentials-btn').classList.remove('hidden');
-    document.getElementById('cred-test-result').classList.add('hidden');
-    updateCredentialsView(a.endpoint);
+// Open the add/edit account editor. id=null => add mode; otherwise edit.
+function openAccountEditor(accountId) {
+    state.editingAccountId = accountId || null;
+    const editor = document.getElementById('acct-editor');
+    const title = document.getElementById('acct-editor-title');
+    const del = document.getElementById('acct-delete-btn');
+    document.getElementById('acct-test-result').classList.add('hidden');
+    document.getElementById('acct-app-key').value = '';
+    document.getElementById('acct-app-secret').value = '';
+    document.getElementById('acct-consumer-key').value = '';
+    if (accountId) {
+        const a = state.accounts.find(x => x.id === accountId);
+        if (!a) return;
+        title.textContent = `Edit "${a.label}"`;
+        document.getElementById('acct-label').value = a.label;
+        document.getElementById('acct-region').value = a.endpoint;
+        document.getElementById('acct-app-secret').placeholder = 'leave blank to keep the stored secret';
+        del.classList.remove('hidden');
+        updateManagerLink(a.endpoint, document.getElementById('acct-manager-link'));
+    } else {
+        title.textContent = 'Add account';
+        document.getElementById('acct-label').value = '';
+        document.getElementById('acct-region').value = 'ovh-eu';
+        del.classList.add('hidden');
+        updateManagerLink('ovh-eu', document.getElementById('acct-manager-link'));
+    }
+    editor.classList.remove('hidden');
+    editor.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function resetAccountForm() {
+function closeAccountEditor() {
     state.editingAccountId = null;
-    document.getElementById('setup-title').textContent = 'Add OVH Account';
-    document.getElementById('setup-description').textContent = 'Add an OVH API account to monitor flash sales and place orders. Credentials are stored in the local database.';
-    document.getElementById('cred-label').value = '';
-    document.getElementById('ovh-region-select').value = 'ovh-eu';
-    document.getElementById('cred-app-key').value = '';
-    document.getElementById('cred-app-secret').value = '';
-    document.getElementById('cred-consumer-key').value = '';
-    document.getElementById('delete-credentials-btn').classList.add('hidden');
-    document.getElementById('cred-test-result').classList.add('hidden');
-    updateCredentialsView('ovh-eu');
+    document.getElementById('acct-editor')?.classList.add('hidden');
 }
 
 // Catalog
@@ -2432,88 +2463,88 @@ function playAlertSound() {
     }
 }
 
-// Credentials
+// Credentials / accounts
 
-function updateCredentialsView(region) {
+// Point an OVHcloud Manager link at the manager URL for a region.
+function updateManagerLink(region, linkEl) {
+    if (!linkEl) return;
     const regionInfo = OVH_REGIONS[region] || OVH_REGIONS['ovh-eu'];
-    const link = document.getElementById('create-api-key-link');
-    if (link) {
-        link.href = regionInfo.managerUrl;
-        link.textContent = `Open ${regionInfo.name} OVHcloud Manager`;
-    }
+    linkEl.href = regionInfo.managerUrl;
+    linkEl.textContent = `Open ${regionInfo.name} OVHcloud Manager`;
+}
 
+// Setup-wizard region select drives its manager link AND the rush-order
+// region (the first account is the one you'll order with).
+function updateCredentialsView(region) {
+    updateManagerLink(region, document.getElementById('setup-manager-link'));
+    const regionInfo = OVH_REGIONS[region] || OVH_REGIONS['ovh-eu'];
     const rushRegion = document.getElementById('rush-region');
     if (rushRegion) {
         rushRegion.value = regionInfo.rushRegion;
     }
 }
 
-async function saveCredentials() {
-    const endpoint = document.getElementById('ovh-region-select').value;
-    const label = document.getElementById('cred-label').value.trim() || endpoint;
-    const applicationKey = document.getElementById('cred-app-key').value.trim();
-    const applicationSecret = document.getElementById('cred-app-secret').value.trim();
-    const consumerKey = document.getElementById('cred-consumer-key').value.trim();
-    const editingId = state.editingAccountId;
-    // Onboarding = the first-ever account (setup wizard). Adding an extra
-    // account or editing one is "manage mode" and must not auto-activate or
-    // navigate away.
-    const isOnboarding = !state.configured && !editingId;
-
+// Shared save+test core for both the setup wizard and the account editor.
+// `fields` = {label, endpoint, applicationKey, applicationSecret, consumerKey}.
+// Returns {id, ok} — ok is the credential-test result — or null if
+// validation/save failed.
+async function submitAccount(fields, editingId, resultElId) {
+    const { endpoint, applicationKey, applicationSecret, consumerKey } = fields;
+    const label = fields.label || endpoint;
     if (!applicationKey || !consumerKey) {
-        showCredentialTestResult('error', 'Application key and consumer key are required.');
-        return;
+        showTestResult(resultElId, 'error', 'Application key and consumer key are required.');
+        return null;
     }
     if (!editingId && !applicationSecret) {
-        showCredentialTestResult('error', 'Application secret is required for a new account.');
-        return;
+        showTestResult(resultElId, 'error', 'Application secret is required for a new account.');
+        return null;
     }
-
-    showCredentialTestResult('loading', 'Saving account...');
+    showTestResult(resultElId, 'loading', 'Saving account…');
+    const body = {
+        label, endpoint,
+        application_key: applicationKey,
+        application_secret: applicationSecret,
+        consumer_key: consumerKey,
+    };
+    let savedId;
+    if (editingId) {
+        await apiRequest('PUT', `/accounts/${editingId}`, body);
+        savedId = editingId;
+    } else {
+        const created = await apiRequest('POST', '/accounts', body);
+        savedId = created.id;
+    }
+    await loadAccounts();
+    // Test the saved account (non-fatal — the account is already saved).
     try {
-        const body = { label, endpoint, application_key: applicationKey, application_secret: applicationSecret, consumer_key: consumerKey };
-        let savedId;
-        if (editingId) {
-            await apiRequest('PUT', `/accounts/${editingId}`, body);
-            savedId = editingId;
-        } else {
-            const created = await apiRequest('POST', '/accounts', body);
-            savedId = created.id;
-        }
-        await loadAccounts();
+        const result = await apiRequest('POST', `/accounts/${savedId}/test`);
+        showTestResult(resultElId, 'success',
+            `Connected as ${result.firstname || ''} ${result.name || ''} (${result.nichandle || 'unknown'})`);
+        return { id: savedId, ok: true };
+    } catch (e) {
+        showTestResult(resultElId, 'error', `Account saved but test failed: ${e.message}`);
+        return { id: savedId, ok: false };
+    }
+}
 
-        // Test the saved account.
-        try {
-            const result = await apiRequest('POST', `/accounts/${savedId}/test`);
-            showCredentialTestResult('success',
-                `Connected as ${result.firstname || ''} ${result.name || ''} (${result.nichandle || 'unknown'})`);
-        } catch (e) {
-            showCredentialTestResult('error', `Account saved but test failed: ${e.message}`);
-        }
-
-        if (!isOnboarding) {
-            // Manage mode: the active account is unchanged (only the first
-            // account auto-activates; switch via the dropdown). Refresh the
-            // list, reset the form for another add, and stay on this view.
-            renderAccountList();
-            renderAccountSelect();
-            state.editingAccountId = null;
-            document.getElementById('setup-title').textContent = 'Add OVH Account';
-            document.getElementById('setup-description').textContent = 'Add an OVH API account to monitor flash sales and place orders. Credentials are stored in the local database.';
-            document.getElementById('cred-label').value = '';
-            document.getElementById('cred-app-key').value = '';
-            document.getElementById('cred-app-secret').value = '';
-            document.getElementById('cred-consumer-key').value = '';
-            document.getElementById('delete-credentials-btn').classList.add('hidden');
-            return;
-        }
-
-        // Onboarding: the first account is now active on the backend.
-        state.activeAccountId = savedId;
+// First-run wizard: save the first account, activate it, go to the monitor.
+async function saveSetupAccount() {
+    const endpoint = document.getElementById('setup-region').value;
+    const fields = {
+        endpoint,
+        label: document.getElementById('setup-label').value.trim(),
+        applicationKey: document.getElementById('setup-app-key').value.trim(),
+        applicationSecret: document.getElementById('setup-app-secret').value.trim(),
+        consumerKey: document.getElementById('setup-consumer-key').value.trim(),
+    };
+    try {
+        const saved = await submitAccount(fields, null, 'setup-test-result');
+        if (!saved) return;
+        // The backend auto-activates the first account. Proceed to the monitor
+        // regardless of the test result (the account is saved either way).
+        state.activeAccountId = saved.id;
         state.endpoint = endpoint;
         state.configured = true;
-
-        // After 1.2s, proceed to the monitor.
         setTimeout(async () => {
             document.getElementById('settings-btn').classList.remove('hidden');
             renderAccountSelect();
@@ -2527,11 +2558,39 @@ async function saveCredentials() {
             showView('monitor');
         }, 1200);
     } catch (e) {
-        showCredentialTestResult('error', e.message);
+        showTestResult('setup-test-result', 'error', e.message);
     }
 }
 
-async function deleteCredentials() {
+// Accounts page: add or edit an account without changing the active one.
+async function saveManagedAccount() {
+    const editingId = state.editingAccountId;
+    const fields = {
+        endpoint: document.getElementById('acct-region').value,
+        label: document.getElementById('acct-label').value.trim(),
+        applicationKey: document.getElementById('acct-app-key').value.trim(),
+        applicationSecret: document.getElementById('acct-app-secret').value.trim(),
+        consumerKey: document.getElementById('acct-consumer-key').value.trim(),
+    };
+    try {
+        const saved = await submitAccount(fields, editingId, 'acct-test-result');
+        if (!saved) return;
+        // Active account is unchanged; refresh the list + header dropdown.
+        renderAccountList();
+        renderAccountSelect();
+        if (saved.ok) {
+            // Clean success: confirm via toast and close the editor.
+            showToast(editingId ? 'Account updated.' : 'Account added.');
+            closeAccountEditor();
+        }
+        // On test failure, leave the editor open so the "saved but test
+        // failed" banner stays visible for the user to fix the keys.
+    } catch (e) {
+        showTestResult('acct-test-result', 'error', e.message);
+    }
+}
+
+async function deleteAccount() {
     const editingId = state.editingAccountId;
     if (!editingId) return;
     if (!confirm('Delete this account? Its alerts and profiles remain but become unscoped.')) {
@@ -2540,23 +2599,27 @@ async function deleteCredentials() {
     try {
         await apiRequest('DELETE', `/accounts/${editingId}`);
         await loadAccounts();
-        state.editingAccountId = null;
+        closeAccountEditor();
         // Active account may have changed (fallback); refresh health-derived state.
         await checkHealth();
-        renderAccountList();
         renderAccountSelect();
-        resetAccountForm();
-        showCredentialTestResult('success', 'Account deleted.');
+        if (!state.accounts.length) {
+            // No accounts left → back to the first-run setup wizard.
+            state.configured = false;
+            document.getElementById('settings-btn').classList.add('hidden');
+            showView('setup');
+            return;
+        }
+        renderAccountList();
+        showToast('Account deleted.');
     } catch (e) {
-        showCredentialTestResult('error', e.message);
+        showTestResult('acct-test-result', 'error', e.message);
     }
 }
 
-function showCredentialTestResult(type, message) {
-    const div = document.getElementById('cred-test-result');
-    div.classList.remove('hidden', 'bg-green-900/50', 'border-green-700', 'text-green-300',
-                         'bg-red-900/50', 'border-red-700', 'text-red-300',
-                         'bg-blue-900/50', 'border-blue-700', 'text-blue-300');
+function showTestResult(elId, type, message) {
+    const div = document.getElementById(elId);
+    if (!div) return;
     if (type === 'success') {
         div.className = 'rounded p-3 text-sm bg-green-900/50 border border-green-700 text-green-300';
     } else if (type === 'error') {
@@ -2565,13 +2628,6 @@ function showCredentialTestResult(type, message) {
         div.className = 'rounded p-3 text-sm bg-blue-900/50 border border-blue-700 text-blue-300';
     }
     div.textContent = message;
-}
-
-async function loadExistingCredentials() {
-    // Manage-mode: render the account list and reset the form for adding.
-    await loadAccounts();
-    renderAccountList();
-    resetAccountForm();
 }
 
 // ----- Saved checkout profiles -----
@@ -3535,13 +3591,16 @@ async function init() {
     state.configured = configured;
     await loadAccounts();
 
-    const regionSelect = document.getElementById('ovh-region-select');
-    if (regionSelect) {
-        regionSelect.addEventListener('change', (e) => {
-            updateCredentialsView(e.target.value);
-        });
-        updateCredentialsView(regionSelect.value);
+    // Setup wizard: region select drives its manager link + rush region.
+    const setupRegion = document.getElementById('setup-region');
+    if (setupRegion) {
+        setupRegion.addEventListener('change', (e) => updateCredentialsView(e.target.value));
+        updateCredentialsView(setupRegion.value);
     }
+    // Account editor: region select drives only its own manager link.
+    document.getElementById('acct-region')?.addEventListener('change', (e) => {
+        updateManagerLink(e.target.value, document.getElementById('acct-manager-link'));
+    });
 
     const accountSelect = document.getElementById('account-select');
     if (accountSelect) {
@@ -3551,14 +3610,8 @@ async function init() {
     }
 
     if (!configured) {
-        // First-start: only show the add-account wizard,
-        // hide account list, notification settings + back button.
-        resetAccountForm();
-        document.getElementById('account-list-block')?.classList.add('hidden');
-        document.getElementById('notif-settings-block')?.classList.add('hidden');
-        document.getElementById('credentials-back-block')?.classList.add('hidden');
-        document.getElementById('add-account-btn')?.classList.add('hidden');
-        showView('credentials');
+        // First run: show the setup wizard only.
+        showView('setup');
     } else {
         document.getElementById('settings-btn').classList.remove('hidden');
         renderAccountSelect();
@@ -3574,29 +3627,22 @@ async function init() {
         showView('monitor');
     }
 
-    document.getElementById('save-credentials-btn').addEventListener('click', saveCredentials);
-    document.getElementById('delete-credentials-btn').addEventListener('click', deleteCredentials);
-    document.getElementById('skip-credentials-btn').addEventListener('click', () => {
-        // Skip to monitor (will show 503s for OVH calls until configured)
-        showView('monitor');
-    });
-    document.getElementById('add-account-btn')?.addEventListener('click', () => {
-        resetAccountForm();
-    });
+    // Setup wizard
+    document.getElementById('setup-save-btn')?.addEventListener('click', saveSetupAccount);
 
-    document.getElementById('settings-btn').addEventListener('click', () => {
-        // Manage-mode: show account list, notification settings + back button.
-        document.getElementById('account-list-block')?.classList.remove('hidden');
-        document.getElementById('notif-settings-block')?.classList.remove('hidden');
-        document.getElementById('credentials-back-block')?.classList.remove('hidden');
-        document.getElementById('add-account-btn')?.classList.remove('hidden');
-        showView('credentials');
-        loadExistingCredentials();
-        loadNotificationSettings();
-    });
+    // Accounts settings page
+    document.getElementById('accounts-add-btn')?.addEventListener('click', () => openAccountEditor(null));
+    document.getElementById('acct-save-btn')?.addEventListener('click', saveManagedAccount);
+    document.getElementById('acct-cancel-btn')?.addEventListener('click', closeAccountEditor);
+    document.getElementById('acct-delete-btn')?.addEventListener('click', deleteAccount);
 
-    document.getElementById('back-from-settings-btn')?.addEventListener('click', () => {
-        showView('monitor');
+    // Header gear → Accounts page; settings sub-nav + back buttons.
+    document.getElementById('settings-btn').addEventListener('click', () => showSettings('accounts'));
+    document.querySelectorAll('[data-settings-nav]').forEach(btn => {
+        btn.addEventListener('click', () => showSettings(btn.dataset.settingsNav));
+    });
+    document.querySelectorAll('.settings-back-btn').forEach(btn => {
+        btn.addEventListener('click', () => showView('monitor'));
     });
 
     // Tab switching

@@ -53,25 +53,20 @@
             <p id="toast-message" class="text-green-300"></p>
         </div>
 
-        <div id="credentials-view" class="hidden">
-            <!-- Account list (manage mode only) -->
-            <div id="account-list-block" class="bg-gray-800 rounded-lg p-6 max-w-2xl mx-auto mb-6 hidden">
-                <h2 class="text-2xl font-bold mb-4 text-blue-400">OVH Accounts</h2>
-                <div id="account-list" class="space-y-2"></div>
-            </div>
-
+        <!-- Setup wizard (first run only) -->
+        <div id="setup-view" class="hidden">
             <div class="bg-gray-800 rounded-lg p-6 max-w-2xl mx-auto">
-                <h2 class="text-2xl font-bold mb-4 text-yellow-400" id="setup-title">Add OVH Account</h2>
-                <p class="text-gray-300 mb-6" id="setup-description">Add an OVH API account to monitor flash sales and place orders. Credentials are stored in the local database.</p>
+                <h2 class="text-2xl font-bold mb-2 text-yellow-400">Welcome to ECOVibe</h2>
+                <p class="text-gray-300 mb-6">Add your first OVH API account to start monitoring flash sales and placing orders. Credentials are stored in the local database.</p>
 
                 <div class="mb-4">
-                    <label class="block text-sm text-gray-400 mb-2" for="cred-label">Account Label</label>
-                    <input type="text" id="cred-label" class="w-full bg-gray-700 px-3 py-2 rounded" placeholder="e.g. EU personal" autocomplete="off">
+                    <label class="block text-sm text-gray-400 mb-2" for="setup-label">Account Label</label>
+                    <input type="text" id="setup-label" class="w-full bg-gray-700 px-3 py-2 rounded" placeholder="e.g. EU personal" autocomplete="off">
                 </div>
 
                 <div class="mb-4">
-                    <label class="block text-sm text-gray-400 mb-2" for="ovh-region-select">Select Your OVH Region</label>
-                    <select id="ovh-region-select" class="w-full bg-gray-700 px-3 py-2 rounded">
+                    <label class="block text-sm text-gray-400 mb-2" for="setup-region">Select Your OVH Region</label>
+                    <select id="setup-region" class="w-full bg-gray-700 px-3 py-2 rounded">
                         <option value="ovh-eu">Europe (IE, FR, DE, GB, ES, PL...)</option>
                         <option value="ovh-us">United States (US)</option>
                         <option value="ovh-ca">Canada (CA)</option>
@@ -87,135 +82,210 @@
                             and create a new API key. You'll get three values:
                             Application Key, Application Secret, and Consumer Key.
                         </p>
-                        <a id="create-api-key-link" href="https://www.ovh.com/manager/" target="_blank" rel="noopener"
+                        <a id="setup-manager-link" href="https://www.ovh.com/manager/" target="_blank" rel="noopener"
                            class="text-blue-400 hover:underline">Open OVHcloud Manager</a>
                     </div>
 
                     <div class="bg-gray-700 rounded p-4 space-y-3">
                         <h3 class="font-bold text-blue-400 mb-2">Step 2: Enter Your Credentials</h3>
                         <div>
-                            <label class="block text-sm text-gray-400 mb-1" for="cred-app-key">Application Key</label>
-                            <input type="text" id="cred-app-key" class="w-full bg-gray-900 px-3 py-2 rounded font-mono text-sm"
+                            <label class="block text-sm text-gray-400 mb-1" for="setup-app-key">Application Key</label>
+                            <input type="text" id="setup-app-key" class="w-full bg-gray-900 px-3 py-2 rounded font-mono text-sm"
                                    placeholder="e.g. pcLPvgyGXgOsjFQU" autocomplete="off">
                         </div>
                         <div>
-                            <label class="block text-sm text-gray-400 mb-1" for="cred-app-secret">Application Secret</label>
-                            <input type="password" id="cred-app-secret" class="w-full bg-gray-900 px-3 py-2 rounded font-mono text-sm"
+                            <label class="block text-sm text-gray-400 mb-1" for="setup-app-secret">Application Secret</label>
+                            <input type="password" id="setup-app-secret" class="w-full bg-gray-900 px-3 py-2 rounded font-mono text-sm"
                                    placeholder="e.g. AsmWpxea54SgVU7D..." autocomplete="off">
                         </div>
                         <div>
-                            <label class="block text-sm text-gray-400 mb-1" for="cred-consumer-key">Consumer Key</label>
-                            <input type="text" id="cred-consumer-key" class="w-full bg-gray-900 px-3 py-2 rounded font-mono text-sm"
+                            <label class="block text-sm text-gray-400 mb-1" for="setup-consumer-key">Consumer Key</label>
+                            <input type="text" id="setup-consumer-key" class="w-full bg-gray-900 px-3 py-2 rounded font-mono text-sm"
                                    placeholder="e.g. yZT6MAhCd6XUJ5o2..." autocomplete="off">
                         </div>
-                        <div id="cred-test-result" class="hidden rounded p-3 text-sm"></div>
+                        <div id="setup-test-result" class="hidden rounded p-3 text-sm"></div>
                     </div>
                 </div>
 
-                <div class="flex gap-3 mt-6">
-                    <button id="save-credentials-btn"
+                <div class="mt-6">
+                    <button id="setup-save-btn"
                             class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg">
-                        Save Account
-                    </button>
-                    <button id="delete-credentials-btn"
-                            class="hidden bg-red-700 hover:bg-red-600 text-white px-6 py-2 rounded-lg">
-                        Delete Account
-                    </button>
-                    <button id="skip-credentials-btn"
-                            class="bg-gray-700 hover:bg-gray-600 text-white px-6 py-2 rounded-lg">
-                        Skip
-                    </button>
-                    <button id="add-account-btn"
-                            class="hidden bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg">
-                        + Add New Account
+                        Save &amp; Continue
                     </button>
                 </div>
             </div>
+        </div>
 
-            <!-- Notification Settings -->
-            <div id="notif-settings-block" class="bg-gray-800 rounded-lg p-6 max-w-2xl mx-auto mt-6">
-                <h2 class="text-2xl font-bold mb-4 text-blue-400">Notification Channels</h2>
-                <p class="text-gray-300 mb-6">Configure external messaging services to receive stock alerts.</p>
+        <!-- Accounts settings page -->
+        <div id="accounts-view" class="hidden">
+            <div class="max-w-2xl mx-auto">
+                <!-- Settings sub-nav -->
+                <div class="flex gap-2 mb-6" role="tablist">
+                    <button data-settings-nav="accounts" class="settings-nav-btn px-4 py-2 rounded-lg text-sm">OVH Accounts</button>
+                    <button data-settings-nav="notifications" class="settings-nav-btn px-4 py-2 rounded-lg text-sm">Notifications</button>
+                </div>
 
-                <div class="space-y-4">
-                    <!-- Telegram -->
-                    <div class="bg-gray-700 rounded p-4">
-                        <h3 class="font-bold text-blue-400 mb-1">Telegram</h3>
-                        <p class="text-gray-500 text-xs mb-3">Create a bot with @BotFather and get your chat ID.</p>
-                        <div class="space-y-2">
-                            <div>
-                                <label class="block text-sm text-gray-400 mb-1">Bot Token</label>
-                                <input type="password" id="notif-telegram-token" class="w-full bg-gray-900 px-3 py-2 rounded text-sm" placeholder="123456:ABC-DEF...">
-                            </div>
-                            <div>
-                                <label class="block text-sm text-gray-400 mb-1">Chat ID</label>
-                                <input type="text" id="notif-telegram-chat-id" class="w-full bg-gray-900 px-3 py-2 rounded text-sm" placeholder="-100123456789">
-                            </div>
-                        </div>
+                <div class="bg-gray-800 rounded-lg p-6 mb-4">
+                    <div class="flex items-center justify-between mb-4">
+                        <h2 class="text-2xl font-bold text-blue-400">OVH Accounts</h2>
+                        <button id="accounts-add-btn" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm">
+                            + Add account
+                        </button>
+                    </div>
+                    <div id="accounts-list" class="space-y-2"></div>
+                </div>
+
+                <!-- Add / edit account editor (hidden until Add/Edit) -->
+                <div id="acct-editor" class="hidden bg-gray-800 rounded-lg p-6 mb-4">
+                    <h3 class="text-xl font-bold mb-4 text-yellow-400" id="acct-editor-title">Add account</h3>
+
+                    <div class="mb-4">
+                        <label class="block text-sm text-gray-400 mb-2" for="acct-label">Account Label</label>
+                        <input type="text" id="acct-label" class="w-full bg-gray-700 px-3 py-2 rounded" placeholder="e.g. EU personal" autocomplete="off">
                     </div>
 
-                    <!-- Discord -->
-                    <div class="bg-gray-700 rounded p-4">
-                        <h3 class="font-bold text-blue-400 mb-1">Discord</h3>
-                        <p class="text-gray-500 text-xs mb-3">Channel Settings → Integrations → Webhooks.</p>
+                    <div class="mb-4">
+                        <label class="block text-sm text-gray-400 mb-2" for="acct-region">OVH Region</label>
+                        <select id="acct-region" class="w-full bg-gray-700 px-3 py-2 rounded">
+                            <option value="ovh-eu">Europe (IE, FR, DE, GB, ES, PL...)</option>
+                            <option value="ovh-us">United States (US)</option>
+                            <option value="ovh-ca">Canada (CA)</option>
+                        </select>
+                    </div>
+
+                    <div class="bg-gray-700 rounded p-4 space-y-3">
+                        <div class="flex items-center justify-between">
+                            <h4 class="font-bold text-blue-400">API Credentials</h4>
+                            <a id="acct-manager-link" href="https://www.ovh.com/manager/" target="_blank" rel="noopener"
+                               class="text-blue-400 hover:underline text-sm">Open OVHcloud Manager</a>
+                        </div>
                         <div>
-                            <label class="block text-sm text-gray-400 mb-1">Webhook URL</label>
-                            <input type="text" id="notif-discord-webhook" class="w-full bg-gray-900 px-3 py-2 rounded text-sm" placeholder="https://discord.com/api/webhooks/...">
+                            <label class="block text-sm text-gray-400 mb-1" for="acct-app-key">Application Key</label>
+                            <input type="text" id="acct-app-key" class="w-full bg-gray-900 px-3 py-2 rounded font-mono text-sm"
+                                   placeholder="e.g. pcLPvgyGXgOsjFQU" autocomplete="off">
                         </div>
-                    </div>
-
-                    <!-- Slack -->
-                    <div class="bg-gray-700 rounded p-4">
-                        <h3 class="font-bold text-blue-400 mb-1">Slack</h3>
-                        <p class="text-gray-500 text-xs mb-3">Create one at api.slack.com/messaging/webhooks.</p>
                         <div>
-                            <label class="block text-sm text-gray-400 mb-1">Webhook URL</label>
-                            <input type="text" id="notif-slack-webhook" class="w-full bg-gray-900 px-3 py-2 rounded text-sm" placeholder="https://hooks.slack.com/services/...">
+                            <label class="block text-sm text-gray-400 mb-1" for="acct-app-secret">Application Secret</label>
+                            <input type="password" id="acct-app-secret" class="w-full bg-gray-900 px-3 py-2 rounded font-mono text-sm"
+                                   placeholder="leave blank to keep the stored secret" autocomplete="off">
                         </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1" for="acct-consumer-key">Consumer Key</label>
+                            <input type="text" id="acct-consumer-key" class="w-full bg-gray-900 px-3 py-2 rounded font-mono text-sm"
+                                   placeholder="e.g. yZT6MAhCd6XUJ5o2..." autocomplete="off">
+                        </div>
+                        <div id="acct-test-result" class="hidden rounded p-3 text-sm"></div>
                     </div>
 
-                    <!-- Email / SMTP -->
-                    <div class="bg-gray-700 rounded p-4">
-                        <h3 class="font-bold text-blue-400 mb-1">Email (SMTP)</h3>
-                        <p class="text-gray-500 text-xs mb-3">Uses STARTTLS when credentials are provided.</p>
-                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                            <div>
-                                <label class="block text-sm text-gray-400 mb-1">SMTP Host</label>
-                                <input type="text" id="notif-smtp-host" class="w-full bg-gray-900 px-3 py-2 rounded text-sm" placeholder="smtp.gmail.com">
-                            </div>
-                            <div>
-                                <label class="block text-sm text-gray-400 mb-1">SMTP Port</label>
-                                <input type="number" id="notif-smtp-port" class="w-full bg-gray-900 px-3 py-2 rounded text-sm" value="587">
-                            </div>
-                            <div>
-                                <label class="block text-sm text-gray-400 mb-1">SMTP Username</label>
-                                <input type="text" id="notif-smtp-username" class="w-full bg-gray-900 px-3 py-2 rounded text-sm" placeholder="user@example.com">
-                            </div>
-                            <div>
-                                <label class="block text-sm text-gray-400 mb-1">SMTP Password</label>
-                                <input type="password" id="notif-smtp-password" class="w-full bg-gray-900 px-3 py-2 rounded text-sm" placeholder="••••••••">
-                            </div>
-                            <div>
-                                <label class="block text-sm text-gray-400 mb-1">From Address</label>
-                                <input type="email" id="notif-smtp-from" class="w-full bg-gray-900 px-3 py-2 rounded text-sm" placeholder="alerts@example.com">
-                            </div>
-                            <div>
-                                <label class="block text-sm text-gray-400 mb-1">To Address</label>
-                                <input type="email" id="notif-smtp-to" class="w-full bg-gray-900 px-3 py-2 rounded text-sm" placeholder="me@example.com">
-                            </div>
-                        </div>
+                    <div class="flex gap-3 mt-6">
+                        <button id="acct-save-btn" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg">
+                            Save
+                        </button>
+                        <button id="acct-cancel-btn" class="bg-gray-700 hover:bg-gray-600 text-white px-6 py-2 rounded-lg">
+                            Cancel
+                        </button>
+                        <button id="acct-delete-btn" class="hidden bg-red-700 hover:bg-red-600 text-white px-6 py-2 rounded-lg ml-auto">
+                            Delete
+                        </button>
                     </div>
                 </div>
 
-                <div class="flex items-center gap-4 mt-4">
-                    <button id="notif-save-btn" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg">Save</button>
-                    <span id="notif-status" class="text-gray-500 text-sm"></span>
-                </div>
+                <button class="settings-back-btn bg-gray-700 hover:bg-gray-600 text-white px-6 py-2 rounded-lg">
+                    ← Back to Monitor
+                </button>
             </div>
+        </div>
 
-            <!-- Back button -->
-            <div id="credentials-back-block" class="max-w-2xl mx-auto mt-4">
-                <button id="back-from-settings-btn" class="bg-gray-700 hover:bg-gray-600 text-white px-6 py-2 rounded-lg">
+        <!-- Notifications settings page -->
+        <div id="notifications-view" class="hidden">
+            <div class="max-w-2xl mx-auto">
+                <!-- Settings sub-nav -->
+                <div class="flex gap-2 mb-6" role="tablist">
+                    <button data-settings-nav="accounts" class="settings-nav-btn px-4 py-2 rounded-lg text-sm">OVH Accounts</button>
+                    <button data-settings-nav="notifications" class="settings-nav-btn px-4 py-2 rounded-lg text-sm">Notifications</button>
+                </div>
+
+                <div class="bg-gray-800 rounded-lg p-6 mb-4">
+                    <h2 class="text-2xl font-bold mb-4 text-blue-400">Notification Channels</h2>
+                    <p class="text-gray-300 mb-6">Configure external messaging services to receive stock alerts.</p>
+
+                    <div class="space-y-4">
+                        <!-- Telegram -->
+                        <div class="bg-gray-700 rounded p-4">
+                            <h3 class="font-bold text-blue-400 mb-1">Telegram</h3>
+                            <p class="text-gray-500 text-xs mb-3">Create a bot with @BotFather and get your chat ID.</p>
+                            <div class="space-y-2">
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1">Bot Token</label>
+                                    <input type="password" id="notif-telegram-token" class="w-full bg-gray-900 px-3 py-2 rounded text-sm" placeholder="123456:ABC-DEF...">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1">Chat ID</label>
+                                    <input type="text" id="notif-telegram-chat-id" class="w-full bg-gray-900 px-3 py-2 rounded text-sm" placeholder="-100123456789">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Discord -->
+                        <div class="bg-gray-700 rounded p-4">
+                            <h3 class="font-bold text-blue-400 mb-1">Discord</h3>
+                            <p class="text-gray-500 text-xs mb-3">Channel Settings → Integrations → Webhooks.</p>
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-1">Webhook URL</label>
+                                <input type="text" id="notif-discord-webhook" class="w-full bg-gray-900 px-3 py-2 rounded text-sm" placeholder="https://discord.com/api/webhooks/...">
+                            </div>
+                        </div>
+
+                        <!-- Slack -->
+                        <div class="bg-gray-700 rounded p-4">
+                            <h3 class="font-bold text-blue-400 mb-1">Slack</h3>
+                            <p class="text-gray-500 text-xs mb-3">Create one at api.slack.com/messaging/webhooks.</p>
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-1">Webhook URL</label>
+                                <input type="text" id="notif-slack-webhook" class="w-full bg-gray-900 px-3 py-2 rounded text-sm" placeholder="https://hooks.slack.com/services/...">
+                            </div>
+                        </div>
+
+                        <!-- Email / SMTP -->
+                        <div class="bg-gray-700 rounded p-4">
+                            <h3 class="font-bold text-blue-400 mb-1">Email (SMTP)</h3>
+                            <p class="text-gray-500 text-xs mb-3">Uses STARTTLS when credentials are provided.</p>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1">SMTP Host</label>
+                                    <input type="text" id="notif-smtp-host" class="w-full bg-gray-900 px-3 py-2 rounded text-sm" placeholder="smtp.gmail.com">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1">SMTP Port</label>
+                                    <input type="number" id="notif-smtp-port" class="w-full bg-gray-900 px-3 py-2 rounded text-sm" value="587">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1">SMTP Username</label>
+                                    <input type="text" id="notif-smtp-username" class="w-full bg-gray-900 px-3 py-2 rounded text-sm" placeholder="user@example.com">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1">SMTP Password</label>
+                                    <input type="password" id="notif-smtp-password" class="w-full bg-gray-900 px-3 py-2 rounded text-sm" placeholder="••••••••">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1">From Address</label>
+                                    <input type="email" id="notif-smtp-from" class="w-full bg-gray-900 px-3 py-2 rounded text-sm" placeholder="alerts@example.com">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1">To Address</label>
+                                    <input type="email" id="notif-smtp-to" class="w-full bg-gray-900 px-3 py-2 rounded text-sm" placeholder="me@example.com">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center gap-4 mt-4">
+                        <button id="notif-save-btn" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg">Save</button>
+                        <span id="notif-status" class="text-gray-500 text-sm"></span>
+                    </div>
+                </div>
+
+                <button class="settings-back-btn bg-gray-700 hover:bg-gray-600 text-white px-6 py-2 rounded-lg">
                     ← Back to Monitor
                 </button>
             </div>
