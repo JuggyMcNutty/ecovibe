@@ -1179,7 +1179,11 @@ function addonShortCode(code) {
 const STORAGE_CAPACITY_MAP = { 512: 500, 1920: 1900, 3840: 3800 };
 function normalizeAddonCode(code) {
     if (!code) return '';
-    return code.replace(/(\d+)(nvme|sa|sas|hdd)/gi, (m, num, unit) => {
+    // Match the disk-type suffix after the capacity. `ssd` was missing, so
+    // marketed SSD capacities (e.g. 1920→1900, 3840→3800) were never
+    // normalized and silently failed to match the stock API. Longer units
+    // (sata, sas) come before their prefixes so they win the alternation.
+    return code.replace(/(\d+)(ssd|nvme|sata|sas|sa|hdd)/gi, (m, num, unit) => {
         const n = parseInt(num, 10);
         if (n in STORAGE_CAPACITY_MAP) return STORAGE_CAPACITY_MAP[n] + unit;
         return m;
@@ -2188,7 +2192,15 @@ async function loadPollInterval() {
     try {
         const status = await apiRequest('GET', '/monitor/status');
         if (status && status.poll_interval) {
-            document.getElementById('poll-interval').value = String(status.poll_interval);
+            const sel = document.getElementById('poll-interval');
+            const val = String(status.poll_interval);
+            // A stored interval that isn't one of the preset options (e.g. set
+            // via the API) would leave the select blank — inject it so the
+            // current value is always shown.
+            if (sel && !Array.from(sel.options).some(o => o.value === val)) {
+                sel.appendChild(el('option', { value: val, text: `${val}s` }));
+            }
+            if (sel) sel.value = val;
         }
     } catch (e) {
         // ignore - keep default

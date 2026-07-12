@@ -22,14 +22,15 @@ async def status() -> dict:
     sniper = get_sniper_service()
     monitor = get_monitor_service()
     alerts = {a.id: a for a in monitor.get_alerts()}
-    armed = sniper.status()["armed"]
+    snapshot = sniper.status()
+    armed = snapshot["armed"]
     for a in armed:
         aid = a["alert_id"]
         if aid in alerts:
             a["plan_code"] = alerts[aid].plan_code
     return {
         "armed": armed,
-        "results": sniper.status()["results"],
+        "results": snapshot["results"],
     }
 
 
