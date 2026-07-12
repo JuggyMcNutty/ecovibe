@@ -259,6 +259,13 @@ were created under (`account_id` column on each table).
   title cached wrong won't self-heal on a plain list load, so the "Refresh all"
   button hits `GET /api/orders?refresh=true`, which re-derives names instead of
   trusting the cache (still `name_budget`-limited so it can't hang).
+- **Catalog config-option order**: OVH returns `plan.addonFamilies` (and the
+  addons within each) in arbitrary order. `renderCatalogDetail` standardizes them
+  once — families in `CATALOG_FAMILY_ORDER` (memory→storage→bandwidth→vrack),
+  addons within each via `compareAddonCodes` (price ascending, then capacity,
+  then code — included→small→large). Families are shallow-cloned before sorting
+  so `state.plans` isn't mutated; both the option cards and the order-form
+  RAM/Storage/Bandwidth dropdowns read the same sorted `families` array.
 - **Frontend**: no framework, no build step for JS. `app.js` is a
   ~3300-line vanilla SPA using a custom `el()` DOM helper. Cache
   busting is automatic via content-hash query strings
