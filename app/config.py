@@ -4,10 +4,13 @@ OVH credentials are stored in the DB (via the setup wizard), not env vars.
 Non-secret settings like cache TTL, DB path, notifier config, etc. come
 from env vars prefixed with OVH_.
 """
+import json
 import os
 from functools import lru_cache
+from typing import Annotated
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # Project root (two levels up from this file: app/config.py -> app/ -> root).
 # Used to resolve the default DB path so it doesn't depend on the CWD.
@@ -51,8 +54,23 @@ class Settings(BaseSettings):
     # Persistence — absolute path so CWD doesn't matter
     db_path: str = _default_db_path()
 
-    # CORS
-    cors_origins: list[str] = []
+    # CORS. `NoDecode` disables pydantic-settings' default JSON parsing so the
+    # validator below can accept the README's comma-separated form (a bare
+    # "a,b" is not valid JSON and would otherwise crash startup).
+    cors_origins: Annotated[list[str], NoDecode] = []
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _parse_cors_origins(cls, v: object) -> object:
+        """Accept a comma-separated string OR a JSON array for CORS origins."""
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return []
+            if v.startswith("["):
+                return json.loads(v)
+            return [o.strip() for o in v.split(",") if o.strip()]
+        return v
 
     # Notifier (all optional)
     telegram_bot_token: str | None = None
