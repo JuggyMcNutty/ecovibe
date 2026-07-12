@@ -8,6 +8,7 @@ import asyncio
 import logging
 import smtplib
 from email.mime.text import MIMEText
+from html import escape
 from typing import Any
 
 import httpx
@@ -50,9 +51,13 @@ def _format_message(
     extra = f" (+{len(fqns) - 5} more)" if len(fqns) > 5 else ""
     price_str = f" at {price:.2f} {currency_code}" if price is not None else ""
     plain = f"OVH stock alert: {plan_code} now available{price_str}\nConfigs: {fqn_list}{extra}"
+    # Escape dynamic content so a config code or currency string containing
+    # HTML-special chars (&, <, >) can't break the HTML markup (email) or be
+    # rejected by Telegram's HTML parser with a 400.
     html = (
-        f"<b>OVH stock alert</b>: <code>{plan_code}</code> now available{price_str}<br>"
-        f"<b>Configs</b>: <code>{fqn_list}</code>{extra}"
+        f"<b>OVH stock alert</b>: <code>{escape(plan_code)}</code> now available"
+        f"{escape(price_str)}<br>"
+        f"<b>Configs</b>: <code>{escape(fqn_list)}</code>{escape(extra)}"
     )
     return plain, html
 
@@ -65,11 +70,14 @@ async def _send_telegram(
     chat_id = _get_notifier_setting("telegram_chat_id")
     if not (token and chat_id):
         return
-    plain, _ = _format_message(plan_code, fqns, price, currency_code)
+    _, html = _format_message(plan_code, fqns, price, currency_code)
+    # Telegram HTML doesn't support <br>; it uses literal newlines. The
+    # dynamic parts are already escaped in _format_message.
+    text = html.replace("<br>", "\n")
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": chat_id,
-        "text": plain,
+        "text": text,
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }

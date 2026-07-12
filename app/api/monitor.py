@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from app.api.errors import raise_ovh_http_error
@@ -71,6 +71,8 @@ async def get_availability(plans: str = Query(default="")) -> dict[str, Any]:
         return {"stocks": {}}
     plan_codes = [p.strip() for p in plans.split(",") if p.strip()]
     svc = get_active_ovh_service()
+    if not svc.is_configured():
+        raise HTTPException(status_code=503, detail="OVH API not configured")
     try:
         stocks: dict[str, list] = {}
         for plan_code in plan_codes:

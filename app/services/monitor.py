@@ -62,7 +62,6 @@ class SniperService:
         self._in_flight: set[str] = set()
         # alert_id -> last result payload (for the status endpoint)
         self._results: dict[str, dict[str, Any]] = {}
-        self._lock = asyncio.Lock()
 
     def arm(self, alert_id: str, profile_id: str) -> None:
         """Arm an alert: future matches will trigger the profile's rush order."""
@@ -118,7 +117,11 @@ class SniperService:
         new_fqns = [f for f in matched_fqns if f not in seen]
         if not new_fqns:
             return
-        seen.update(new_fqns)
+        # Only mark the FQN we actually attempt (new_fqns[0]) as seen. Marking
+        # the whole batch would permanently skip the siblings even though the
+        # order was never tried for them; _fire un-marks this one on failure so
+        # a transient error can retry.
+        seen.add(new_fqns[0])
         profile_id = self._armed[alert_id]["profile_id"]
         self._in_flight.add(alert_id)
         # Fire-and-forget - the result is recorded in self._results.

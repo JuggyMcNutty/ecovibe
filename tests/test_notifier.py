@@ -18,3 +18,12 @@ def test_format_message_uses_whole_units_and_currency_code():
 def test_format_message_omits_price_when_unavailable():
     plain, _ = _format_message("24sk10", ["24sk10.ram-32g"], price=None)
     assert " at " not in plain
+
+
+def test_format_message_escapes_html_special_chars():
+    """HTML output must escape dynamic content so it can't break email markup
+    or be rejected by Telegram's HTML parser (regression: was unescaped)."""
+    _, html = _format_message("a&b<c>", ["fqn&<>"], price=None)
+    assert "&amp;" in html and "&lt;" in html and "&gt;" in html
+    # The raw unescaped sequence must not survive into the HTML.
+    assert "a&b<c>" not in html
