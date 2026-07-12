@@ -15,17 +15,18 @@ When developing or coming up with decisions on this project always choose to do 
 
 - **Python venv**: `.venv/` (Python 3.14). Use `.venv/bin/python` and
   `.venv/bin/pytest`, `.venv/bin/ruff`. The system `python` has no
-  pytest/ruff installed.
+  pytest/ruff installed. this venv is build with pyenv and is installed into system
 - **Tailwind CSS binary**: `/tmp/tailwindcss` (standalone v4.3.2, not
   on PATH). The `make css` target calls `tailwindcss` which is NOT on
   PATH — invoke `/tmp/tailwindcss` directly instead.
 - **PYTHONPATH**: tests require `PYTHONPATH=.` because the `app`
   package is not pip-installed (no editable install). Run tests as
   `PYTHONPATH=. .venv/bin/pytest`.
-- **Test credentials**: `.env.test` contains real OVH US API
+- **Test credentials**: `.env.test` contains real OVH US AND CA API
   credentials for querying the live API during development. Load them
-  with `os.environ` and save to a temp DB to test catalog/checkout
+  with `os.environ` and save to a temp dev DB to test catalog/checkout
   flows (see `app/services/storage.py` for the save flow).
+  **dev to test enviroment**: we are building in the dev folder, when the user runs the current iteration of the project they always rsync into the test enviroment which is currently located at `/var/home/corpeder/Documents/EcoVibe`
 
 ## Security
 
@@ -54,7 +55,7 @@ PYTHONPATH=. .venv/bin/pytest
 # Lint
 .venv/bin/ruff check app/ tests/ run.py
 
-# Rebuild + minify CSS (uses the standalone binary in /tmp)
+# Rebuild + minify CSS (uses the standalone binary in /tmp if not found redownload the static binary)
 /tmp/tailwindcss --input static/css/input.css --output static/css/app.css --minify
 
 # Run dev server
@@ -96,6 +97,7 @@ not on PATH; use the absolute path above.
      ```
      Before committing, inspect `git status` and `git diff`; stage
      only intended files and never commit secrets.
+  - Keep the AGENTS.md and README.md up to date as we make commits to this project so future AI sessions can easily get up to speed witht this project.
 
 ## Architecture
 
