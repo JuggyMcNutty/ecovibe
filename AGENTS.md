@@ -230,6 +230,16 @@ were created under (`account_id` column on each table).
 - **Addon labels**: addon cards use OVH's `invoiceName` as the
   primary label (from `addonPrices` map). The `humanizeAddon()`
   functions are only a fallback when no price entry exists.
+- **Order line items**: OVH's `/me/order/{id}/details` splits every
+  ordered component into separate rows by `detailType` (`INSTALLATION` =
+  one-time setup fee, `DURATION` = recurring monthly) grouped under a
+  hierarchical `domain` (`*001` = the server, `*001.001`, `*001.002`, ...
+  = its options), so an 8-row order is really ~4 items. `_group_line_items()`
+  in `orders.py` collapses them by domain into one `line_items` entry each
+  (`setup_price`/`recurring_price` merged, label cleaned of OVH's "rental -
+  1 month" boilerplate via `_pick_label`); `get_order_detail` returns
+  both the raw `details` and grouped `line_items`, and the frontend renders
+  `line_items` (falling back to `details`).
 - **Frontend**: no framework, no build step for JS. `app.js` is a
   ~3300-line vanilla SPA using a custom `el()` DOM helper. Cache
   busting is automatic via content-hash query strings

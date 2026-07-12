@@ -139,7 +139,7 @@ Generate the `.htpasswd` file with `htpasswd -c /etc/nginx/.htpasswd admin`.
 ### Order Management
 - **Full orders tab** - list all orders from OVH (not just locally-placed), merged with local order data
 - **Status badges** - color-coded by OVH OrderStatusEnum (delivered, delivering, notPaid, cancelled, etc.)
-- **Order detail panel** - price breakdown (with/without tax), line items (server, installation, licenses), delivery follow-up timeline
+- **Order detail panel** - price breakdown (with/without tax), grouped line items (one row per component — server + options — with setup fee and monthly price merged), delivery follow-up timeline
 - **Invoice PDF links** - direct link to OVH's invoice PDF
 - **Waive retraction** - one-click waive the legal retraction period to speed up delivery
 - **Cancel order** - exercise the right of retraction (withdrawal) during the retraction period
