@@ -547,6 +547,7 @@ class MonitorService:
                     )
                     for c in avail_configs
                 ]
+                pending_events: list[tuple[str, str, str, datetime, str | None]] = []
                 async with self._lock:
                     diff = self.get_stock_diff(plan_code, new_statuses)
                     self._stock_cache[plan_code] = new_statuses
@@ -575,24 +576,26 @@ class MonitorService:
                                     alert.notified_at = now
                                     triggered_alerts.append((alert, matched))
 
-                    # Persist stock events for the historical-patterns view.
-                    if storage:
-                        for fqn in diff["newly_available"]:
-                            try:
-                                storage.log_stock_event(
-                                    plan_code, fqn, "available", now,
-                                    account_id=service.account_id,
-                                )
-                            except Exception:
-                                logger.debug("failed to log stock event", exc_info=True)
-                        for fqn in diff["now_unavailable"]:
-                            try:
-                                storage.log_stock_event(
-                                    plan_code, fqn, "unavailable", now,
-                                    account_id=service.account_id,
-                                )
-                            except Exception:
-                                logger.debug("failed to log stock event", exc_info=True)
+                    # Collect stock events for the historical-patterns view.
+                    # Persisted below, after the lock is released — SQLite
+                    # writes are blocking disk I/O and must not stall alert
+                    # mutations (or the event loop) from inside the lock.
+                    for fqn in diff["newly_available"]:
+                        pending_events.append(
+                            (plan_code, fqn, "available", now, service.account_id)
+                        )
+                    for fqn in diff["now_unavailable"]:
+                        pending_events.append(
+                            (plan_code, fqn, "unavailable", now, service.account_id)
+                        )
+
+                if storage and pending_events:
+                    try:
+                        await asyncio.to_thread(
+                            storage.log_stock_events, pending_events
+                        )
+                    except Exception:
+                        logger.debug("failed to log stock events", exc_info=True)
 
                 # Fan out notifications + sniper *outside* the lock so we
                 # don't block other alert mutations during a slow webhook.
@@ -602,8 +605,9 @@ class MonitorService:
                     for alert_obj, matched_fqns in triggered_alerts:
                         price = None
                         if storage:
-                            price_ucents = storage.latest_price(
-                                plan_code, account_id=service.account_id
+                            price_ucents = await asyncio.to_thread(
+                                storage.latest_price,
+                                plan_code, service.account_id,
                             )
                             if price_ucents is not None:
                                 price = price_ucents / 100_000_000

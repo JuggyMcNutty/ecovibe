@@ -541,6 +541,27 @@ class Storage:
             )
             self._conn.commit()
 
+    def log_stock_events(
+        self, events: list[tuple[str, str, str, datetime, str | None]]
+    ) -> None:
+        """Batch-insert stock events in one transaction.
+
+        Each tuple is ``(plan_code, fqn, event_type, timestamp, account_id)``.
+        Used by the monitor poller, which collects a cycle's events and
+        persists them in a single call off the event loop (one commit
+        instead of one per event).
+        """
+        if not events:
+            return
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.executemany(
+                "INSERT INTO stock_events (plan_code, fqn, event_type, timestamp, account_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [(p, f, e, _iso(ts), aid) for p, f, e, ts, aid in events],
+            )
+            self._conn.commit()
+
     def load_stock_events(
         self, plan_code: str, since: datetime | None = None, limit: int = 500,
         account_id: str | None = None,

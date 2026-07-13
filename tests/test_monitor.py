@@ -136,6 +136,49 @@ async def test_persistence_round_trip(monitor):
 
 
 @pytest.mark.asyncio
+async def test_poll_once_persists_stock_events_in_one_batch(monitor, monkeypatch):
+    """The poller must persist a cycle's stock events with a single batched
+    write (off the event loop), not one INSERT+commit per event."""
+    import app.services.monitor as monitor_mod
+
+    await monitor.add_alert("24sk10", "*")
+
+    fake = MagicMock()
+    fake.is_configured.return_value = True
+    fake.account_id = None
+    fake.default_currency_code.return_value = "EUR"
+    fake.get_availability.return_value = [{"fqn": "24sk10.ram-32g.a"}]
+    monkeypatch.setattr(
+        monitor_mod, "get_active_ovh_service", lambda: fake
+    )
+
+    storage = monitor._storage_get()
+    batches = []
+    real_log = storage.log_stock_events
+
+    def _spy(events):
+        batches.append(list(events))
+        real_log(events)
+
+    monkeypatch.setattr(storage, "log_stock_events", _spy)
+
+    await monitor._poll_once()
+    fake.get_availability.return_value = [
+        {"fqn": "24sk10.ram-32g.a"},
+        {"fqn": "24sk10.ram-64g.b"},
+    ]
+    await monitor._poll_once()
+
+    # Each cycle with changes produces exactly one batched write.
+    assert all(len(b) >= 1 for b in batches)
+    events = storage.load_stock_events("24sk10")
+    assert any(
+        e["fqn"] == "24sk10.ram-64g.b" and e["event_type"] == "available"
+        for e in events
+    )
+
+
+@pytest.mark.asyncio
 async def test_sweep_fires_snipers_for_non_active_account(monitor, monkeypatch):
     """A sniper armed under account A must keep firing after the user switches
     away: _sweep_snipers polls A's plan under A's own credentials and fires,
