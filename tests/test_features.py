@@ -215,6 +215,48 @@ def test_insights_summary_aggregates(client):
     assert abs(p["median_window_seconds"] - 540) < 1
 
 
+def test_insights_detail_scoped_to_active_account(client):
+    """The per-plan detail endpoints (history/patterns/price) must only return
+    the active account's data, even when another account logged events/prices
+    for the same plan_code on the same subsidiary."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.services.storage import get_storage
+
+    acct = _create_account(client)
+    aid = acct["id"]  # active account
+    other = "other-account-id"
+    storage = get_storage()
+    now = datetime.now(timezone.utc)
+    plan = "24ska10"
+    fqn = f"{plan}.ram-32g-ecc-2400-x.softraid-2x480ssd-x"
+
+    # Active account: one restock event + one price.
+    storage.log_stock_event(plan, fqn, "available", now - timedelta(hours=1), account_id=aid)
+    storage.log_price(plan, 5_000_000_000, now - timedelta(hours=1), account_id=aid)
+    # Other account, SAME plan_code: two events + a different price. Must not leak.
+    storage.log_stock_event(plan, fqn, "available", now - timedelta(hours=3), account_id=other)
+    storage.log_stock_event(plan, fqn, "available", now - timedelta(hours=2), account_id=other)
+    storage.log_price(plan, 9_999_999_999, now - timedelta(minutes=5), account_id=other)
+
+    # history: only the active account's single event.
+    r = client.get(f"/api/insights/history/{plan}?days=30")
+    assert r.status_code == 200
+    assert len(r.json()["events"]) == 1
+
+    # patterns: only the active account's 'available' events counted.
+    r = client.get(f"/api/insights/patterns/{plan}?days=30")
+    assert r.status_code == 200
+    assert sum(c["count"] for c in r.json()["hourly_counts"]) == 1
+
+    # price: only the active account's price, not the other account's newer one.
+    r = client.get(f"/api/insights/price/{plan}")
+    assert r.status_code == 200
+    history = r.json()["history"]
+    assert len(history) == 1
+    assert history[0]["price_in_ucents"] == 5_000_000_000
+
+
 def test_rush_order_unconfigured_returns_503(client):
     r = client.post(
         "/api/checkout/rush",

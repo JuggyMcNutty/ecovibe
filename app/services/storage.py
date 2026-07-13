@@ -542,22 +542,28 @@ class Storage:
             self._conn.commit()
 
     def load_stock_events(
-        self, plan_code: str, since: datetime | None = None, limit: int = 500
+        self, plan_code: str, since: datetime | None = None, limit: int = 500,
+        account_id: str | None = None,
     ) -> list[dict[str, Any]]:
+        # When ``account_id`` is given, scope to that account so two accounts on
+        # the same subsidiary watching the same plan_code don't see each other's
+        # events. None = all accounts (backwards-compatible).
+        where = "plan_code = ?"
+        params: list[Any] = [plan_code]
+        if since:
+            where += " AND timestamp >= ?"
+            params.append(_iso(since))
+        if account_id is not None:
+            where += " AND account_id = ?"
+            params.append(account_id)
+        params.append(limit)
         with self._lock:
             cur = self._conn.cursor()
-            if since:
-                cur.execute(
-                    "SELECT plan_code, fqn, event_type, timestamp FROM stock_events "
-                    "WHERE plan_code = ? AND timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
-                    (plan_code, _iso(since), limit),
-                )
-            else:
-                cur.execute(
-                    "SELECT plan_code, fqn, event_type, timestamp FROM stock_events "
-                    "WHERE plan_code = ? ORDER BY timestamp DESC LIMIT ?",
-                    (plan_code, limit),
-                )
+            cur.execute(
+                f"SELECT plan_code, fqn, event_type, timestamp FROM stock_events "
+                f"WHERE {where} ORDER BY timestamp DESC LIMIT ?",
+                params,
+            )
             rows = cur.fetchall()
         return [
             {
@@ -569,20 +575,30 @@ class Storage:
             for r in rows
         ]
 
-    def stock_event_counts_by_hour(self, plan_code: str, days: int = 30) -> list[dict[str, Any]]:
-        """Aggregate restock counts by hour-of-day over the last N days."""
+    def stock_event_counts_by_hour(
+        self, plan_code: str, days: int = 30, account_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Aggregate restock counts by hour-of-day over the last N days.
+
+        ``account_id`` scopes the aggregate to a single account; None = all.
+        """
         from datetime import timedelta as _timedelta
         cutoff = (datetime.now(timezone.utc) - _timedelta(days=days)).isoformat()
+        where = "plan_code = ? AND event_type = 'available' AND timestamp >= ?"
+        params: list[Any] = [plan_code, cutoff]
+        if account_id is not None:
+            where += " AND account_id = ?"
+            params.append(account_id)
         with self._lock:
             cur = self._conn.cursor()
             cur.execute(
-                """
+                f"""
                 SELECT CAST(strftime('%H', timestamp) AS INTEGER) AS hour, COUNT(*) AS count
                 FROM stock_events
-                WHERE plan_code = ? AND event_type = 'available' AND timestamp >= ?
+                WHERE {where}
                 GROUP BY hour ORDER BY hour
                 """,
-                (plan_code, cutoff),
+                params,
             )
             rows = cur.fetchall()
         return [{"hour": r["hour"], "count": r["count"]} for r in rows]
@@ -634,14 +650,20 @@ class Storage:
             self._conn.commit()
 
     def load_price_history(
-        self, plan_code: str, limit: int = 100
+        self, plan_code: str, limit: int = 100, account_id: str | None = None
     ) -> list[dict[str, Any]]:
+        where = "plan_code = ?"
+        params: list[Any] = [plan_code]
+        if account_id is not None:
+            where += " AND account_id = ?"
+            params.append(account_id)
+        params.append(limit)
         with self._lock:
             cur = self._conn.cursor()
             cur.execute(
-                "SELECT plan_code, price_in_ucents, timestamp, currency_code FROM price_history "
-                "WHERE plan_code = ? ORDER BY timestamp DESC LIMIT ?",
-                (plan_code, limit),
+                f"SELECT plan_code, price_in_ucents, timestamp, currency_code FROM price_history "
+                f"WHERE {where} ORDER BY timestamp DESC LIMIT ?",
+                params,
             )
             rows = cur.fetchall()
         return [
@@ -654,13 +676,18 @@ class Storage:
             for r in rows
         ]
 
-    def latest_price(self, plan_code: str) -> int | None:
+    def latest_price(self, plan_code: str, account_id: str | None = None) -> int | None:
+        where = "plan_code = ?"
+        params: list[Any] = [plan_code]
+        if account_id is not None:
+            where += " AND account_id = ?"
+            params.append(account_id)
         with self._lock:
             cur = self._conn.cursor()
             cur.execute(
-                "SELECT price_in_ucents FROM price_history "
-                "WHERE plan_code = ? ORDER BY timestamp DESC LIMIT 1",
-                (plan_code,),
+                f"SELECT price_in_ucents FROM price_history "
+                f"WHERE {where} ORDER BY timestamp DESC LIMIT 1",
+                params,
             )
             row = cur.fetchone()
         return row["price_in_ucents"] if row else None

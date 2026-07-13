@@ -552,7 +552,9 @@ class MonitorService:
                     for alert_obj, matched_fqns in triggered_alerts:
                         price = None
                         if storage:
-                            price_ucents = storage.latest_price(plan_code)
+                            price_ucents = storage.latest_price(
+                                plan_code, account_id=service.account_id
+                            )
                             if price_ucents is not None:
                                 price = price_ucents / 100_000_000
                         try:

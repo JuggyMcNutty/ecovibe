@@ -95,8 +95,11 @@ async def stock_history(
 ) -> dict:
     """Return historical stock events for a plan over the last N days."""
     storage = get_storage()
+    service = get_active_ovh_service()
     since = datetime.now(timezone.utc) - timedelta(days=days)
-    events = storage.load_stock_events(plan_code, since=since, limit=1000)
+    events = storage.load_stock_events(
+        plan_code, since=since, limit=1000, account_id=service.account_id
+    )
     return {"plan_code": plan_code, "days": days, "events": events}
 
 
@@ -107,7 +110,10 @@ async def restock_patterns(
 ) -> dict:
     """Aggregate restock counts by hour-of-day to surface the best times to monitor."""
     storage = get_storage()
-    counts = storage.stock_event_counts_by_hour(plan_code, days=days)
+    service = get_active_ovh_service()
+    counts = storage.stock_event_counts_by_hour(
+        plan_code, days=days, account_id=service.account_id
+    )
     return {"plan_code": plan_code, "days": days, "hourly_counts": counts}
 
 
@@ -118,7 +124,8 @@ async def price_history(
 ) -> dict:
     """Return price history for a plan."""
     storage = get_storage()
-    history = storage.load_price_history(plan_code, limit=limit)
+    service = get_active_ovh_service()
+    history = storage.load_price_history(plan_code, limit=limit, account_id=service.account_id)
     return {"plan_code": plan_code, "history": history}
 
 
