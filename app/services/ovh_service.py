@@ -197,8 +197,17 @@ class OVHService:
             status = None
             if e.response is not None:
                 status = getattr(e.response, "status_code", None)
+            # DEBUG, not WARNING: many callers handle OVH failures gracefully
+            # (e.g. the poller's per-plan availability check), so a blanket
+            # warning here would spam the log every cycle. Notable failures are
+            # logged by the caller (a failed order) or the retry paths above.
+            logger.debug(
+                "OVH %s %s failed (status=%s query_id=%s): %s",
+                method.upper(), path, status, e.query_id, e,
+            )
             raise OVHServiceError(str(e), status_code=status, query_id=e.query_id) from e
         except Exception as e:
+            logger.debug("OVH %s %s failed: %s", method.upper(), path, e)
             raise OVHServiceError(str(e), status_code=None, query_id=None) from e
 
     @staticmethod

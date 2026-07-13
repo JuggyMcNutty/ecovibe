@@ -152,6 +152,18 @@ Generate the `.htpasswd` file with `htpasswd -c /etc/nginx/.htpasswd admin`.
 - **Order tracking** - see the Orders tab above for full order management
 - **Stock events** - recent availability/unavailability events per plan
 
+### Logs
+- **In-app Logs tab** - view runtime logs live in the browser without SSH'ing
+  into the server. Streamed via SSE as they happen (with a pause/resume toggle)
+- **Verbosity levels & filters** - filter by level (DEBUG/INFO/WARNING/ERROR and
+  above), by source module, and by free-text search
+- **Event logging** - stock changes, orders placed, sniper auto-orders,
+  notifications sent, and OVH API failures are all logged explicitly
+- **Rotating log file** - all logs are also written to `ecovibe.log` (durable,
+  size-rotated) regardless of the browser; the in-app view is a live tail of the
+  last few thousand lines
+- Log level and file location are configurable via `OVH_LOG_LEVEL` / `OVH_LOG_FILE`
+
 ### Notification Channels
 - **Telegram** - stock alerts via Telegram bot
 - **Discord** - rich embed alerts via webhook
@@ -183,6 +195,11 @@ variables:
 | `OVH_CACHE_TTL` | `300` | Cache TTL in seconds |
 | `OVH_DB_PATH` | `<project>/ovh-flash-monitor.db` | SQLite database path (defaults to project root) |
 | `OVH_CORS_ORIGINS` | `[]` | Comma-separated allowed CORS origins |
+| `OVH_LOG_LEVEL` | `INFO` | Log verbosity (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
+| `OVH_LOG_FILE` | `<project>/ecovibe.log` | Rotating log file path |
+| `OVH_LOG_FILE_MAX_BYTES` | `5000000` | Rotate the log file at this size |
+| `OVH_LOG_BACKUP_COUNT` | `3` | Number of rotated log backups to keep |
+| `OVH_LOG_BUFFER_SIZE` | `5000` | In-memory log entries retained for the Logs tab |
 | `OVH_TELEGRAM_BOT_TOKEN` | - | Telegram bot token (fallback for DB settings) |
 | `OVH_TELEGRAM_CHAT_ID` | - | Telegram chat ID (fallback for DB settings) |
 | `OVH_DISCORD_WEBHOOK_URL` | - | Discord webhook URL (fallback for DB settings) |
@@ -310,6 +327,10 @@ POST   /api/accounts/{id}/test                   - Test account via GET /me
 GET    /api/accounts/active                      - Read active account id + masked preview
 PUT    /api/accounts/active                      - Switch active account (reloads monitor)
 
+# Logs
+GET  /api/logs?limit=&level=&source=&search=     - Recent runtime logs + known sources
+GET  /api/logs/stream                             - SSE live tail of new log entries
+
 # Currency (display conversion)
 GET  /api/currency/rates                          - ECB/Frankfurter FX rates (EUR-base, 24h cache)
 
@@ -372,9 +393,11 @@ ovh-gui/
 │   ├── __init__.py
 │   ├── main.py              # FastAPI app + lifespan
 │   ├── config.py            # Environment/config (pydantic-settings)
+│   ├── logging_config.py    # setup_logging(): rotating file + in-app log handlers
 │   ├── api/                 # Route handlers
 │   │   ├── catalog.py       # Catalog endpoints + product spec extraction
 │   │   ├── monitor.py       # SSE stock streaming + poll-interval
+│   │   ├── logs.py          # Runtime log viewer (snapshot + SSE live tail)
 │   │   ├── alert.py         # Alert CRUD + enable/disable + profile assignment
 │   │   ├── cart.py          # Cart lifecycle (legacy)
 │   │   ├── checkout.py      # Rush order (one-shot) + legacy cart checkout
@@ -392,6 +415,7 @@ ovh-gui/
 │       ├── monitor.py       # Stock monitoring + background poller + SniperService
 │       ├── notifier.py      # Telegram/Discord/Slack/email fan-out
 │       ├── storage.py       # SQLite persistence (alerts, profiles, events, prices, orders)
+│       ├── logbus.py        # In-memory log ring buffer + SSE pub/sub (Logs tab)
 │       └── cache.py         # In-memory TTL cache
 ├── static/js/app.js         # Frontend SPA (vanilla JS, ~3300 lines)
 ├── static/css/input.css     # Tailwind v4 source

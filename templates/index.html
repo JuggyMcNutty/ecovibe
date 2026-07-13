@@ -356,6 +356,7 @@
                 <button data-tab="billing-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-700 text-gray-400 hover:text-gray-200">Billing</button>
                 <button data-tab="orders-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-700 text-gray-400 hover:text-gray-200">Orders</button>
                 <button data-tab="insights-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-700 text-gray-400 hover:text-gray-200">Insights</button>
+                <button data-tab="logs-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-700 text-gray-400 hover:text-gray-200">Logs</button>
             </div>
 
             <!-- Monitor tab -->
@@ -769,6 +770,39 @@
                         <p class="text-gray-400 text-xs mb-3">Latest stock changes for this plan.</p>
                         <div id="insights-activity" class="space-y-1 max-h-[36vh] overflow-y-auto"></div>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Logs tab -->
+        <div id="logs-tab" class="hidden">
+            <div class="bg-gray-800 rounded-lg p-4">
+                <div class="flex flex-wrap justify-between items-center gap-2 mb-3">
+                    <div class="flex flex-wrap gap-2 items-center">
+                        <select id="logs-level" class="bg-gray-700 px-3 py-1 rounded text-sm">
+                            <option value="all">All levels</option>
+                            <option value="DEBUG">Debug+</option>
+                            <option value="INFO" selected>Info+</option>
+                            <option value="WARNING">Warning+</option>
+                            <option value="ERROR">Error+</option>
+                        </select>
+                        <select id="logs-source" class="bg-gray-700 px-3 py-1 rounded text-sm">
+                            <option value="all">All sources</option>
+                        </select>
+                        <input id="logs-search" type="search" placeholder="Search…"
+                               class="bg-gray-700 px-3 py-1 rounded text-sm" />
+                    </div>
+                    <div class="flex gap-2 items-center">
+                        <button id="logs-pause-btn" type="button"
+                                class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm whitespace-nowrap"
+                                title="Pause/resume the live log tail">⏸ Pause</button>
+                        <button id="logs-clear-btn" type="button"
+                                class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm whitespace-nowrap"
+                                title="Clear the log view (does not touch the log file)">Clear</button>
+                    </div>
+                </div>
+                <div id="logs-list" class="font-mono text-xs leading-relaxed space-y-0.5 max-h-[75vh] overflow-y-auto">
+                    <p class="text-gray-500 text-sm">Switch to the Logs tab to load runtime logs.</p>
                 </div>
             </div>
         </div>

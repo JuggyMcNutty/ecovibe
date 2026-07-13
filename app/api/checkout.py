@@ -348,6 +348,10 @@ async def rush_checkout(request: RushOrderRequest) -> dict[str, Any]:
         placed_at=datetime.now(timezone.utc),
         account_id=service.account_id,
     )
+    logger.info(
+        "order placed: %s fqn=%s order=%s",
+        request.plan_code, request.fqn, result.get("orderId"),
+    )
     return result
 
 
@@ -376,4 +380,5 @@ async def checkout(cart_id: str, request: CheckoutRequest) -> dict[str, Any]:
         placed_at=datetime.now(timezone.utc),
         account_id=service.account_id,
     )
+    logger.info("order placed from cart %s: order=%s", cart_id, result.get("orderId"))
     return result

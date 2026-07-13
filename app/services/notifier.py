@@ -190,6 +190,12 @@ async def notify_stock_alert(
     `return_exceptions=True` ensures one channel's failure cannot cancel the
     others. Errors are logged inside each sender; this coroutine never raises.
     """
+    channels = configured_channels()
+    logger.info(
+        "notifying stock alert for %s (%d config%s) via %s",
+        plan_code, len(fqns), "" if len(fqns) == 1 else "s",
+        ", ".join(channels) if channels else "no channels",
+    )
     await asyncio.gather(
         _send_telegram(plan_code, fqns, price, currency_code),
         _send_discord(plan_code, fqns, price, currency_code),

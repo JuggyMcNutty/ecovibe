@@ -106,9 +106,11 @@ not on PATH; use the absolute path above.
 app/
 ├── main.py              # FastAPI app + lifespan (starts background poller)
 ├── config.py            # pydantic-settings (env vars prefixed OVH_)
+├── logging_config.py    # setup_logging(): rotating file + LogBus handlers
 ├── api/                 # Route handlers (one file per resource)
 │   ├── catalog.py       # /api/catalog, /api/catalog/plans (+ productSpecs)
 │   ├── monitor.py       # SSE stream + poll-interval
+│   ├── logs.py          # Runtime log viewer: GET /api/logs + SSE /api/logs/stream
 │   ├── alert.py         # Alert CRUD + enable/disable
 │   ├── checkout.py      # /api/checkout/rush (one-shot order) + legacy /{cart_id}
 │   ├── cart.py          # Granular cart lifecycle (legacy)
@@ -128,6 +130,7 @@ app/
     ├── monitor.py       # Background poller + SSE fan-out + SniperService
     ├── notifier.py      # Telegram/Discord/Slack/email fan-out
     ├── storage.py       # SQLite persistence (singleton)
+    ├── logbus.py        # In-memory log ring buffer + SSE pub/sub (Logs tab)
     └── cache.py         # In-memory TTL cache
 static/js/app.js         # Frontend SPA (vanilla JS, ~3300 lines)
 static/css/input.css     # Tailwind source
@@ -295,10 +298,32 @@ were created under (`account_id` column on each table).
   FastAPI's wildcard match shadows the static route.
 - **Cache busters** are automatic (content-hash based, see
   `app/utils/cache_buster.py`); no manual `?v=N` bumping is needed.
-- **Logging**: uvicorn's default config only configures its own loggers.
-  `run.py` extends `LOGGING_CONFIG` to add an `"app"` logger so all
-  `app.*` loggers emit to the console at INFO level. Use
-  `logger.info()`/`logger.warning()` — never `print(file=sys.stderr)`.
+- **Logging**: use `logger.info()`/`logger.warning()` on a
+  `logging.getLogger(__name__)` — never `print(file=sys.stderr)`. The system
+  has three sinks, all wired by `setup_logging()` in `app/logging_config.py`:
+  (1) the console (via `run.py`'s `LOGGING_CONFIG` `"app"` logger, level from
+  `OVH_LOG_LEVEL`); (2) a `RotatingFileHandler` → `ecovibe.log`
+  (`OVH_LOG_FILE`); (3) a `LogBusHandler` → the in-memory ring buffer in
+  `app/services/logbus.py`, read by the webui Logs tab (`GET /api/logs`) and
+  live-tailed over SSE (`GET /api/logs/stream`). Key points:
+  - **`setup_logging()` is called from BOTH `create_app()` (so capture works in
+    tests / before the server starts) and the lifespan startup** — the second
+    call re-attaches after uvicorn's own dict-config strips handlers off the
+    loggers it configures. It's idempotent (handlers are tagged with
+    `_ecovibe_log_handler` and refreshed, not duplicated).
+  - **Scope is `app.*` + `uvicorn.error`** — `uvicorn.access` is deliberately
+    left out (per-request logs would flood the viewer).
+  - **Off-loop safety**: log records are emitted from worker threads too (OVH
+    `_call` runs under `asyncio.to_thread`), so `LogBus` fans out to the
+    loop-bound SSE queues via `loop.call_soon_threadsafe`. The loop is captured
+    in the lifespan startup via `get_log_bus().set_loop(...)`; until then the
+    ring buffer still fills but live SSE delivery is a no-op.
+  - **The ring buffer is not durable** — it clears on restart; `ecovibe.log` is
+    the durable record. Domain events worth an audit line (orders placed, sniper
+    auto-orders, stock changes, notifications sent, OVH failures) are logged at
+    their source module so the viewer's "source" column names them.
+  - Tests reset the bus (`logbus._log_bus = None` + `setup_logging()`) and point
+    `OVH_LOG_FILE` at a tmp path in `conftest.py`'s `isolated_state`.
 - **Shared `ovh.Client` concurrency**: the `OVHService` singleton's
   `ovh.Client` (and its bundled `requests.Session` + lazily-cached
   server-time delta) is used from multiple threads via

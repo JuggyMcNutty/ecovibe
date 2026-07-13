@@ -28,7 +28,7 @@ def main() -> None:
     # Without this, logger.info()/warning() calls in app/ produce no output.
     LOGGING_CONFIG["loggers"]["app"] = {
         "handlers": ["default"],
-        "level": "INFO",
+        "level": settings.log_level,
         "propagate": False,
     }
 

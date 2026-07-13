@@ -7,6 +7,8 @@ import pytest
 def isolated_state(tmp_path, monkeypatch):
     """Reset all module-level singletons and use a temp DB for each test."""
     monkeypatch.setenv("OVH_DB_PATH", str(tmp_path / "test.db"))
+    # Keep the rotating log file out of the project tree during tests.
+    monkeypatch.setenv("OVH_LOG_FILE", str(tmp_path / "test.log"))
 
     import app.services.cache as cache_mod
     cache_mod._cache = None
@@ -35,6 +37,14 @@ def isolated_state(tmp_path, monkeypatch):
 
     from app.config import get_settings
     get_settings.cache_clear()
+
+    # Reset the log bus and re-attach a fresh handler pointing at it, so each
+    # test sees an isolated buffer (the handler from a prior test would still
+    # target the previous bus otherwise).
+    import app.services.logbus as logbus_mod
+    logbus_mod._log_bus = None
+    from app.logging_config import setup_logging
+    setup_logging()
 
     yield
 

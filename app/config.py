@@ -33,6 +33,15 @@ def _default_db_path() -> str:
     return os.path.join(BASE_PATH, "ovh-flash-monitor.db")
 
 
+def _default_log_path() -> str:
+    """Return an absolute path for the log file, anchored to the project root.
+
+    Mirrors `_default_db_path()` so the rotating log file lands next to the
+    DB regardless of the CWD the server is started from.
+    """
+    return os.path.join(BASE_PATH, "ecovibe.log")
+
+
 class Settings(BaseSettings):
     """Non-secret runtime config from env vars."""
 
@@ -83,6 +92,15 @@ class Settings(BaseSettings):
     smtp_password: str | None = None
     smtp_from: str | None = None
     notify_email_to: str | None = None
+
+    # Logging. `app.*` and `uvicorn.error` records flow to a rotating file
+    # (durable) and an in-memory ring buffer (fed to the webui Logs tab).
+    # See app/logging_config.py and app/services/logbus.py.
+    log_level: str = "INFO"
+    log_file: str = _default_log_path()
+    log_file_max_bytes: int = 5_000_000
+    log_backup_count: int = 3
+    log_buffer_size: int = 5000
 
 
 @lru_cache

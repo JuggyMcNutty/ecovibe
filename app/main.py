@@ -119,7 +119,17 @@ class CachedStaticFiles(StaticFiles):
 @asynccontextmanager
 async def lifespan(app):
     """Start/stop the background stock poller."""
+    import asyncio
+
+    from app.logging_config import setup_logging
+    from app.services.logbus import get_log_bus
     from app.services.monitor import get_monitor_service
+
+    # Re-attach the file + LogBus handlers after uvicorn has applied its own
+    # logging dict-config (which strips handlers off the loggers it configures),
+    # and record the running loop so off-loop log emits can fan out to SSE.
+    setup_logging()
+    get_log_bus().set_loop(asyncio.get_running_loop())
 
     monitor = get_monitor_service()
     await monitor.start()
@@ -140,6 +150,7 @@ def create_app():
         checkout,
         currency,
         insights,
+        logs,
         monitor,
         orders,
         profiles,
@@ -149,6 +160,11 @@ def create_app():
         settings as settings_api,
     )
     from app.config import get_settings
+    from app.logging_config import setup_logging
+
+    # Install the file + LogBus handlers early so logs are captured even
+    # before the server starts (and in tests, which may not run the lifespan).
+    setup_logging()
 
     app = FastAPI(
         title="ECOVibe",
@@ -178,6 +194,7 @@ def create_app():
     app.include_router(cart.router)
     app.include_router(checkout.router)
     app.include_router(monitor.router)
+    app.include_router(logs.router)
     app.include_router(alert.router)
     app.include_router(insights.router)
     app.include_router(orders.router)

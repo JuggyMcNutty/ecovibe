@@ -58,6 +58,13 @@ let state = {
     allOrders: [],
     selectedOrderId: null,
     ordersFilter: 'all',
+    // Logs tab state. Its SSE tail uses separate keys from the monitor
+    // stream so the two EventSources never clash.
+    logsBuffer: [],
+    logsFilter: { level: 'INFO', source: 'all', search: '' },
+    logsPaused: false,
+    logsEventSource: null,
+    logsReconnectTimer: null,
     // Request-generation token for account switches. Incremented on each
     // switch; async callbacks check that their generation is still current
     // before writing to state, so stale responses from a previous account
@@ -1979,6 +1986,10 @@ function switchTab(tabId) {
     if (insightsTab) insightsTab.classList.toggle('hidden', tabId !== 'insights-tab');
     const ordersTab = document.getElementById('orders-tab');
     if (ordersTab) ordersTab.classList.toggle('hidden', tabId !== 'orders-tab');
+    const logsTab = document.getElementById('logs-tab');
+    if (logsTab) logsTab.classList.toggle('hidden', tabId !== 'logs-tab');
+    // Stop the live log tail whenever we leave the logs tab.
+    if (tabId !== 'logs-tab') stopLogStream();
     // Lazy-load billing data when switching to that tab
     if (tabId === 'billing-tab' && !state.billingLoaded) {
         loadBillingInfo();
@@ -1993,6 +2004,10 @@ function switchTab(tabId) {
     if (tabId === 'insights-tab') {
         populateInsightsPlanSelect();
         loadInsightsData();
+    }
+    // Lazy-load logs + start the live tail when switching to the logs tab.
+    if (tabId === 'logs-tab') {
+        return loadLogsTab();
     }
 }
 
@@ -3154,6 +3169,145 @@ function renderOrdersList() {
     });
 }
 
+// Logs tab
+
+const LOG_LEVEL_ORDER = { DEBUG: 10, INFO: 20, WARNING: 30, ERROR: 40, CRITICAL: 50 };
+const LOG_LEVEL_CLASS = {
+    DEBUG: 'text-gray-500',
+    INFO: 'text-gray-300',
+    WARNING: 'text-yellow-400',
+    ERROR: 'text-red-400',
+    CRITICAL: 'text-red-400',
+};
+
+async function loadLogsTab() {
+    const container = document.getElementById('logs-list');
+    if (!container) return;
+    container.innerHTML = '';
+    container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'Loading logs…' }));
+    try {
+        const data = await apiRequest('GET', '/logs?limit=1000');
+        state.logsBuffer = data?.logs || [];
+        populateLogsSourceSelect(data?.sources || []);
+        renderLogsList();
+        startLogStream();
+    } catch (e) {
+        container.innerHTML = '';
+        container.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
+    }
+}
+
+function populateLogsSourceSelect(sources) {
+    const sel = document.getElementById('logs-source');
+    if (!sel) return;
+    const current = state.logsFilter.source;
+    sel.innerHTML = '';
+    sel.appendChild(el('option', { value: 'all', text: 'All sources' }));
+    sources.forEach(s => sel.appendChild(el('option', { value: s, text: s })));
+    // Preserve the selection if it still exists.
+    sel.value = sources.includes(current) ? current : 'all';
+    state.logsFilter.source = sel.value;
+}
+
+function _logMatchesFilter(entry, f) {
+    if (f.level && f.level !== 'all') {
+        const min = LOG_LEVEL_ORDER[f.level] || 0;
+        if ((LOG_LEVEL_ORDER[entry.level] || 0) < min) return false;
+    }
+    if (f.source && f.source !== 'all' && entry.source !== f.source) return false;
+    if (f.search && !entry.message.toLowerCase().includes(f.search.toLowerCase())) return false;
+    return true;
+}
+
+function renderLogsList() {
+    const container = document.getElementById('logs-list');
+    if (!container) return;
+    container.innerHTML = '';
+    const filtered = state.logsBuffer.filter(e => _logMatchesFilter(e, state.logsFilter));
+    if (!filtered.length) {
+        container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No log entries match the current filters.' }));
+        return;
+    }
+    filtered.forEach(e => container.appendChild(renderLogRow(e)));
+    // Auto-scroll to the newest line unless the tail is paused.
+    if (!state.logsPaused) container.scrollTop = container.scrollHeight;
+}
+
+function renderLogRow(entry) {
+    const time = entry.ts ? new Date(entry.ts).toLocaleTimeString() : '';
+    return el('div', { class: 'flex gap-2 whitespace-pre-wrap break-words' }, [
+        el('span', { class: 'text-gray-500 shrink-0', text: time }),
+        el('span', { class: `shrink-0 font-bold ${LOG_LEVEL_CLASS[entry.level] || 'text-gray-300'}`, text: entry.level.padEnd(7) }),
+        el('span', { class: 'text-blue-400 shrink-0', text: entry.source }),
+        el('span', { class: LOG_LEVEL_CLASS[entry.level] || 'text-gray-300', text: entry.message }),
+    ]);
+}
+
+function appendLogEntry(entry) {
+    state.logsBuffer.push(entry);
+    // Cap the client buffer so a long-running tab can't grow without bound.
+    const MAX = 5000;
+    if (state.logsBuffer.length > MAX) {
+        state.logsBuffer.splice(0, state.logsBuffer.length - MAX);
+    }
+    // Ensure a new source shows up in the dropdown.
+    const sel = document.getElementById('logs-source');
+    if (sel && !Array.from(sel.options).some(o => o.value === entry.source)) {
+        sel.appendChild(el('option', { value: entry.source, text: entry.source }));
+    }
+    if (state.logsPaused) return;
+    if (!_logMatchesFilter(entry, state.logsFilter)) return;
+    const container = document.getElementById('logs-list');
+    if (!container) return;
+    // Drop the empty-state placeholder on the first live line.
+    const placeholder = container.querySelector('p');
+    if (placeholder) container.innerHTML = '';
+    container.appendChild(renderLogRow(entry));
+    container.scrollTop = container.scrollHeight;
+}
+
+function startLogStream() {
+    if (state.logsEventSource) state.logsEventSource.close();
+    if (state.logsReconnectTimer) {
+        clearTimeout(state.logsReconnectTimer);
+        state.logsReconnectTimer = null;
+    }
+    state.logsEventSource = new EventSource(`${API_BASE}/logs/stream`);
+    state.logsEventSource.onmessage = (event) => {
+        try {
+            appendLogEntry(JSON.parse(event.data));
+        } catch (e) {
+            console.error('Failed to parse log SSE message:', e);
+        }
+    };
+    state.logsEventSource.onerror = () => {
+        if (state.logsEventSource) {
+            state.logsEventSource.close();
+            state.logsEventSource = null;
+        }
+        // Reconnect only while the logs tab is still the active view.
+        const logsTab = document.getElementById('logs-tab');
+        const visible = logsTab && !logsTab.classList.contains('hidden');
+        if (visible && !state.logsReconnectTimer) {
+            state.logsReconnectTimer = setTimeout(() => {
+                state.logsReconnectTimer = null;
+                startLogStream();
+            }, 3000);
+        }
+    };
+}
+
+function stopLogStream() {
+    if (state.logsReconnectTimer) {
+        clearTimeout(state.logsReconnectTimer);
+        state.logsReconnectTimer = null;
+    }
+    if (state.logsEventSource) {
+        state.logsEventSource.close();
+        state.logsEventSource = null;
+    }
+}
+
 async function loadOrderDetail(orderId) {
     const container = document.getElementById('order-detail');
     if (!container) return;
@@ -3904,6 +4058,29 @@ async function init() {
     });
     document.getElementById('orders-refresh-btn')?.addEventListener('click', () => {
         loadOrdersTab(true);
+    });
+
+    // Logs tab filters + controls (client-side; no re-fetch needed).
+    document.getElementById('logs-level')?.addEventListener('change', (e) => {
+        state.logsFilter.level = e.target.value;
+        renderLogsList();
+    });
+    document.getElementById('logs-source')?.addEventListener('change', (e) => {
+        state.logsFilter.source = e.target.value;
+        renderLogsList();
+    });
+    document.getElementById('logs-search')?.addEventListener('input', (e) => {
+        state.logsFilter.search = e.target.value;
+        renderLogsList();
+    });
+    document.getElementById('logs-pause-btn')?.addEventListener('click', (e) => {
+        state.logsPaused = !state.logsPaused;
+        e.target.textContent = state.logsPaused ? '▶ Resume' : '⏸ Pause';
+        if (!state.logsPaused) renderLogsList();
+    });
+    document.getElementById('logs-clear-btn')?.addEventListener('click', () => {
+        state.logsBuffer = [];
+        renderLogsList();
     });
 
     document.getElementById('catalog-autorefresh')?.addEventListener('change', (e) => {

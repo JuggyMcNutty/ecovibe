@@ -224,6 +224,10 @@ class SniperService:
                 "order_id": result.get("orderId"),
                 "url": result.get("url"),
             }
+            logger.info(
+                "sniper auto-ordered %s (%s) - order %s",
+                profile["plan_code"], fqn, result.get("orderId"),
+            )
             # Disarm after a successful fire - caller must re-arm to fire again.
             self._armed.pop(alert_id, None)
         except Exception as e:
@@ -552,6 +556,12 @@ class MonitorService:
                     # not just when something newly became available.
                     if diff["newly_available"] or diff["now_unavailable"]:
                         changes.append(diff)
+                        logger.info(
+                            "stock change %s: +%d available, -%d unavailable",
+                            plan_code,
+                            len(diff["newly_available"]),
+                            len(diff["now_unavailable"]),
+                        )
                     if diff["newly_available"]:
                         # Find every alert that matches at least one new FQN.
                         for alert in self._alerts.values():
