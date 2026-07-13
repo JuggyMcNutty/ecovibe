@@ -868,6 +868,14 @@ function planRegion(planCode, endpoint) {
     const parts = (planCode || '').split('-');
     const suffix = parts.length > 1 ? parts[parts.length - 1].toLowerCase() : '';
     if (suffix in REGION_LABELS) return REGION_LABELS[suffix];
+    // An unrecognised but region-code-shaped suffix (2–4 letters, e.g. a new
+    // OVH datacenter like "waw"/"bhs" not yet mapped in REGION_LABELS) is a
+    // *foreign* region — surface it uppercased rather than silently
+    // mislabelling it as the endpoint's home region. Versions like "v1"/"v3"
+    // contain a digit so they never match here.
+    if (/^[a-z]{2,4}$/.test(suffix)) return suffix.toUpperCase();
+    // No suffix (bare home plan) or a version/generation segment: OVH leaves
+    // the home-region offering un-suffixed, so it belongs to the home region.
     return ENDPOINT_HOME_REGION[endpoint] || '';
 }
 
