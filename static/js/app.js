@@ -414,6 +414,12 @@ async function switchAccount(accountId) {
     if (catDetail) catDetail.innerHTML = '<p class="text-gray-500 text-sm">Select a plan to see details.</p>';
     const ordDetail = document.getElementById('order-detail');
     if (ordDetail) ordDetail.innerHTML = '<p class="text-gray-500 text-sm">Select an order to see details.</p>';
+    // Repaint the recent-alerts list from the (now-empty) state and dismiss any
+    // live stock-alert banner — these are only otherwise refreshed by incoming
+    // SSE events, which stop the moment we tore down monitoring above, so
+    // without this they'd keep showing the previous account's restocks.
+    renderRecentAlerts();
+    document.getElementById('stock-alerts-panel')?.classList.add('hidden');
 
     // Increment the generation token so in-flight callbacks from the
     // previous account know they're stale and bail out.
