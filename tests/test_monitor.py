@@ -169,13 +169,95 @@ async def test_poll_once_persists_stock_events_in_one_batch(monitor, monkeypatch
     ]
     await monitor._poll_once()
 
-    # Each cycle with changes produces exactly one batched write.
-    assert all(len(b) >= 1 for b in batches)
+    # The first cycle only primes the baseline (no events); the second
+    # cycle's change produces exactly one batched write.
+    assert batches == [[("24sk10", "24sk10.ram-64g.b", "available",
+                         batches[0][0][3], None)]]
     events = storage.load_stock_events("24sk10")
     assert any(
         e["fqn"] == "24sk10.ram-64g.b" and e["event_type"] == "available"
         for e in events
     )
+
+
+@pytest.mark.asyncio
+async def test_first_poll_primes_silently_but_fires_armed_sniper(monitor, monkeypatch):
+    """The first poll after startup/reload records the baseline without SSE
+    changes or notifications, but an armed sniper still fires on stock that
+    is already available (its job is to order ASAP)."""
+    import app.services.monitor as monitor_mod
+    monitor_mod._sniper_service = None
+    sniper = monitor_mod.get_sniper_service()
+
+    alert = await monitor.add_alert("24sk10", "*")
+    sniper.arm(alert.id, "prof-1", plan_code="24sk10",
+               fqn_pattern="*", account_id=None)
+
+    fake = MagicMock()
+    fake.is_configured.return_value = True
+    fake.account_id = None
+    fake.default_currency_code.return_value = "EUR"
+    fake.get_availability.return_value = [{"fqn": "24sk10.ram-32g.a"}]
+    monkeypatch.setattr(monitor_mod, "get_active_ovh_service", lambda: fake)
+
+    notified = []
+
+    async def _notify(*args, **kwargs):
+        notified.append(args)
+
+    monkeypatch.setattr(
+        "app.services.notifier.notify_stock_alert", _notify
+    )
+
+    fired = []
+
+    async def _fire(alert_id, plan_code, matched, account_id=None):
+        fired.append((alert_id, plan_code, tuple(matched)))
+
+    monkeypatch.setattr(sniper, "maybe_fire", _fire)
+
+    changes = await monitor._poll_once()
+
+    assert changes == []          # no SSE broadcast on the priming cycle
+    assert notified == []         # no notification either
+    assert fired == [(alert.id, "24sk10", ("24sk10.ram-32g.a",))]
+    stored = {a["id"]: a for a in monitor._storage_get().load_alerts()}
+    assert stored[alert.id]["notified_at"] is None
+
+    # Second cycle with unchanged stock: still nothing new.
+    changes = await monitor._poll_once()
+    assert changes == []
+    assert notified == []
+
+
+@pytest.mark.asyncio
+async def test_reload_reprimes_baseline(monitor, monkeypatch):
+    """reload() clears the primed set, so the next poll after an account
+    switch is silent again instead of re-notifying everything in stock."""
+    import app.services.monitor as monitor_mod
+
+    await monitor.add_alert("24sk10", "*")
+
+    fake = MagicMock()
+    fake.is_configured.return_value = True
+    fake.account_id = None
+    fake.default_currency_code.return_value = "EUR"
+    fake.get_availability.return_value = [{"fqn": "24sk10.ram-32g.a"}]
+    monkeypatch.setattr(monitor_mod, "get_active_ovh_service", lambda: fake)
+
+    notified = []
+
+    async def _notify(*args, **kwargs):
+        notified.append(args)
+
+    monkeypatch.setattr("app.services.notifier.notify_stock_alert", _notify)
+
+    await monitor._poll_once()   # prime
+    await monitor.reload()       # simulates account switch
+    changes = await monitor._poll_once()
+
+    assert changes == []
+    assert notified == []
 
 
 @pytest.mark.asyncio
@@ -195,6 +277,11 @@ async def test_poll_once_persists_notified_at(monitor, monkeypatch):
         monitor_mod, "get_active_ovh_service", lambda: fake
     )
 
+    await monitor._poll_once()  # priming cycle — no notification yet
+    fake.get_availability.return_value = [
+        {"fqn": "24sk10.ram-32g.a"},
+        {"fqn": "24sk10.ram-64g.b"},
+    ]
     await monitor._poll_once()
 
     stored = {a["id"]: a for a in monitor._storage_get().load_alerts()}

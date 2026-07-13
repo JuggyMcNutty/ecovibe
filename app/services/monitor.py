@@ -265,6 +265,14 @@ class MonitorService:
         self._alerts: dict[str, StockAlert] = {}
         self._stock_cache: dict[str, list[StockStatus]] = {}
         self._last_stock: dict[str, dict[str, bool]] = {}
+        # Plans whose stock baseline has been recorded at least once. A
+        # plan's FIRST poll after startup/reload only primes the baseline:
+        # without this, an empty _last_stock makes every in-stock config
+        # look "newly available", re-firing notifications on each restart
+        # or account switch. Armed snipers still fire on the first cycle
+        # (they exist to order ASAP); only notifications/SSE/stock events
+        # are suppressed.
+        self._primed: set[str] = set()
         self._poll_interval = 3  # clamped to [1, 60]
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
@@ -350,6 +358,7 @@ class MonitorService:
             self._alerts.clear()
             self._stock_cache.clear()
             self._last_stock.clear()
+            self._primed.clear()
         await self._load_from_storage()
 
     async def _run(self) -> None:
@@ -440,6 +449,7 @@ class MonitorService:
             if not still_monitored:
                 self._last_stock.pop(alert.plan_code, None)
                 self._stock_cache.pop(alert.plan_code, None)
+                self._primed.discard(alert.plan_code)
         storage = self._storage_get()
         if storage:
             try:
@@ -548,46 +558,74 @@ class MonitorService:
                     for c in avail_configs
                 ]
                 pending_events: list[tuple[str, str, str, datetime, str | None]] = []
+                # (alert, fqns, notify): notify=False on the priming cycle —
+                # armed snipers still fire, but no notification is sent.
+                triggered_alerts: list[tuple[StockAlert, list[str], bool]] = []
                 async with self._lock:
+                    first_cycle = plan_code not in self._primed
                     diff = self.get_stock_diff(plan_code, new_statuses)
                     self._stock_cache[plan_code] = new_statuses
-                    triggered_alerts: list[tuple[StockAlert, list[str]]] = []
-                    # Broadcast on any change (restock or sell-out) so SSE
-                    # clients can keep their stock indicators accurate -
-                    # not just when something newly became available.
-                    if diff["newly_available"] or diff["now_unavailable"]:
-                        changes.append(diff)
-                        logger.info(
-                            "stock change %s: +%d available, -%d unavailable",
-                            plan_code,
-                            len(diff["newly_available"]),
-                            len(diff["now_unavailable"]),
-                        )
-                    if diff["newly_available"]:
-                        # Find every alert that matches at least one new FQN.
+                    self._primed.add(plan_code)
+                    if first_cycle:
+                        # Prime silently: record the baseline without SSE
+                        # broadcasts, notifications, or stock events — an
+                        # empty baseline would otherwise report everything
+                        # already in stock as "newly available" on every
+                        # restart/account switch. Armed snipers DO still
+                        # fire below on already-available stock: a sniper's
+                        # job is to order the moment stock is orderable.
+                        if diff["currently_available"]:
+                            logger.info(
+                                "primed stock baseline for %s (%d configs "
+                                "available); notifications suppressed",
+                                plan_code, len(diff["currently_available"]),
+                            )
                         for alert in self._alerts.values():
                             if alert.plan_code == plan_code and alert.enabled:
                                 matched = [
                                     fqn
-                                    for fqn in diff["newly_available"]
+                                    for fqn in diff["currently_available"]
                                     if self._matches_pattern(fqn, alert.fqn_pattern)
                                 ]
                                 if matched:
-                                    alert.notified_at = now
-                                    triggered_alerts.append((alert, matched))
+                                    triggered_alerts.append((alert, matched, False))
+                    else:
+                        # Broadcast on any change (restock or sell-out) so SSE
+                        # clients can keep their stock indicators accurate -
+                        # not just when something newly became available.
+                        if diff["newly_available"] or diff["now_unavailable"]:
+                            changes.append(diff)
+                            logger.info(
+                                "stock change %s: +%d available, -%d unavailable",
+                                plan_code,
+                                len(diff["newly_available"]),
+                                len(diff["now_unavailable"]),
+                            )
+                        if diff["newly_available"]:
+                            # Find every alert that matches at least one new FQN.
+                            for alert in self._alerts.values():
+                                if alert.plan_code == plan_code and alert.enabled:
+                                    matched = [
+                                        fqn
+                                        for fqn in diff["newly_available"]
+                                        if self._matches_pattern(fqn, alert.fqn_pattern)
+                                    ]
+                                    if matched:
+                                        alert.notified_at = now
+                                        triggered_alerts.append((alert, matched, True))
 
-                    # Collect stock events for the historical-patterns view.
-                    # Persisted below, after the lock is released — SQLite
-                    # writes are blocking disk I/O and must not stall alert
-                    # mutations (or the event loop) from inside the lock.
-                    for fqn in diff["newly_available"]:
-                        pending_events.append(
-                            (plan_code, fqn, "available", now, service.account_id)
-                        )
-                    for fqn in diff["now_unavailable"]:
-                        pending_events.append(
-                            (plan_code, fqn, "unavailable", now, service.account_id)
-                        )
+                        # Collect stock events for the historical-patterns view.
+                        # Persisted below, after the lock is released — SQLite
+                        # writes are blocking disk I/O and must not stall alert
+                        # mutations (or the event loop) from inside the lock.
+                        for fqn in diff["newly_available"]:
+                            pending_events.append(
+                                (plan_code, fqn, "available", now, service.account_id)
+                            )
+                        for fqn in diff["now_unavailable"]:
+                            pending_events.append(
+                                (plan_code, fqn, "unavailable", now, service.account_id)
+                            )
 
                 if storage and pending_events:
                     try:
@@ -599,8 +637,10 @@ class MonitorService:
 
                 # Persist notified_at so it survives restarts (the in-memory
                 # update above is lost otherwise). Off-loop, outside the lock.
-                if storage and triggered_alerts:
-                    for alert_obj, _ in triggered_alerts:
+                if storage:
+                    for alert_obj, _, notify in triggered_alerts:
+                        if not notify:
+                            continue
                         try:
                             await asyncio.to_thread(
                                 storage.set_notified_at, alert_obj.id, now
@@ -616,22 +656,23 @@ class MonitorService:
                 if triggered_alerts:
                     from app.services.notifier import notify_stock_alert
                     sniper = get_sniper_service()
-                    for alert_obj, matched_fqns in triggered_alerts:
-                        price = None
-                        if storage:
-                            price_ucents = await asyncio.to_thread(
-                                storage.latest_price,
-                                plan_code, service.account_id,
-                            )
-                            if price_ucents is not None:
-                                price = price_ucents / 100_000_000
-                        try:
-                            await notify_stock_alert(
-                                plan_code, matched_fqns, price,
-                                currency_code=service.default_currency_code(),
-                            )
-                        except Exception:
-                            logger.warning("notifier failed for %s", plan_code, exc_info=True)
+                    for alert_obj, matched_fqns, notify in triggered_alerts:
+                        if notify:
+                            price = None
+                            if storage:
+                                price_ucents = await asyncio.to_thread(
+                                    storage.latest_price,
+                                    plan_code, service.account_id,
+                                )
+                                if price_ucents is not None:
+                                    price = price_ucents / 100_000_000
+                            try:
+                                await notify_stock_alert(
+                                    plan_code, matched_fqns, price,
+                                    currency_code=service.default_currency_code(),
+                                )
+                            except Exception:
+                                logger.warning("notifier failed for %s", plan_code, exc_info=True)
                         try:
                             await sniper.maybe_fire(
                                 alert_obj.id, plan_code, matched_fqns,
