@@ -735,7 +735,16 @@ async function refreshStockForAllPlans() {
                 if (!matched && (memShort || storShort) && (data || []).length) {
                     console.warn(`Stock matching failed for ${pc}: default mem=${memShort} stor=${storShort} did not match any stock entry`);
                 }
-                stockByPlan[pc] = hasAvailable;
+                // Only record a definitive result when we actually matched the
+                // default combo against a stock entry. A match failure (naming
+                // mismatch, warned above) or an empty payload is *unknown*
+                // stock, not confirmed OOS — leave it unset so the `?? true`
+                // fallbacks below keep the plan visible and unbadged rather
+                // than hiding an orderable server behind the "Orderable only"
+                // filter (a false OOS is worse than an unverified in-stock).
+                if (matched) {
+                    stockByPlan[pc] = hasAvailable;
+                }
             } catch (e) {
                 console.warn(`Stock fetch failed for ${pc}, assuming in-stock:`, e);
                 stockByPlan[pc] = true;
