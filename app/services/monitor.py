@@ -597,6 +597,20 @@ class MonitorService:
                     except Exception:
                         logger.debug("failed to log stock events", exc_info=True)
 
+                # Persist notified_at so it survives restarts (the in-memory
+                # update above is lost otherwise). Off-loop, outside the lock.
+                if storage and triggered_alerts:
+                    for alert_obj, _ in triggered_alerts:
+                        try:
+                            await asyncio.to_thread(
+                                storage.set_notified_at, alert_obj.id, now
+                            )
+                        except Exception:
+                            logger.debug(
+                                "failed to persist notified_at for %s",
+                                alert_obj.id, exc_info=True,
+                            )
+
                 # Fan out notifications + sniper *outside* the lock so we
                 # don't block other alert mutations during a slow webhook.
                 if triggered_alerts:

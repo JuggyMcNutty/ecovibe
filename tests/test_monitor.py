@@ -179,6 +179,29 @@ async def test_poll_once_persists_stock_events_in_one_batch(monitor, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_poll_once_persists_notified_at(monitor, monkeypatch):
+    """When an alert fires, notified_at must round-trip through storage so
+    it survives a restart (regression: it was only ever set in memory)."""
+    import app.services.monitor as monitor_mod
+
+    alert = await monitor.add_alert("24sk10", "*")
+
+    fake = MagicMock()
+    fake.is_configured.return_value = True
+    fake.account_id = None
+    fake.default_currency_code.return_value = "EUR"
+    fake.get_availability.return_value = [{"fqn": "24sk10.ram-32g.a"}]
+    monkeypatch.setattr(
+        monitor_mod, "get_active_ovh_service", lambda: fake
+    )
+
+    await monitor._poll_once()
+
+    stored = {a["id"]: a for a in monitor._storage_get().load_alerts()}
+    assert stored[alert.id]["notified_at"] is not None
+
+
+@pytest.mark.asyncio
 async def test_sweep_fires_snipers_for_non_active_account(monitor, monkeypatch):
     """A sniper armed under account A must keep firing after the user switches
     away: _sweep_snipers polls A's plan under A's own credentials and fires,
