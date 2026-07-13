@@ -320,6 +320,14 @@ were created under (`account_id` column on each table).
 - **Region config value**: OVH US expects `region=united_states`, NOT
   `us`. The `OVH_REGIONS` map in `app.js` maps each endpoint to its
   correct OVH region config value (`europe`, `united_states`, `canada`).
+- **Availability endpoint**: `/order/eco/availableConfiguration` is EU-only —
+  it 404s on ovh-us AND ovh-ca ("Got an invalid (or empty) URL"), which
+  silently broke the monitor poller (and therefore the sniper) on those two
+  regions. `OVHService.get_availability()` is derived from `get_stock()`
+  (`/dedicated/server/datacenter/availabilities`, works on all regions):
+  it returns the entries orderable in ≥1 datacenter (availability not in
+  `{"unavailable", "comingSoon"}` — same rule as the catalog OOS badge),
+  keeping the `fqn` key every caller reads. Verified live on us/ca.
 - **Geekbench 6 scores**: CPU-score sorting (`app.js`) and the catalog CPU
   badge read `productSpecs[...].cpu.geekbench6`, a curated single/multi table in
   `app/services/geekbench.py` keyed by normalised `"<brand> <model>"`. It covers

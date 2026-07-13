@@ -16,6 +16,11 @@ from app.services.cache import get_cache
 
 logger = logging.getLogger(__name__)
 
+# Datacenter availability values that are NOT orderable right now. Everything
+# else (1H-low, 1H-high, 24H, 72H, ...) counts as in stock. Mirrors the
+# catalog's OOS rule in static/js/app.js.
+_NOT_ORDERABLE = {"unavailable", "comingSoon"}
+
 
 class OVHServiceError(Exception):
     """Carries the OVH status code and query ID for error mapping."""
@@ -313,10 +318,27 @@ class OVHService:
     def get_availability(self, plan_code: str) -> list[dict[str, Any]]:
         """Return the list of currently orderable FQN configurations for a plan.
 
-        OVH only returns configs that are *actually* orderable right now, so
-        absence of an FQN from this list means it is out of stock.
+        Derived from the datacenter-availabilities endpoint (``get_stock``),
+        which works on every region. The older ``/order/eco/availableConfiguration``
+        path 404s on ovh-us and ovh-ca ("Got an invalid (or empty) URL"), so
+        relying on it silently broke stock detection (and the sniper) on those
+        regions. A config counts as orderable when at least one datacenter
+        reports an availability other than ``unavailable``/``comingSoon`` —
+        the same rule the catalog OOS badge uses (see static/js/app.js). The
+        returned dicts keep the ``fqn`` key every caller reads, plus the richer
+        ``memory``/``storage``/``datacenters`` fields.
         """
-        return self.get("/order/eco/availableConfiguration", planCode=plan_code)
+        out: list[dict[str, Any]] = []
+        for entry in self.get_stock(plan_code):
+            dcs = entry.get("datacenters") or []
+            if any(dc.get("availability") not in _NOT_ORDERABLE for dc in dcs):
+                out.append({
+                    "fqn": entry.get("fqn", ""),
+                    "memory": entry.get("memory"),
+                    "storage": entry.get("storage"),
+                    "datacenters": dcs,
+                })
+        return out
 
     def get_stock(self, plan_code: str) -> list[dict[str, Any]]:
         """Return live stock levels per RAM+storage combo for a plan.
