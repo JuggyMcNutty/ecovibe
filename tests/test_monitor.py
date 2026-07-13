@@ -1,6 +1,7 @@
 """Tests for MonitorService: stock diffing, alert matching, lifecycle."""
 
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -132,3 +133,68 @@ async def test_persistence_round_trip(monitor):
     assert alerts[0].enabled is False
     assert m2.get_poll_interval() == 7
     await m2.stop()
+
+
+@pytest.mark.asyncio
+async def test_sweep_fires_snipers_for_non_active_account(monitor, monkeypatch):
+    """A sniper armed under account A must keep firing after the user switches
+    away: _sweep_snipers polls A's plan under A's own credentials and fires,
+    even though A's alert is no longer in the active poller's alert set."""
+    import app.services.monitor as monitor_mod
+    monitor_mod._sniper_service = None
+    sniper = monitor_mod.get_sniper_service()
+    # No active account in the isolated DB (get_active_account_id() -> None),
+    # so "acct-A" is non-active and the sweep should pick it up.
+    sniper.arm("alert-1", "prof-1", plan_code="24sk10",
+               fqn_pattern="24sk10*ssd*", account_id="acct-A")
+
+    fake = MagicMock()
+    fake.is_configured.return_value = True
+    fake.get_availability.return_value = [
+        {"fqn": "24sk10.ram-32g.softraid-2x480ssd"},
+        {"fqn": "24sk10.ram-64g.softraid-2x4tb"},  # doesn't match *ssd*
+    ]
+    monkeypatch.setattr(monitor_mod, "get_ovh_service", lambda account_id=None: fake)
+
+    fired = []
+
+    async def _record(alert_id, plan_code, matched, account_id=None):
+        fired.append((alert_id, plan_code, tuple(matched), account_id))
+
+    monkeypatch.setattr(sniper, "maybe_fire", _record)
+
+    await monitor._sweep_snipers()
+
+    fake.get_availability.assert_called_once_with("24sk10")
+    assert fired == [
+        ("alert-1", "24sk10", ("24sk10.ram-32g.softraid-2x480ssd",), "acct-A")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sweep_skips_active_account_sniper(monitor, monkeypatch):
+    """The sweep must NOT double-fire snipers whose account is active — those
+    are handled edge-triggered by _poll_once. It skips them here."""
+    import app.services.monitor as monitor_mod
+    monitor_mod._sniper_service = None
+    sniper = monitor_mod.get_sniper_service()
+    monitor._storage_get().set_active_account_id("acct-A")
+    sniper.arm("alert-1", "prof-1", plan_code="24sk10",
+               fqn_pattern="*", account_id="acct-A")
+
+    fake = MagicMock()
+    fake.is_configured.return_value = True
+    fake.get_availability.return_value = [{"fqn": "24sk10.ram-32g"}]
+    monkeypatch.setattr(monitor_mod, "get_ovh_service", lambda account_id=None: fake)
+
+    fired = []
+
+    async def _record(*args, **kwargs):
+        fired.append(args)
+
+    monkeypatch.setattr(sniper, "maybe_fire", _record)
+
+    await monitor._sweep_snipers()
+
+    fake.get_availability.assert_not_called()
+    assert fired == []

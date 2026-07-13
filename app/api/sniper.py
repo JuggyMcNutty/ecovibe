@@ -45,7 +45,11 @@ async def arm(req: SniperArmRequest) -> dict:
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
     sniper = get_sniper_service()
-    sniper.arm(req.alert_id, req.profile_id)
+    sniper.arm(
+        req.alert_id, req.profile_id,
+        plan_code=alert.plan_code, fqn_pattern=alert.fqn_pattern,
+        account_id=alert.account_id,
+    )
     return {"status": "armed", "alert_id": req.alert_id, "profile_id": req.profile_id}
 
 

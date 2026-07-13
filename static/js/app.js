@@ -2904,7 +2904,7 @@ function _sniperArmedInfo(entry) {
     const profile = (state.profiles || []).find(p => p.id === entry.profile_id);
     return {
         planCode: entry.plan_code || alert?.plan_code || entry.alert_id,
-        fqn: alert?.fqn_pattern || '(any config)',
+        fqn: entry.fqn_pattern || alert?.fqn_pattern || '(any config)',
         profileName: profile?.name || `profile ${entry.profile_id.slice(0, 8)}`,
         profileId: entry.profile_id,
         alertId: entry.alert_id,

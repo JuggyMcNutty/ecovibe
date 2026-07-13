@@ -63,9 +63,26 @@ class SniperService:
         # alert_id -> last result payload (for the status endpoint)
         self._results: dict[str, dict[str, Any]] = {}
 
-    def arm(self, alert_id: str, profile_id: str) -> None:
-        """Arm an alert: future matches will trigger the profile's rush order."""
-        self._armed[alert_id] = {"profile_id": profile_id, "fqns_seen": set()}
+    def arm(
+        self, alert_id: str, profile_id: str,
+        plan_code: str | None = None, fqn_pattern: str | None = None,
+        account_id: str | None = None,
+    ) -> None:
+        """Arm an alert: future matches will trigger the profile's rush order.
+
+        ``plan_code``/``fqn_pattern``/``account_id`` capture what to watch and
+        under which credentials, so the poller can keep firing this sniper even
+        after the user switches away from its account (see
+        MonitorService._sweep_snipers). Entries armed without them fall back to
+        active-account-only polling.
+        """
+        self._armed[alert_id] = {
+            "profile_id": profile_id,
+            "fqns_seen": set(),
+            "plan_code": plan_code,
+            "fqn_pattern": fqn_pattern,
+            "account_id": account_id,
+        }
         self._results.pop(alert_id, None)
 
     def disarm(self, alert_id: str) -> None:
@@ -83,11 +100,26 @@ class SniperService:
                     "alert_id": aid,
                     "profile_id": v["profile_id"],
                     "fqns_seen": sorted(v["fqns_seen"]),
+                    # plan_code/fqn_pattern/account_id let the status endpoint
+                    # (and UI) identify snipers armed under a now-inactive
+                    # account, which are no longer in the active alert list.
+                    "plan_code": v.get("plan_code"),
+                    "fqn_pattern": v.get("fqn_pattern"),
+                    "account_id": v.get("account_id"),
                 }
                 for aid, v in self._armed.items()
             ],
             "results": self._results,
         }
+
+    def armed_watches(self) -> list[tuple[str, str | None, str | None, str | None]]:
+        """Return (alert_id, plan_code, fqn_pattern, account_id) for each armed
+        sniper, for the poller's cross-account sweep. Entries armed before this
+        info was captured have plan_code None and are skipped by the sweep."""
+        return [
+            (aid, v.get("plan_code"), v.get("fqn_pattern"), v.get("account_id"))
+            for aid, v in self._armed.items()
+        ]
 
     async def maybe_fire(
         self,
@@ -339,6 +371,14 @@ class MonitorService:
                 raise
             except Exception:
                 logger.exception("monitor poll cycle failed")
+            # Keep snipers armed under non-active accounts firing too. Isolated
+            # from the main poll so a sweep failure never stops SSE monitoring.
+            try:
+                await self._sweep_snipers()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("sniper sweep failed")
             await asyncio.sleep(self._poll_interval)
 
     async def subscribe(self) -> asyncio.Queue:
@@ -577,6 +617,65 @@ class MonitorService:
                 logger.debug("availability fetch failed for %s", plan_code, exc_info=True)
 
         return changes
+
+    async def _sweep_snipers(self) -> None:
+        """Fire armed snipers whose account is NOT the currently active one.
+
+        `_poll_once` only watches the active account's alerts, so a sniper armed
+        under account A stops being polled the moment the user switches to
+        account B — it would sit "armed" forever without firing. This sweep
+        keeps every armed sniper live regardless of the active account: it polls
+        each armed alert's plan under its OWN credentials and fires on a match.
+
+        Active-account snipers are already handled (edge-triggered, with SSE and
+        notifications) by `_poll_once`, so they're skipped here to avoid double
+        work. This path is level-triggered: it fires whenever a matching config
+        is currently available, which is the desired safety-net behaviour for a
+        sniper. `SniperService.maybe_fire`'s per-arm `fqns_seen` set still
+        prevents duplicate orders across cycles.
+        """
+        sniper = get_sniper_service()
+        watches = sniper.armed_watches()
+        if not watches:
+            return
+        storage = self._storage_get()
+        active_id = storage.get_active_account_id() if storage else None
+        pending = [
+            (aid, plan_code, pattern, account_id)
+            for (aid, plan_code, pattern, account_id) in watches
+            if plan_code and account_id and account_id != active_id
+        ]
+        if not pending:
+            return
+        for alert_id, plan_code, pattern, account_id in pending:
+            service = get_ovh_service(account_id)
+            if not service.is_configured():
+                continue
+            try:
+                avail_configs = await asyncio.to_thread(
+                    service.get_availability, plan_code
+                )
+            except OVHServiceError:
+                logger.debug(
+                    "sniper sweep availability fetch failed for %s", plan_code,
+                    exc_info=True,
+                )
+                continue
+            matched = [
+                c.get("fqn", "")
+                for c in avail_configs
+                if self._matches_pattern(c.get("fqn", ""), pattern or "*")
+            ]
+            if not matched:
+                continue
+            try:
+                await sniper.maybe_fire(
+                    alert_id, plan_code, matched, account_id=account_id
+                )
+            except Exception:
+                logger.warning(
+                    "sniper sweep fire failed for %s", alert_id, exc_info=True
+                )
 
     async def poll_and_notify(self) -> list[dict[str, Any]]:
         """One-shot poll (legacy entry point; the SSE handler uses subscribe() instead)."""

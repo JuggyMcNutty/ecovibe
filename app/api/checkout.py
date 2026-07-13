@@ -275,8 +275,15 @@ async def _arm_sniper_from_rush(request: RushOrderRequest, service) -> dict[str,
         raise HTTPException(status_code=500, detail="Failed to create alert")
 
     # 3) Arm the sniper - the background poller auto-orders on restock.
+    # Pass the watch details so the poller keeps firing this sniper even after
+    # the user switches away from its account (see MonitorService._sweep_snipers).
     sniper = get_sniper_service()
-    sniper.arm(alert_id, profile_id)
+    armed_alert = monitor.get_alert(alert_id)
+    sniper.arm(
+        alert_id, profile_id,
+        plan_code=request.plan_code, fqn_pattern=request.fqn,
+        account_id=armed_alert.account_id if armed_alert else None,
+    )
     logger.info(
         "armed sniper for OOS plan %s (alert=%s profile=%s)",
         request.plan_code, alert_id, profile_id,
