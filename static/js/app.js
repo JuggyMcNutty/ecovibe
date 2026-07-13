@@ -447,6 +447,15 @@ async function switchAccount(accountId) {
             await loadOrdersTab();
             if (gen !== state._switchGen) return;
         }
+        // The Insights tab is likewise only (re)loaded lazily on tab switch, so
+        // if it's active during an account switch it keeps rendering the
+        // previous account's overview/charts/dropdown. Reload it in place.
+        const insightsTabVisible = !document.getElementById('insights-tab')?.classList.contains('hidden');
+        if (insightsTabVisible) {
+            populateInsightsPlanSelect();
+            await loadInsightsData();
+            if (gen !== state._switchGen) return;
+        }
         await loadSniperStatus();
         if (gen !== state._switchGen) return;
         if (state.billingLoaded) {
