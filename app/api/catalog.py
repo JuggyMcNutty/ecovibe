@@ -1,13 +1,22 @@
 """Catalog endpoints - browse ECO server catalog and availability."""
 import asyncio
+import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
 from app.api.errors import raise_ovh_http_error
+from app.services import geekbench
 from app.services.ovh_service import OVHServiceError, get_active_ovh_service
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
+
+# Normalised CPU keys already flagged as missing a Geekbench 6 score, so the
+# warning fires once per unknown CPU instead of on every /api/catalog/plans
+# request (mirrors the console.warn stock-match guard in the frontend).
+_warned_missing_gb6: set[str] = set()
 
 
 def _resolve_subsidiary(country: str | None) -> str:
@@ -44,6 +53,23 @@ def _build_product_specs(catalog: dict[str, Any]) -> dict[str, Any]:
         cpu = server.get("cpu", {})
         frame = server.get("frame", {})
         services = server.get("services", {})
+        # Curated Geekbench 6 single/multi score (or None if the CPU isn't in
+        # our table). This is what the UI displays and sorts by, in place of
+        # OVH's PassMark-style `score`. Warn once per unknown CPU so a catalog
+        # addition that would silently break score-sorting is noticed.
+        gb6 = None
+        if cpu:
+            brand, model = cpu.get("brand", ""), cpu.get("model", "")
+            gb6 = geekbench.lookup(brand, model)
+            if gb6 is None:
+                key = geekbench._normalize(brand, model)
+                if key and key not in _warned_missing_gb6:
+                    _warned_missing_gb6.add(key)
+                    logger.warning(
+                        "No Geekbench 6 score for CPU %r %r (product %r); "
+                        "it will sort last. Add it to app/services/geekbench.py.",
+                        brand, model, name,
+                    )
         specs[name] = {
             "description": product.get("description", ""),
             "cpu": {
@@ -55,6 +81,7 @@ def _build_product_specs(catalog: dict[str, Any]) -> dict[str, Any]:
                 "boost": cpu.get("boost"),
                 "number": cpu.get("number", 1),
                 "score": cpu.get("score"),
+                "geekbench6": gb6,
             } if cpu else None,
             "frame": {
                 "size": frame.get("size", ""),

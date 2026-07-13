@@ -97,6 +97,7 @@ not on PATH; use the absolute path above.
      ```
      Before committing, inspect `git status` and `git diff`; stage
      only intended files and never commit secrets.
+     Always make commits per feature or bug fix and dont make very large commits.
   - Keep the AGENTS.md and README.md up to date as we make commits to this project so future AI sessions can easily get up to speed witht this project.
 
 ## Architecture
@@ -319,6 +320,15 @@ were created under (`account_id` column on each table).
 - **Region config value**: OVH US expects `region=united_states`, NOT
   `us`. The `OVH_REGIONS` map in `app.js` maps each endpoint to its
   correct OVH region config value (`europe`, `united_states`, `canada`).
+- **Geekbench 6 scores**: CPU-score sorting (`app.js`) and the catalog CPU
+  badge read `productSpecs[...].cpu.geekbench6`, a curated single/multi table in
+  `app/services/geekbench.py` keyed by normalised `"<brand> <model>"`. It covers
+  every CPU in the live US/EU/CA ECO catalogs; a plan whose CPU has no entry gets
+  no badge and sorts **last** (`?? 0`). When OVH adds a new CPU,
+  `_build_product_specs()` in `catalog.py` logs a **once-per-CPU** warning
+  (`"No Geekbench 6 score for CPU ..."`, deduped via `_warned_missing_gb6`) — add
+  the chip to the table to fix the sort. Verify coverage against the live catalog
+  by fetching it and checking `geekbench.lookup()` for each product's CPU.
 - **Live stock**: `/dedicated/server/datacenter/availabilities?planCode=X`
   returns per-DC availability for each RAM+storage combo. Availability
   values are `unavailable`, `comingSoon`, `1H-low`, `1H-high`, `72H`,

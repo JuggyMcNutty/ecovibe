@@ -939,7 +939,9 @@ function getFilteredPlans() {
     else if (sort === 'score-desc' || sort === 'score-asc') {
         const scoreOf = (p) => {
             const ps = state.productSpecs[p.product] || {};
-            return ps.cpu?.score ?? 0;
+            // Sort by Geekbench 6 multi-core; plans without a GB6 score (CPU
+            // not in our table) fall to the bottom, as before.
+            return ps.cpu?.geekbench6?.multi ?? 0;
         };
         plans.sort((a, b) => sort === 'score-desc' ? scoreOf(b) - scoreOf(a) : scoreOf(a) - scoreOf(b));
     }
@@ -1369,8 +1371,9 @@ function renderCatalogDetail(plan) {
     }
     // Hardware spec badges: CPU score, chassis, SLA, anti-DDoS, range
     const specBadges = [];
-    if (cpu && cpu.score) {
-        specBadges.push(`CPU score: ${cpu.score.toLocaleString()}`);
+    if (cpu && cpu.geekbench6) {
+        const gb = cpu.geekbench6;
+        specBadges.push(`Geekbench 6: ${gb.single.toLocaleString()} single · ${gb.multi.toLocaleString()} multi`);
     }
     if (frame && frame.size) specBadges.push(`${frame.size} chassis`);
     if (frame && frame.dualPowerSupply) specBadges.push('Dual PSU');
