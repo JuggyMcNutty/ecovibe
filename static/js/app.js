@@ -716,6 +716,11 @@ function stopCatalogAutoRefresh() {
 // "Out of stock" badges. Requests are batched with limited concurrency.
 async function refreshStockForAllPlans() {
     if (!state.plans.length) return;
+    // Snapshot the account-switch generation. Per-plan stock is fetched from
+    // the active account's endpoint; if the user switches accounts while these
+    // requests are in flight, the results belong to the old account and must
+    // not clobber the new account's freshly-loaded state below.
+    const gen = state._switchGen;
     const planCodes = state.plans.map(p => p.planCode).filter(Boolean);
     const stockByPlan = {};
     const CONCURRENCY = 5;
@@ -767,6 +772,10 @@ async function refreshStockForAllPlans() {
         }
     }
     await Promise.all(Array.from({ length: CONCURRENCY }, fetchOne));
+    // An account switch landed while we were fetching — discard these stale
+    // results rather than writing the previous account's stock onto the new
+    // account's plans.
+    if (gen !== state._switchGen) return;
     state.stockByPlan = stockByPlan;
     state.plans.forEach(p => { p._inStock = stockByPlan[p.planCode] ?? true; });
 }
