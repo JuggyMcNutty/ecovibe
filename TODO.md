@@ -12,7 +12,7 @@ See [README.md](README.md) for current feature documentation.
 - [x] Real-Time Updates (SSE) with shared background poller
 - [x] Stock Alerts (CRUD, browser notifications, sound)
 - [x] Rush Mode Checkout (one-click, auto-pay, waive retraction)
-- [x] 1-10 second polling (configurable + persisted)
+- [x] 1-60 second polling (configurable + persisted)
 - [x] Catalog Browser (multi-country)
 - [x] Multi-Region Support (ovh-eu, ovh-us, ovh-ca)
 - [x] SQLite persistence for alerts + settings

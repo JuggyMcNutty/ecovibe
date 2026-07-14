@@ -163,8 +163,7 @@ were created under (`account_id` column on each table).
 - **Monitor**: polls the active account only (Decision 1A). The poller
   early-returns when there are no enabled alerts, so idle polling does
   no OVH network I/O. Multi-account simultaneous polling is a future
-  iteration; `_poll_once` is structured with a `_poll_account`-style
-  seam to make that jump cheap.
+  iteration.
 - **Sniper**: fires under the alert's own `account_id`
   (`get_ovh_service(alert.account_id)`), not the active one — so an
   armed sniper keeps targeting the right region after a switch.
