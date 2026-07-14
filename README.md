@@ -264,8 +264,9 @@ and use the corresponding OVHcloud Manager to create an API key:
    values: Application Key, Application Secret, and Consumer Key.
 
 3. **Enter in Setup Wizard** — Open http://localhost:8000, select your
-   region, and paste the three keys into the setup form. Click "Save
-   Account" to verify the connection.
+   region, and paste the three keys into the setup form. Saving
+   verifies the credentials against OVH first — invalid keys, or keys
+   created for a different region, are rejected and nothing is saved.
 
 **Note:** Credentials are region-specific. US credentials only work with `ovh-us`, EU credentials only work with `ovh-eu`.
 

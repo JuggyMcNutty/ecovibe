@@ -38,6 +38,17 @@ def isolated_state(tmp_path, monkeypatch):
     from app.config import get_settings
     get_settings.cache_clear()
 
+    # Account create/update verifies credentials against OVH's GET /me
+    # before saving (hard block). Stub the seam so the many tests that
+    # create accounts with fake keys keep working offline; tests for the
+    # verification behavior itself re-patch this explicitly.
+    import app.api.accounts as accounts_api
+
+    async def _fake_verify(endpoint, application_key, application_secret, consumer_key):
+        return {"nichandle": "test-user"}
+
+    monkeypatch.setattr(accounts_api, "_verify_credentials", _fake_verify)
+
     # Reset the log bus and re-attach a fresh handler pointing at it, so each
     # test sees an isolated buffer (the handler from a prior test would still
     # target the previous bus otherwise).

@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from app.api.errors import raise_ovh_http_error
 from app.services.ovh_service import (
+    OVHService,
     OVHServiceError,
     get_ovh_service,
     reset_ovh_service,
@@ -54,6 +55,32 @@ class AccountResponse(BaseModel):
     consumer_key_masked: str | None = None
     application_secret_configured: bool = False
     created_at: str
+    # Filled by create/update from the pre-save credential check so the
+    # UI can show "Connected as X" without a second /test round-trip.
+    nichandle: str | None = None
+
+
+async def _verify_credentials(
+    endpoint: str,
+    application_key: str,
+    application_secret: str,
+    consumer_key: str,
+) -> dict:
+    """Check credentials against OVH's GET /me before anything is saved.
+
+    Uses a transient OVHService built directly from the supplied values —
+    never the registry, so nothing is cached for unsaved credentials.
+    Returns the OVH identity dict; raises OVHServiceError on rejection.
+    A wrong-region key fails here too (OVH answers 403 'This application
+    key is invalid' when keys are used against the wrong endpoint).
+
+    Module-level on purpose: tests stub it (see conftest.isolated_state).
+    """
+    svc = OVHService(
+        endpoint, application_key, application_secret, consumer_key,
+        use_cache=False,
+    )
+    return await asyncio.to_thread(svc.get, "/me")
 
 
 def _to_response(acct: dict) -> AccountResponse:
@@ -90,6 +117,22 @@ async def create_account(request: AccountRequest) -> AccountResponse:
         raise HTTPException(status_code=400, detail="application_secret is required when creating an account.")
     if not request.label.strip():
         raise HTTPException(status_code=400, detail="label is required.")
+    # Hard block: never persist credentials OVH rejects (invalid key, or
+    # a key created for a different region's endpoint).
+    try:
+        me = await _verify_credentials(
+            request.endpoint, request.application_key,
+            request.application_secret, request.consumer_key,
+        )
+    except OVHServiceError as e:
+        logger.warning(
+            "Account creation rejected — credential check failed (%s): %s",
+            request.endpoint, e.message,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Credential check failed — account NOT saved: {e.message}",
+        ) from e
     storage = get_storage()
     acct_id = storage.save_account(
         account_id=None,
@@ -103,8 +146,13 @@ async def create_account(request: AccountRequest) -> AccountResponse:
     if storage.get_active_account_id() is None:
         storage.set_active_account_id(acct_id)
     acct = storage.get_account(acct_id)
-    logger.info("Account created: %s (%s)", acct_id, request.label)
-    return _to_response(acct)
+    logger.info(
+        "Account created: %s (%s) — verified as %s",
+        acct_id, request.label, me.get("nichandle"),
+    )
+    resp = _to_response(acct)
+    resp.nichandle = me.get("nichandle")
+    return resp
 
 
 @router.get("/active")
@@ -163,8 +211,28 @@ async def update_account(account_id: str, request: AccountRequest) -> AccountRes
             detail=f"Invalid endpoint. Must be one of: {', '.join(_VALID_ENDPOINTS)}.",
         )
     storage = get_storage()
-    if storage.get_account(account_id) is None:
+    existing = storage.get_account(account_id)
+    if existing is None:
         raise HTTPException(status_code=404, detail="Account not found.")
+    # Verify the credentials that will actually be stored: empty fields
+    # preserve the stored values (masked-edit flow), so merge before the
+    # check — mirroring storage.save_account's preserve logic.
+    merged_key = request.application_key or existing["application_key"]
+    merged_secret = request.application_secret or existing["application_secret"]
+    merged_ck = request.consumer_key or existing["consumer_key"]
+    try:
+        me = await _verify_credentials(
+            request.endpoint, merged_key, merged_secret, merged_ck,
+        )
+    except OVHServiceError as e:
+        logger.warning(
+            "Account update rejected — credential check failed (%s): %s",
+            account_id, e.message,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Credential check failed — account NOT updated: {e.message}",
+        ) from e
     storage.save_account(
         account_id=account_id,
         label=request.label.strip(),
@@ -175,8 +243,12 @@ async def update_account(account_id: str, request: AccountRequest) -> AccountRes
     )
     reset_ovh_service(account_id)
     acct = storage.get_account(account_id)
-    logger.info("Account updated: %s", account_id)
-    return _to_response(acct)
+    logger.info(
+        "Account updated: %s — verified as %s", account_id, me.get("nichandle"),
+    )
+    resp = _to_response(acct)
+    resp.nichandle = me.get("nichandle")
+    return resp
 
 
 @router.delete("/{account_id}")

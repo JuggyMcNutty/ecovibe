@@ -155,6 +155,13 @@ were created under (`account_id` column on each table).
   specific one (used by the sniper). `reset_ovh_service(account_id)` /
   `reset_all_services()` invalidate the cache. OVHService takes creds in
   its constructor (no DB read) — construct directly in tests.
+- **Credential verification on save**: `POST`/`PUT /api/accounts`
+  verify the credentials against OVH's `GET /me` BEFORE persisting
+  (hard block — invalid or wrong-region keys get a 400 and nothing is
+  saved; the response carries the verified `nichandle` on success).
+  Updates verify the MERGED credentials (empty fields preserve stored
+  values). The seam is `accounts._verify_credentials`, stubbed by
+  `conftest.isolated_state` so offline tests can create fake accounts.
 - **Active account**: stored in `settings.active_account_id`; cached by
   the registry. Switching via `PUT /api/accounts/active` calls
   `monitor.reload()` which clears in-memory alerts, stock cache, and

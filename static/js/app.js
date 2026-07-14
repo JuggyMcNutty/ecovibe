@@ -3032,32 +3032,26 @@ async function submitAccount(fields, editingId, resultElId) {
         showTestResult(resultElId, 'error', 'Application secret is required for a new account.');
         return null;
     }
-    showTestResult(resultElId, 'loading', 'Saving account…');
+    showTestResult(resultElId, 'loading', 'Verifying credentials with OVH…');
     const body = {
         label, endpoint,
         application_key: applicationKey,
         application_secret: applicationSecret,
         consumer_key: consumerKey,
     };
-    let savedId;
+    // The backend verifies the credentials against OVH BEFORE saving and
+    // rejects with the OVH error otherwise — a throw here means nothing
+    // was saved (the callers' catch shows the message in the form).
+    let saved;
     if (editingId) {
-        await apiRequest('PUT', `/accounts/${editingId}`, body);
-        savedId = editingId;
+        saved = await apiRequest('PUT', `/accounts/${editingId}`, body);
     } else {
-        const created = await apiRequest('POST', '/accounts', body);
-        savedId = created.id;
+        saved = await apiRequest('POST', '/accounts', body);
     }
     await loadAccounts();
-    // Test the saved account (non-fatal — the account is already saved).
-    try {
-        const result = await apiRequest('POST', `/accounts/${savedId}/test`);
-        showTestResult(resultElId, 'success',
-            `Connected as ${result.firstname || ''} ${result.name || ''} (${result.nichandle || 'unknown'})`);
-        return { id: savedId, ok: true };
-    } catch (e) {
-        showTestResult(resultElId, 'error', `Account saved but test failed: ${e.message}`);
-        return { id: savedId, ok: false };
-    }
+    showTestResult(resultElId, 'success',
+        `Connected as ${saved.nichandle || 'unknown'} — account ${editingId ? 'updated' : 'saved'}.`);
+    return { id: saved.id, ok: true };
 }
 
 // First-run wizard: save the first account, activate it, go to the monitor.
@@ -3073,8 +3067,8 @@ async function saveSetupAccount() {
     try {
         const saved = await submitAccount(fields, null, 'setup-test-result');
         if (!saved) return;
-        // The backend auto-activates the first account. Proceed to the monitor
-        // regardless of the test result (the account is saved either way).
+        // Reaching here means the credentials verified AND the account
+        // saved (the backend hard-blocks otherwise). Proceed to the monitor.
         state.activeAccountId = saved.id;
         state.endpoint = endpoint;
         state.configured = true;
@@ -3108,17 +3102,15 @@ async function saveManagedAccount() {
     try {
         const saved = await submitAccount(fields, editingId, 'acct-test-result');
         if (!saved) return;
-        // Active account is unchanged; refresh the list + header dropdown.
+        // Verified + saved (the backend hard-blocks bad credentials, so
+        // there is no "saved but broken" half-state anymore).
         renderAccountList();
         renderAccountSelect();
-        if (saved.ok) {
-            // Clean success: confirm via toast and close the editor.
-            showToast(editingId ? 'Account updated.' : 'Account added.');
-            closeAccountEditor();
-        }
-        // On test failure, leave the editor open so the "saved but test
-        // failed" banner stays visible for the user to fix the keys.
+        showToast(editingId ? 'Account updated.' : 'Account added.');
+        closeAccountEditor();
     } catch (e) {
+        // Verification/save failure: nothing was saved — keep the editor
+        // open with OVH's error so the user can fix the keys.
         showTestResult('acct-test-result', 'error', e.message);
     }
 }

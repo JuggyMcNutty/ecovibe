@@ -359,3 +359,79 @@ def test_delete_account_disarms_its_snipers(client):
     assert r.status_code == 200
     assert sniper.is_armed("alert-a")       # other account untouched
     assert not sniper.is_armed("alert-b")   # deleted account's sniper gone
+
+
+# ----- pre-save credential verification (hard block) -----
+
+def _reject_verify(monkeypatch, message="This application key is invalid"):
+    import app.api.accounts as accounts_api
+    from app.services.ovh_service import OVHServiceError
+
+    async def _raise(endpoint, application_key, application_secret, consumer_key):
+        raise OVHServiceError(message, status_code=403)
+
+    monkeypatch.setattr(accounts_api, "_verify_credentials", _raise)
+
+
+def test_create_rejected_when_credentials_invalid(client, monkeypatch):
+    """Invalid keys (or wrong-region keys — OVH rejects both with the same
+    403) must never create an account."""
+    _reject_verify(monkeypatch)
+    r = client.post(
+        "/api/accounts",
+        json={"label": "bad", "endpoint": "ovh-us", "application_key": "bad",
+              "application_secret": "bad", "consumer_key": "bad"},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert r.status_code == 400
+    assert "application key is invalid" in r.json()["detail"]
+    assert "NOT saved" in r.json()["detail"]
+    assert client.get("/api/accounts").json() == []
+    assert client.get("/api/accounts/active").json()["active_account_id"] is None
+
+
+def test_update_rejected_keeps_stored_account(client, monkeypatch):
+    acct = _create_account(client, label="good")  # conftest stub verifies ok
+    _reject_verify(monkeypatch)
+    r = client.put(
+        f"/api/accounts/{acct['id']}",
+        json={"label": "hacked", "endpoint": "ovh-us", "application_key": "zzzz-new-key",
+              "application_secret": "new", "consumer_key": "new"},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert r.status_code == 400
+    assert "NOT updated" in r.json()["detail"]
+    stored = client.get("/api/accounts").json()[0]
+    assert stored["label"] == "good"                      # untouched
+    assert stored["endpoint"] == "ovh-eu"
+    assert stored["application_key_masked"] == "****"     # still the old "ak"
+
+
+def test_update_verifies_merged_credentials(client, monkeypatch):
+    """Empty fields preserve stored values, so the check must run against
+    the MERGED credentials — what will actually be saved."""
+    import app.api.accounts as accounts_api
+
+    acct = _create_account(client, secret="stored-secret-123")
+    seen = {}
+
+    async def _capture(endpoint, application_key, application_secret, consumer_key):
+        seen.update(endpoint=endpoint, key=application_key,
+                    secret=application_secret, ck=consumer_key)
+        return {"nichandle": "test-user"}
+
+    monkeypatch.setattr(accounts_api, "_verify_credentials", _capture)
+    r = client.put(
+        f"/api/accounts/{acct['id']}",
+        json={"label": "renamed", "endpoint": "ovh-eu", "application_key": "ak2",
+              "application_secret": "", "consumer_key": "ck2"},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert r.status_code == 200
+    assert seen == {"endpoint": "ovh-eu", "key": "ak2",
+                    "secret": "stored-secret-123", "ck": "ck2"}
+
+
+def test_create_returns_nichandle(client):
+    acct = _create_account(client)
+    assert acct["nichandle"] == "test-user"  # from the conftest stub
