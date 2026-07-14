@@ -62,17 +62,16 @@ def _format_message(
     return plain, html
 
 
-async def _send_telegram(
-    plan_code: str, fqns: list[str], price: float | None, currency_code: str,
-) -> None:
-    """Send a Telegram message via the Bot API. No-op if not configured."""
+async def _send_telegram(html: str) -> None:
+    """Send a Telegram message via the Bot API. No-op if not configured.
+
+    ``html`` must already have its dynamic parts escaped (see the
+    ``notify_*`` formatters)."""
     token = _get_notifier_setting("telegram_bot_token")
     chat_id = _get_notifier_setting("telegram_chat_id")
     if not (token and chat_id):
         return
-    _, html = _format_message(plan_code, fqns, price, currency_code)
-    # Telegram HTML doesn't support <br>; it uses literal newlines. The
-    # dynamic parts are already escaped in _format_message.
+    # Telegram HTML doesn't support <br>; it uses literal newlines.
     text = html.replace("<br>", "\n")
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
@@ -91,22 +90,19 @@ async def _send_telegram(
 
 
 async def _send_discord(
-    plan_code: str, fqns: list[str], price: float | None, currency_code: str,
+    subject: str, plain: str, fields: list[dict[str, Any]] | None = None,
 ) -> None:
     """Post a Discord webhook with a rich embed. No-op if not configured."""
     webhook_url = _get_notifier_setting("discord_webhook_url")
     if not webhook_url:
         return
-    plain, _ = _format_message(plan_code, fqns, price, currency_code)
     embed: dict[str, Any] = {
-        "title": "\U0001F514 OVH Stock Alert",
+        "title": f"\U0001F514 {subject}",
         "description": plain,
         "color": 0x60A5FA,  # tailwind blue-400
-        "fields": [
-            {"name": "Plan", "value": f"`{plan_code}`", "inline": True},
-            {"name": "Configs", "value": f"`{', '.join(fqns[:3])}`", "inline": True},
-        ],
     }
+    if fields:
+        embed["fields"] = fields
     payload = {"embeds": [embed]}
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -118,20 +114,17 @@ async def _send_discord(
         logger.warning("discord notification failed", exc_info=True)
 
 
-async def _send_slack(
-    plan_code: str, fqns: list[str], price: float | None, currency_code: str,
-) -> None:
+async def _send_slack(subject: str, plain: str) -> None:
     """Post to a Slack incoming webhook. No-op if not configured."""
     webhook_url = _get_notifier_setting("slack_webhook_url")
     if not webhook_url:
         return
-    plain, _ = _format_message(plan_code, fqns, price, currency_code)
     payload = {
         "text": f"\U0001F514 {plain}",
         "blocks": [
             {
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": f"*OVH Stock Alert*\n{plain}"},
+                "text": {"type": "mrkdwn", "text": f"*{subject}*\n{plain}"},
             }
         ],
     }
@@ -144,9 +137,7 @@ async def _send_slack(
         logger.warning("slack notification failed", exc_info=True)
 
 
-def _send_email(
-    plan_code: str, fqns: list[str], price: float | None, currency_code: str,
-) -> None:
+def _send_email(subject: str, html: str) -> None:
     """Send an HTML email via SMTP. No-op if not configured.
 
     Synchronous (smtplib is blocking) - callers should run via
@@ -159,9 +150,8 @@ def _send_email(
     notify_to = _get_notifier_setting("notify_email_to")
     if not (smtp_host and notify_to and smtp_from):
         return
-    _, html = _format_message(plan_code, fqns, price, currency_code)
     msg = MIMEText(html, "html")
-    msg["Subject"] = f"OVH stock alert: {plan_code} available"
+    msg["Subject"] = subject
     msg["From"] = smtp_from
     msg["To"] = notify_to
     try:
@@ -177,6 +167,27 @@ def _send_email(
         logger.warning("email notification failed", exc_info=True)
 
 
+async def broadcast(
+    subject: str, plain: str, html: str,
+    fields: list[dict[str, Any]] | None = None,
+) -> None:
+    """Fan out one pre-formatted message to every configured channel.
+
+    ``plain`` feeds Discord/Slack, ``html`` feeds Telegram/email (dynamic
+    parts must already be escaped), ``fields`` optionally enriches the
+    Discord embed. `return_exceptions=True` ensures one channel's failure
+    cannot cancel the others; errors are logged inside each sender and
+    this coroutine never raises.
+    """
+    await asyncio.gather(
+        _send_telegram(html),
+        _send_discord(subject, plain, fields),
+        _send_slack(subject, plain),
+        asyncio.to_thread(_send_email, subject, html),
+        return_exceptions=True,
+    )
+
+
 async def notify_stock_alert(
     plan_code: str, fqns: list[str], price: float | None = None,
     currency_code: str = "EUR",
@@ -186,9 +197,6 @@ async def notify_stock_alert(
     `price` must already be in whole currency units (not microcents) and
     `currency_code` should reflect the account the alert came from - callers
     must convert before calling this.
-
-    `return_exceptions=True` ensures one channel's failure cannot cancel the
-    others. Errors are logged inside each sender; this coroutine never raises.
     """
     channels = configured_channels()
     logger.info(
@@ -196,13 +204,49 @@ async def notify_stock_alert(
         plan_code, len(fqns), "" if len(fqns) == 1 else "s",
         ", ".join(channels) if channels else "no channels",
     )
-    await asyncio.gather(
-        _send_telegram(plan_code, fqns, price, currency_code),
-        _send_discord(plan_code, fqns, price, currency_code),
-        _send_slack(plan_code, fqns, price, currency_code),
-        asyncio.to_thread(_send_email, plan_code, fqns, price, currency_code),
-        return_exceptions=True,
+    plain, html = _format_message(plan_code, fqns, price, currency_code)
+    fields = [
+        {"name": "Plan", "value": f"`{plan_code}`", "inline": True},
+        {"name": "Configs", "value": f"`{', '.join(fqns[:3])}`", "inline": True},
+    ]
+    await broadcast(
+        f"OVH stock alert: {plan_code} available", plain, html, fields
     )
+
+
+async def notify_price_drop(
+    plan_code: str, price: float, threshold: float, currency_code: str = "EUR",
+) -> None:
+    """Notify that a plan's price dropped to/below the user's watch threshold.
+
+    Both prices are in whole currency units (already divided out of
+    microcents by the caller).
+    """
+    logger.info(
+        "notifying price drop for %s: %.2f %s (threshold %.2f)",
+        plan_code, price, currency_code, threshold,
+    )
+    plain = (
+        f"OVH price drop: {plan_code} is now {price:.2f} {currency_code} "
+        f"(at or below your {threshold:.2f} {currency_code} watch)"
+    )
+    html = (
+        f"<b>OVH price drop</b>: <code>{escape(plan_code)}</code> is now "
+        f"<b>{price:.2f} {escape(currency_code)}</b> "
+        f"(at or below your {threshold:.2f} {escape(currency_code)} watch)"
+    )
+    await broadcast(f"OVH price drop: {plan_code}", plain, html)
+
+
+async def notify_promo(plan_code: str, description: str) -> None:
+    """Notify that OVH published a promotion on a plan's pricing."""
+    logger.info("notifying promo on %s: %s", plan_code, description[:120])
+    plain = f"OVH promotion on {plan_code}: {description}"
+    html = (
+        f"<b>OVH promotion</b> on <code>{escape(plan_code)}</code>: "
+        f"{escape(description)}"
+    )
+    await broadcast(f"OVH promotion: {plan_code}", plain, html)
 
 
 def configured_channels() -> list[str]:
