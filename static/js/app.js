@@ -53,15 +53,11 @@ let state = {
     recentAlerts: [],
     currentStock: {},
     lastStockAlert: null,
-    cart: null,
-    cartCreatedAt: null,
-    orderResult: null,
     billingLoaded: false,
     checkoutDefaults: null,
     addonPrices: {},
     productSpecs: {},
     stockByPlan: {},
-    notifSettingsLoaded: false,
     // Orders tab state.
     allOrders: [],
     selectedOrderId: null,
@@ -213,13 +209,6 @@ function displayPrice(microcents, formattedPrice, fromCode = state.catalogCurren
     if (microcents == null) return 'On request';
     return formatCurrency(convertMicrocents(microcents, fromCode, eff), eff);
 }
-
-function displayPriceUnits(microcents, fromCode = state.catalogCurrency) {
-    // Returns just the converted numeric units (for totals arithmetic display).
-    if (microcents == null) return 0;
-    return convertMicrocents(microcents, fromCode, effectiveDisplayCurrency());
-}
-
 
 let audioContext = null;
 let alertBuffer = null;
@@ -418,9 +407,6 @@ async function switchAccount(accountId) {
     state.stockByPlan = {};
     state.allOrders = [];
     state.selectedOrderId = null;
-    state.cart = null;
-    state.cartCreatedAt = null;
-    state.orderResult = null;
     state.plans = [];
     state.addonPrices = {};
     state.productSpecs = {};
@@ -448,7 +434,6 @@ async function switchAccount(accountId) {
         if (acct) state.endpoint = acct.endpoint;
         // Reload all scoped data for the new account.
         state._currencyUserSet = false;  // allow /me to re-default the currency
-        populateCatalogCountries();
         await loadFxRates();
         if (gen !== state._switchGen) return;
         await loadAccountInfo();
@@ -569,11 +554,6 @@ const SUBSIDIARIES_BY_ENDPOINT = {
     'ovh-us': ['US'],
     'ovh-ca': ['CA'],
 };
-
-function populateCatalogCountries() {
-    // The per-country dropdown was replaced by the currency selector.
-    // Kept as a no-op so existing call sites don't need updating.
-}
 
 function catalogSubsidiaryForCurrency() {
     // Delegate to subsidiaryForMode() so the fetch and the display mode
@@ -1969,8 +1949,6 @@ function renderCatalogDetail(plan) {
                     waive_retractation: waive,
                     max_price: maxPrice,
                 });
-                state.orderResult = result;
-                state.cart = null;
                 document.getElementById('order-id').textContent = `Order ID: ${result.orderId || 'N/A'}`;
                 document.getElementById('order-url').href = result.url || '#';
                 showView('order-complete');
@@ -2063,7 +2041,6 @@ async function loadNotificationSettings() {
                 ? `Active: ${channels.join(', ')}`
                 : 'No channels configured';
         }
-        state.notifSettingsLoaded = true;
     } catch (e) {
         console.error('Failed to load notification settings:', e);
     }
@@ -2606,10 +2583,6 @@ async function rushOrder(e) {
             return;
         }
 
-        state.orderResult = result;
-        state.cart = null;
-        state.cartCreatedAt = null;
-
         document.getElementById('order-id').textContent = `Order ID: ${result.orderId || 'N/A'}`;
         const orderUrl = document.getElementById('order-url');
         orderUrl.href = result.url || '#';
@@ -2761,7 +2734,6 @@ async function saveSetupAccount() {
         setTimeout(async () => {
             document.getElementById('settings-btn').classList.remove('hidden');
             renderAccountSelect();
-            populateCatalogCountries();
             await loadAlerts();
             await loadCatalog();
             await loadPollInterval();
@@ -2831,7 +2803,6 @@ async function deleteAccount() {
         if (wasActive) {
             state.endpoint = state.accounts.find(a => a.id === state.activeAccountId)?.endpoint || state.endpoint;
             state._currencyUserSet = false;
-            populateCatalogCountries();
             await loadFxRates();
             await loadAccountInfo();
             await loadAlerts();
@@ -3997,7 +3968,6 @@ async function init() {
     } else {
         document.getElementById('settings-btn').classList.remove('hidden');
         renderAccountSelect();
-        populateCatalogCountries();
         await loadFxRates();
         await loadAccountInfo();
         await loadAlerts();
@@ -4189,8 +4159,6 @@ async function init() {
     document.getElementById('rush-order-form').addEventListener('submit', rushOrder);
 
     document.getElementById('back-to-monitor-btn').addEventListener('click', () => {
-        state.cart = null;
-        state.cartCreatedAt = null;
         showView('monitor');
         // Only (re)start monitoring if it was already active - don't force
         // it on for a user who placed an order via the catalog's inline
