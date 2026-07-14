@@ -403,6 +403,15 @@ class OVHService:
         pricing. Used by the price-tracking + max-price cap.
         """
         catalog = self.fetch_catalog(subsidiary=subsidiary)
+        return self.plan_price_from_catalog(catalog, plan_code)
+
+    @staticmethod
+    def plan_price_from_catalog(
+        catalog: dict[str, Any], plan_code: str
+    ) -> int | None:
+        """Extract a plan's default monthly price from an already-fetched
+        catalog (see ``get_plan_price`` for the pricing-entry rules). Lets
+        one catalog fetch serve many lookups (the price-watch checker)."""
         for plan in catalog.get("plans", []):
             if plan.get("planCode") == plan_code:
                 for pr in plan.get("pricings", []):

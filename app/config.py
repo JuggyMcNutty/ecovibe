@@ -93,6 +93,11 @@ class Settings(BaseSettings):
     smtp_from: str | None = None
     notify_email_to: str | None = None
 
+    # How often (seconds) the monitor re-fetches the catalog to evaluate
+    # price watches and scan for promotions. One catalog fetch serves all
+    # watches. 0 disables the check entirely.
+    price_check_interval: int = 900
+
     # Stock-event retention. The monitor prunes stock_events hourly: rows
     # older than the retention window are deleted, and the table is hard-
     # capped at max_rows (oldest overflow dropped). Keeps the region

@@ -519,6 +519,82 @@ async def test_region_ticker_disabled_no_batch_for_single_plan(monitor, monkeypa
     fake.get_stock.assert_not_called()
 
 
+def _price_catalog(price, promotions=None):
+    return {
+        "plans": [{
+            "planCode": "24sk10",
+            "pricings": [{
+                "mode": "default", "interval": 1, "intervalUnit": "month",
+                "price": price, "promotions": promotions or [],
+            }],
+        }],
+    }
+
+
+@pytest.mark.asyncio
+async def test_price_watch_fires_below_threshold_once(monitor, monkeypatch):
+    """A watch notifies at/below threshold, stays quiet while the price is
+    unchanged, and re-fires on a further drop."""
+    storage = monitor._storage_get()
+    storage.upsert_price_watch(None, "24sk10", 5_000_000_000)
+
+    fake = MagicMock()
+    fake.is_configured.return_value = True
+    fake.account_id = None
+    fake.default_currency_code.return_value = "USD"
+    fake.fetch_catalog.return_value = _price_catalog(6_000_000_000)
+
+    drops = []
+
+    async def _drop(plan_code, price, threshold, currency_code="EUR"):
+        drops.append((plan_code, price, threshold))
+
+    monkeypatch.setattr("app.services.notifier.notify_price_drop", _drop)
+
+    await monitor._check_prices_and_promos(fake, storage)
+    assert drops == []  # above threshold
+
+    fake.fetch_catalog.return_value = _price_catalog(4_500_000_000)
+    await monitor._check_prices_and_promos(fake, storage)
+    assert drops == [("24sk10", 45.0, 50.0)]
+
+    # Same price again: no re-notification.
+    await monitor._check_prices_and_promos(fake, storage)
+    assert len(drops) == 1
+
+    # Further drop: fires again.
+    fake.fetch_catalog.return_value = _price_catalog(4_000_000_000)
+    await monitor._check_prices_and_promos(fake, storage)
+    assert drops[-1] == ("24sk10", 40.0, 50.0)
+
+    # Price history was logged for the watched plan.
+    assert storage.latest_price("24sk10") == 4_000_000_000
+
+
+@pytest.mark.asyncio
+async def test_promo_scan_notifies_once_per_promo(monitor, monkeypatch):
+    storage = monitor._storage_get()
+
+    fake = MagicMock()
+    fake.is_configured.return_value = True
+    fake.account_id = None
+    fake.default_currency_code.return_value = "USD"
+    promo = {"description": "Flash sale -30%", "value": 30}
+    fake.fetch_catalog.return_value = _price_catalog(6_000_000_000, promotions=[promo])
+
+    promos = []
+
+    async def _promo(plan_code, description):
+        promos.append((plan_code, description))
+
+    monkeypatch.setattr("app.services.notifier.notify_promo", _promo)
+
+    await monitor._check_prices_and_promos(fake, storage)
+    await monitor._check_prices_and_promos(fake, storage)  # same promo again
+    assert promos == [("24sk10", "Flash sale -30%")]
+    assert len(storage.load_recent_promos()) == 1
+
+
 @pytest.mark.asyncio
 async def test_sweep_fires_snipers_for_non_active_account(monitor, monkeypatch):
     """A sniper armed under account A must keep firing after the user switches

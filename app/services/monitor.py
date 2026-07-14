@@ -317,6 +317,8 @@ class MonitorService:
         self._region_event: dict[str, Any] | None = None
         # Monotonic timestamp of the last stock-event prune (hourly).
         self._last_prune = 0.0
+        # Monotonic timestamp of the last price/promo catalog check.
+        self._last_price_check = 0.0
         self._poll_interval = 3  # clamped to [1, 60]
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
@@ -458,6 +460,13 @@ class MonitorService:
                 raise
             except Exception:
                 logger.exception("stock-event prune failed")
+            # Periodic price-watch + promo scan (one catalog fetch).
+            try:
+                await self._maybe_check_prices_and_promos()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("price/promo check failed")
             await asyncio.sleep(self._effective_sleep())
 
     async def subscribe(self) -> asyncio.Queue:
@@ -652,6 +661,101 @@ class MonitorService:
             logger.info(
                 "region restock: %d plan(s) gained stock", len(restocks)
             )
+
+    async def _maybe_check_prices_and_promos(self) -> None:
+        """Every ``price_check_interval`` seconds: fetch the catalog once,
+        evaluate all enabled price watches against it, and scan every
+        plan's pricings for new promotions. Best-effort; never raises."""
+        interval = get_settings().price_check_interval
+        if interval <= 0:
+            return
+        if time.monotonic() - self._last_price_check < interval:
+            return
+        self._last_price_check = time.monotonic()
+        storage = self._storage_get()
+        if not storage:
+            return
+        service = get_active_ovh_service()
+        if not service.is_configured():
+            return
+        await self._check_prices_and_promos(service, storage)
+
+    async def _check_prices_and_promos(self, service, storage) -> None:
+        import hashlib
+        import json
+
+        from app.services.notifier import notify_price_drop, notify_promo
+        from app.services.ovh_service import OVHService
+
+        try:
+            catalog = await asyncio.to_thread(service.fetch_catalog)
+        except OVHServiceError:
+            logger.debug("price/promo catalog fetch failed", exc_info=True)
+            return
+        now = datetime.now(timezone.utc)
+        currency = service.default_currency_code()
+
+        watches = await asyncio.to_thread(
+            storage.load_price_watches, service.account_id, True
+        )
+        for w in watches:
+            price = OVHService.plan_price_from_catalog(catalog, w["plan_code"])
+            if price is None:
+                continue
+            try:
+                await asyncio.to_thread(
+                    storage.log_price, w["plan_code"], price, now,
+                    service.account_id, currency,
+                )
+            except Exception:
+                logger.debug("failed to log watched price", exc_info=True)
+            # Fire when at/below threshold, but only when the price has
+            # moved since the last notification — no spam while it sits
+            # at the same level, yet a further drop re-alerts.
+            if price <= w["threshold_ucents"] and price != w["last_notified_price"]:
+                logger.info(
+                    "price watch hit: %s at %d ucents (threshold %d)",
+                    w["plan_code"], price, w["threshold_ucents"],
+                )
+                try:
+                    await notify_price_drop(
+                        w["plan_code"], price / 100_000_000,
+                        w["threshold_ucents"] / 100_000_000, currency,
+                    )
+                except Exception:
+                    logger.warning("price-drop notify failed", exc_info=True)
+                await asyncio.to_thread(
+                    storage.mark_price_watch_notified, w["id"], price
+                )
+
+        # Promo scan over the same catalog. The promotions field is empty
+        # outside sales and its populated shape is unverified — hash the
+        # raw entry defensively and never let a weird shape raise.
+        for plan in catalog.get("plans", []):
+            plan_code = plan.get("planCode") or ""
+            for pricing in plan.get("pricings") or []:
+                for promo in pricing.get("promotions") or []:
+                    try:
+                        payload = json.dumps(promo, sort_keys=True, default=str)
+                    except Exception:
+                        payload = repr(promo)
+                    key = hashlib.sha256(payload.encode()).hexdigest()[:16]
+                    try:
+                        is_new = await asyncio.to_thread(
+                            storage.record_promo, plan_code, key, payload,
+                            service.account_id,
+                        )
+                    except Exception:
+                        logger.debug("failed to record promo", exc_info=True)
+                        continue
+                    if is_new:
+                        desc = None
+                        if isinstance(promo, dict):
+                            desc = promo.get("description") or promo.get("name")
+                        try:
+                            await notify_promo(plan_code, desc or payload[:160])
+                        except Exception:
+                            logger.warning("promo notify failed", exc_info=True)
 
     async def _maybe_prune_events(self) -> None:
         """Prune old stock events at most once an hour (best-effort)."""
