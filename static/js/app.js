@@ -621,6 +621,11 @@ async function loadCatalog(country, force = false) {
         await refreshStockForAllPlans();
         if (gen !== state._switchGen) return;
         renderCatalogList();
+        // Plans (and their configurations) just arrived — refresh the rush
+        // form's DC/OS options for whatever plan code it currently holds.
+        updateRushConfigOptionsForPlanCode(
+            document.getElementById('rush-plan-code')?.value.trim() || ''
+        );
     } catch (e) {
         if (gen === state._switchGen) showError(e.message);
     } finally {
@@ -2639,6 +2644,7 @@ function applyAlertConfigToRushForm() {
     const fqnEl = document.getElementById('rush-fqn');
     planEl.value = state.lastStockAlert.planCode;
     fqnEl.value = state.lastStockAlert.fqn;
+    updateRushConfigOptionsForPlanCode(state.lastStockAlert.planCode);
     planEl.dataset.autofilled = '1';
     fqnEl.dataset.autofilled = '1';
     document.getElementById('use-alert-config-btn')?.classList.add('hidden');
@@ -3013,6 +3019,58 @@ function renderSniperProfileSelect() {
     if (current) select.value = current;
 }
 
+// Fallback lists for the rush form when the selected plan (or its catalog
+// configurations) is unknown — mirrors the old hardcoded index.html lists.
+const DEFAULT_RUSH_DATACENTERS = [
+    'gra', 'sbg', 'rbx', 'bhs', 'fra', 'waw', 'lon', 'sgp', 'syd', 'eri', 'hil', 'vin',
+];
+const DEFAULT_RUSH_OS = [
+    'none_64.en', 'debian_64', 'ubuntuserver_64', 'proxmox_64', 'freebsd_64', 'windows_2022_64',
+];
+
+function _planConfigValues(plan, name) {
+    const cfg = (plan?.configurations || []).find(c => c.name === name);
+    return cfg?.values?.length ? cfg.values : null;
+}
+
+// Rebuild the rush form's datacenter checkboxes and OS dropdown from the
+// selected plan's real catalog configurations, so new OVH DCs/OSes appear
+// without a code change. Preserves current selections where still valid.
+// MUST run before values are programmatically set (see loadProfileIntoForm).
+function updateRushConfigOptions(plan) {
+    const dcValues = _planConfigValues(plan, 'dedicated_datacenter') || DEFAULT_RUSH_DATACENTERS;
+    const osValues = _planConfigValues(plan, 'dedicated_os') || DEFAULT_RUSH_OS;
+
+    const dcContainer = document.getElementById('rush-datacenters');
+    if (dcContainer) {
+        const checked = new Set(getSelectedDatacenters());
+        dcContainer.innerHTML = '';
+        dcValues.forEach(dc => {
+            const cb = el('input', { type: 'checkbox', value: dc, class: 'rush-dc' });
+            cb.checked = checked.has(dc);
+            const label = el('label', { class: 'flex items-center gap-1' }, [cb]);
+            label.appendChild(document.createTextNode(` ${dc.toUpperCase()}`));
+            dcContainer.appendChild(label);
+        });
+    }
+
+    const osSel = document.getElementById('rush-os');
+    if (osSel) {
+        const current = osSel.value;
+        osSel.innerHTML = '';
+        osValues.forEach(v => {
+            osSel.appendChild(el('option', { value: v, text: humanizeOs(v) }));
+        });
+        if (osValues.includes(current)) osSel.value = current;
+        else if (osValues.includes('none_64.en')) osSel.value = 'none_64.en';
+    }
+}
+
+function updateRushConfigOptionsForPlanCode(planCode) {
+    const plan = (state.plans || []).find(p => p.planCode === planCode) || null;
+    updateRushConfigOptions(plan);
+}
+
 async function loadProfileIntoForm(profileId) {
     if (!profileId) return;
     const profile = state.profiles?.find(p => p.id === profileId);
@@ -3021,6 +3079,9 @@ async function loadProfileIntoForm(profileId) {
     // updates it in place instead of creating a duplicate.
     state.editingProfileId = profile.id;
     document.getElementById('profile-name').value = profile.name || '';
+    // Rebuild DC/OS options for the profile's plan BEFORE assigning the
+    // stored values, or they'd be clobbered by the rebuild.
+    updateRushConfigOptionsForPlanCode(profile.plan_code);
     document.getElementById('rush-plan-code').value = profile.plan_code || '';
     document.getElementById('rush-fqn').value = profile.fqn || '';
     // Always assign (not just when truthy) so switching to a profile that
@@ -4520,6 +4581,12 @@ async function init() {
             delete e.target.dataset.autofilled;
         });
     }
+    // Keep the DC/OS options in sync with the typed plan code.
+    document.getElementById('rush-plan-code').addEventListener('change', (e) => {
+        updateRushConfigOptionsForPlanCode(e.target.value.trim());
+    });
+    // Build the fallback DC/OS lists before any plan is known.
+    updateRushConfigOptions(null);
     document.getElementById('use-alert-config-btn').addEventListener('click', applyAlertConfigToRushForm);
 
     document.getElementById('region-ticker-toggle').addEventListener('change', (e) => {

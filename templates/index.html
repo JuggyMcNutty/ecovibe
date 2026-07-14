@@ -466,20 +466,9 @@
                             <div class="grid grid-cols-1 sm:grid-cols-2 sm:grid-cols-4 gap-4">
                                 <div class="sm:col-span-2">
                                     <label class="block text-sm text-gray-400 mb-1">Datacenters (try in order)</label>
-                                    <div id="rush-datacenters" class="grid grid-cols-2 sm:grid-cols-5 gap-2 text-sm">
-                                        <label class="flex items-center gap-1"><input type="checkbox" value="gra" class="rush-dc"> GRA</label>
-                                        <label class="flex items-center gap-1"><input type="checkbox" value="sbg" class="rush-dc"> SBG</label>
-                                        <label class="flex items-center gap-1"><input type="checkbox" value="rbx" class="rush-dc"> RBX</label>
-                                        <label class="flex items-center gap-1"><input type="checkbox" value="bhs" class="rush-dc"> BHS</label>
-                                        <label class="flex items-center gap-1"><input type="checkbox" value="fra" class="rush-dc"> FRA</label>
-                                        <label class="flex items-center gap-1"><input type="checkbox" value="waw" class="rush-dc"> WAW</label>
-                                        <label class="flex items-center gap-1"><input type="checkbox" value="lon" class="rush-dc"> LON</label>
-                                        <label class="flex items-center gap-1"><input type="checkbox" value="sgp" class="rush-dc"> SGP</label>
-                                        <label class="flex items-center gap-1"><input type="checkbox" value="syd" class="rush-dc"> SYD</label>
-                                        <label class="flex items-center gap-1"><input type="checkbox" value="eri" class="rush-dc"> ERI</label>
-                                        <label class="flex items-center gap-1"><input type="checkbox" value="hil" class="rush-dc"> HIL</label>
-                                        <label class="flex items-center gap-1"><input type="checkbox" value="vin" class="rush-dc"> VIN</label>
-                                    </div>
+                                    <!-- Populated by updateRushConfigOptions() from the selected
+                                         plan's catalog configurations (fallback list in app.js). -->
+                                    <div id="rush-datacenters" class="grid grid-cols-2 sm:grid-cols-5 gap-2 text-sm"></div>
                                 </div>
                                 <div>
                                     <label class="block text-sm text-gray-400 mb-1" for="rush-region">Region</label>
@@ -491,14 +480,9 @@
                                 </div>
                                 <div>
                                     <label class="block text-sm text-gray-400 mb-1" for="rush-os">Operating System</label>
-                                    <select id="rush-os" class="w-full bg-gray-700 px-3 py-2 rounded">
-                                        <option value="none_64.en">No OS</option>
-                                        <option value="debian_64">Debian (64-bit)</option>
-                                        <option value="ubuntuserver_64">Ubuntu Server (64-bit)</option>
-                                        <option value="proxmox_64">Proxmox VE (64-bit)</option>
-                                        <option value="freebsd_64">FreeBSD (64-bit)</option>
-                                        <option value="windows_2022_64">Windows Server 2022</option>
-                                    </select>
+                                    <!-- Populated by updateRushConfigOptions() from the selected
+                                         plan's dedicated_os values (fallback list in app.js). -->
+                                    <select id="rush-os" class="w-full bg-gray-700 px-3 py-2 rounded"></select>
                                 </div>
                             </div>
                             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
