@@ -544,3 +544,29 @@ def test_orderable_entry_rule():
     ]})
     assert not orderable_entry({"datacenters": []})
     assert not orderable_entry({})
+
+
+def test_dedicated_server_and_bill_methods_hit_expected_paths():
+    """The read-only server/billing wrappers call the documented OVH paths."""
+    svc = _make_service()
+    svc._client.get = MagicMock(return_value=[])
+
+    svc.list_dedicated_servers()
+    svc._client.get.assert_called_with("/dedicated/server")
+
+    svc.get_dedicated_server("ns1.example.net")
+    svc._client.get.assert_called_with("/dedicated/server/ns1.example.net")
+
+    svc.get_server_service_info("ns1.example.net")
+    svc._client.get.assert_called_with("/dedicated/server/ns1.example.net/serviceInfos")
+
+    svc.list_bills()
+    svc._client.get.assert_called_with("/me/bill")
+
+    svc.list_bills(date_from="2026-01-01T00:00:00Z")
+    args, kwargs = svc._client.get.call_args
+    assert args == ("/me/bill",)
+    assert kwargs == {"date.from": "2026-01-01T00:00:00Z"}
+
+    svc.get_bill("FR12345")
+    svc._client.get.assert_called_with("/me/bill/FR12345")

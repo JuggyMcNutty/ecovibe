@@ -588,6 +588,34 @@ class OVHService:
         """
         self.post(f"/me/order/{order_id}/retraction", reason=reason)
 
+    # ---- Owned dedicated servers (read-only) ----
+
+    def list_dedicated_servers(self) -> list[str]:
+        """Return the service names of all dedicated servers on the account."""
+        return self.get("/dedicated/server")
+
+    def get_dedicated_server(self, service_name: str) -> dict[str, Any]:
+        """Return a dedicated server's detail (datacenter, os, state, ...)."""
+        return self.get(f"/dedicated/server/{service_name}")
+
+    def get_server_service_info(self, service_name: str) -> dict[str, Any]:
+        """Return the server's serviceInfos (expiration, renewal mode, ...)."""
+        return self.get(f"/dedicated/server/{service_name}/serviceInfos")
+
+    # ---- Billing (read-only) ----
+
+    def list_bills(self, date_from: str | None = None) -> list[str]:
+        """Return the account's bill IDs, optionally from a start date
+        (ISO 8601, via ``date.from`` like ``list_orders``)."""
+        kwargs: dict[str, Any] = {}
+        if date_from:
+            kwargs["date.from"] = date_from
+        return self.get("/me/bill", **kwargs)
+
+    def get_bill(self, bill_id: str) -> dict[str, Any]:
+        """Return one bill's detail (date, totals, pdfUrl, url)."""
+        return self.get(f"/me/bill/{bill_id}")
+
 
 # ----- per-account service registry -----
 #
