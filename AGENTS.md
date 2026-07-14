@@ -458,18 +458,38 @@ were created under (`account_id` column on each table).
   `#setup-view` (first-run wizard, shown only when unconfigured — add the
   first account, then land on the monitor), `#accounts-view` (manage OVH
   accounts: list + inline add/edit editor), `#notifications-view`
-  (Telegram/Discord/Slack/SMTP), and `#billing-view` (Default Checkout
+  (Telegram/Discord/Slack/SMTP), `#billing-view` (Default Checkout
   Preferences — the `checkout-defaults-form`, moved out of the monitor's
-  Billing tab, which now shows only OVH account info + payment methods).
+  Billing tab, which now shows only OVH account info + payment methods),
+  and `#app-view` (App Options — see the app settings bullet below).
   The header "Settings" gear opens `#accounts-view` via
   `showSettings('accounts')`; a sub-nav of `[data-settings-nav]` buttons
-  switches between Accounts / Notifications / Billing (`showSettings(page)`
-  also loads that page's data); `.settings-back-btn` returns to the monitor. The
+  switches between Accounts / Notifications / Billing / App
+  (`showSettings(page)` also loads that page's data);
+  `.settings-back-btn` returns to the monitor. The
   setup wizard has NO skip — an account is required. Setup uses
   `setup-*` field ids and `saveSetupAccount()` (onboarding: activate +
   go to monitor); the accounts editor uses `acct-*` ids and
   `saveManagedAccount()` (never changes the active account); both share
   `submitAccount()`. Deleting the last account returns to `#setup-view`.
+- **App settings (`app_` prefix)**: runtime options on Settings → App are
+  stored in the DB `settings` table under `app_<key>` and read DB-first
+  with env fallback via `app/services/app_settings.py` (`APP_SETTINGS`
+  registry + `app_setting_int/bool/str`). **Always read these keys
+  through those helpers, never `get_settings()` directly** — the
+  lru-cached Settings object only sees env vars; `cache_clear()` cannot
+  pick up DB overrides. Covered keys: price_check_interval,
+  stock_event_retention_days/max_rows (read per monitor cycle — live),
+  use_cache/cache_ttl (frozen per OVHService — the PUT hook calls
+  `reset_ovh_service(None)` + clears the cache; `get_cache(ttl)` now
+  updates the TTL live instead of freezing it at first use),
+  log_level/log_file_max_bytes/log_backup_count (applied by re-running
+  the idempotent `setup_logging()`), log_buffer_size (`LogBus.resize()`
+  rebuilds the deque keeping the newest entries), and six `ui_*`
+  preferences consumed only by the frontend (`state.uiPrefs`, loaded by
+  `loadUiPrefs()`). `PUT /api/settings/app` validates everything before
+  writing (all-or-nothing 422) and returns the rebuild hooks it applied.
+  `log_file`, host/port, db_path, and CORS stay env-only (restart).
 - **Currency (display-only)**: a currency selector (EUR/USD/GBP/CAD)
   converts prices for display via cached ECB/Frankfurter FX rates
   (`app/services/currency.py`, 24h cache, EUR-base). It defaults to the

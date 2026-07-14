@@ -199,22 +199,26 @@ startup and stored in the SQLite database. Notification channel settings
 fallback for initial setup. Non-secret configuration uses environment
 variables:
 
+Options marked ⚙ can also be changed live in **Settings → App** — the
+DB value wins over the env var and survives restarts. The rest are
+env-only and require a restart to change.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OVH_HOST` | `127.0.0.1` | Server bind address (use `0.0.0.0` behind a reverse proxy) |
 | `OVH_PORT` | `8000` | Server bind port |
-| `OVH_USE_CACHE` | `false` | Enable in-memory catalog caching |
-| `OVH_CACHE_TTL` | `300` | Cache TTL in seconds |
+| `OVH_USE_CACHE` ⚙ | `false` | Enable in-memory catalog caching |
+| `OVH_CACHE_TTL` ⚙ | `300` | Cache TTL in seconds |
 | `OVH_DB_PATH` | `<project>/ovh-flash-monitor.db` | SQLite database path (defaults to project root) |
 | `OVH_CORS_ORIGINS` | `[]` | Comma-separated allowed CORS origins |
-| `OVH_PRICE_CHECK_INTERVAL` | `900` | Price-watch/promo scan cadence in seconds (0 disables) |
-| `OVH_STOCK_EVENT_RETENTION_DAYS` | `90` | Stock events older than this are pruned hourly |
-| `OVH_STOCK_EVENT_MAX_ROWS` | `500000` | Hard cap on the stock_events table (oldest dropped) |
-| `OVH_LOG_LEVEL` | `INFO` | Log verbosity (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
+| `OVH_PRICE_CHECK_INTERVAL` ⚙ | `900` | Price-watch/promo scan cadence in seconds (0 disables) |
+| `OVH_STOCK_EVENT_RETENTION_DAYS` ⚙ | `90` | Stock events older than this are pruned hourly |
+| `OVH_STOCK_EVENT_MAX_ROWS` ⚙ | `500000` | Hard cap on the stock_events table (oldest dropped) |
+| `OVH_LOG_LEVEL` ⚙ | `INFO` | Log verbosity (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
 | `OVH_LOG_FILE` | `<project>/ecovibe.log` | Rotating log file path |
-| `OVH_LOG_FILE_MAX_BYTES` | `5000000` | Rotate the log file at this size |
-| `OVH_LOG_BACKUP_COUNT` | `3` | Number of rotated log backups to keep |
-| `OVH_LOG_BUFFER_SIZE` | `5000` | In-memory log entries retained for the Logs tab |
+| `OVH_LOG_FILE_MAX_BYTES` ⚙ | `5000000` | Rotate the log file at this size |
+| `OVH_LOG_BACKUP_COUNT` ⚙ | `3` | Number of rotated log backups to keep |
+| `OVH_LOG_BUFFER_SIZE` ⚙ | `5000` | In-memory log entries retained for the Logs tab |
 | `OVH_TELEGRAM_BOT_TOKEN` | - | Telegram bot token (fallback for DB settings) |
 | `OVH_TELEGRAM_CHAT_ID` | - | Telegram chat ID (fallback for DB settings) |
 | `OVH_DISCORD_WEBHOOK_URL` | - | Discord webhook URL (fallback for DB settings) |
@@ -227,6 +231,12 @@ variables:
 | `OVH_NOTIFY_EMAIL_TO` | - | Recipient (fallback for DB settings) |
 
 See `.env.example` for a template.
+
+**Settings → App** additionally holds UI preferences with no env
+counterpart: stock-alert auto-hide time (0 = keep open), Orders tab
+window/limit, Logs snapshot size, region feed cap, and how many recent
+alerts are shown. Log level, cache options, and rotation settings apply
+immediately on save — no restart needed.
 
 ## Region-Specific Setup
 
