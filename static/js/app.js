@@ -54,8 +54,18 @@ let state = {
     currentStock: {},
     lastStockAlert: null,
     regionTicker: false,
-    regionFeed: [],   // [{time, planCode, fqns: []}] newest first, cap 100
+    regionFeed: [],   // [{time, planCode, fqns: []}] newest first
     editingProfileId: null,
+    // UI preferences (Settings → App, ui_* keys). Defaults mirror the
+    // app_settings registry; refreshed by loadUiPrefs().
+    uiPrefs: {
+        alertAutohideMs: 30000,
+        ordersDays: 90,
+        ordersLimit: 50,
+        logsLimit: 1000,
+        regionFeedCap: 100,
+        recentAlertsShown: 5,
+    },
     billingLoaded: false,
     checkoutDefaults: null,
     addonPrices: {},
@@ -2230,6 +2240,25 @@ async function loadAppSettings() {
     }
 }
 
+async function loadUiPrefs() {
+    // Refresh state.uiPrefs from the ui_* app settings. Silent fallback to
+    // the built-in defaults — a failed load must not break page init.
+    try {
+        const data = await apiRequest('GET', '/settings/app');
+        const s = data?.settings || {};
+        state.uiPrefs = {
+            alertAutohideMs: s.ui_alert_autohide_ms ?? state.uiPrefs.alertAutohideMs,
+            ordersDays: s.ui_orders_days ?? state.uiPrefs.ordersDays,
+            ordersLimit: s.ui_orders_limit ?? state.uiPrefs.ordersLimit,
+            logsLimit: s.ui_logs_limit ?? state.uiPrefs.logsLimit,
+            regionFeedCap: s.ui_region_feed_cap ?? state.uiPrefs.regionFeedCap,
+            recentAlertsShown: s.ui_recent_alerts_shown ?? state.uiPrefs.recentAlertsShown,
+        };
+    } catch (e) {
+        console.warn('Failed to load UI preferences (using defaults):', e);
+    }
+}
+
 async function saveAppSettings() {
     const body = {
         use_cache: document.getElementById('app-use-cache').checked,
@@ -2251,6 +2280,7 @@ async function saveAppSettings() {
         const status = document.getElementById('app-settings-status');
         if (status) status.textContent = applied.length ? `Applied: ${applied.join('; ')}` : 'Saved.';
         await loadAppSettings();
+        await loadUiPrefs();
     } catch (e) {
         showError(e.message);
     }
@@ -2530,7 +2560,7 @@ function renderRecentAlerts() {
         container.appendChild(el('p', { class: 'text-gray-500', text: 'No recent alerts' }));
         return;
     }
-    state.recentAlerts.slice(0, 5).forEach(alert => {
+    state.recentAlerts.slice(0, state.uiPrefs.recentAlertsShown).forEach(alert => {
         const time = new Date(alert.timestamp).toLocaleTimeString();
         const code = el('span', { class: 'text-red-400 font-bold', text: alert.planCode });
         const t = el('span', { class: 'text-gray-400 ml-2 text-xs', text: time });
@@ -2592,7 +2622,9 @@ function addRegionRestocks(event) {
             fqns: r.fqns || [],
         });
     }
-    if (state.regionFeed.length > 100) state.regionFeed.length = 100;
+    if (state.regionFeed.length > state.uiPrefs.regionFeedCap) {
+        state.regionFeed.length = state.uiPrefs.regionFeedCap;
+    }
     renderRegionFeed();
 }
 
@@ -2791,11 +2823,15 @@ function showStockAlert(planCode, fqns) {
 
     if (alertPanelTimer) {
         clearTimeout(alertPanelTimer);
-    }
-    alertPanelTimer = setTimeout(() => {
-        panel.classList.add('hidden');
         alertPanelTimer = null;
-    }, 30000);
+    }
+    // 0 = keep the panel open until the user dismisses it.
+    if (state.uiPrefs.alertAutohideMs > 0) {
+        alertPanelTimer = setTimeout(() => {
+            panel.classList.add('hidden');
+            alertPanelTimer = null;
+        }, state.uiPrefs.alertAutohideMs);
+    }
 }
 
 function applyAlertConfigToRushForm() {
@@ -3633,7 +3669,7 @@ async function loadOrdersTab(refresh = false) {
     container.innerHTML = '';
     container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'Loading orders from OVH...' }));
     try {
-        const data = await apiRequest('GET', `/orders?limit=50&days=90${refresh ? '&refresh=true' : ''}`);
+        const data = await apiRequest('GET', `/orders?limit=${state.uiPrefs.ordersLimit}&days=${state.uiPrefs.ordersDays}${refresh ? '&refresh=true' : ''}`);
         state.allOrders = data?.orders || [];
         renderOrdersList();
     } catch (e) {
@@ -3705,7 +3741,7 @@ async function loadLogsTab() {
     container.innerHTML = '';
     container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'Loading logs…' }));
     try {
-        const data = await apiRequest('GET', '/logs?limit=1000');
+        const data = await apiRequest('GET', `/logs?limit=${state.uiPrefs.logsLimit}`);
         state.logsBuffer = data?.logs || [];
         populateLogsSourceSelect(data?.sources || []);
         renderLogsList();
@@ -4595,6 +4631,7 @@ async function init() {
         await loadFxRates();
         await loadAccountInfo();
         await loadAlerts();
+        await loadUiPrefs();
         await loadCatalog();
         await loadPollInterval();
         await loadProfiles();
