@@ -2065,6 +2065,7 @@ async function loadNotificationSettings() {
         }
     } catch (e) {
         console.error('Failed to load notification settings:', e);
+        showToast(`Failed to load notification settings: ${e.message}`, 4000);
     }
 }
 
@@ -2223,6 +2224,7 @@ async function loadCheckoutDefaults() {
         }
     } catch (e) {
         console.error('Failed to load checkout defaults:', e);
+        showToast(`Failed to load checkout defaults: ${e.message}`, 4000);
     }
 }
 
@@ -2256,6 +2258,7 @@ async function loadAlerts() {
         renderArmedSniper();
     } catch (e) {
         console.error('Failed to load alerts:', e);
+        showToast(`Failed to load alerts: ${e.message}`, 4000);
     }
 }
 
@@ -2984,6 +2987,7 @@ async function loadProfiles() {
         renderArmedSniper();
     } catch (e) {
         console.error('Failed to load profiles:', e);
+        showToast(`Failed to load profiles: ${e.message}`, 4000);
     }
 }
 
@@ -3206,6 +3210,7 @@ async function loadSniperStatus() {
         }
     } catch (e) {
         if (container) container.textContent = 'Failed to load sniper status';
+        showToast(`Failed to load sniper status: ${e.message}`, 4000);
     }
 }
 
@@ -3217,6 +3222,7 @@ async function loadOrders() {
         renderOrders(data?.orders || []);
     } catch (e) {
         console.error('Failed to load orders:', e);
+        showToast(`Failed to load recent orders: ${e.message}`, 4000);
     }
 }
 
