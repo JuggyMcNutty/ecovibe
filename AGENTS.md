@@ -114,12 +114,14 @@ app/
 │   ├── alert.py         # Alert CRUD + enable/disable
 │   ├── checkout.py      # /api/checkout/rush (one-shot order)
 │   ├── profiles.py      # Saved checkout profile CRUD (per-account)
+│   ├── price_watch.py   # Price-drop watch CRUD (per-account)
 │   ├── sniper.py        # Arm/disarm auto-order
-│   ├── insights.py      # History, patterns, price, orders (local)
+│   ├── insights.py      # History, patterns, price, promos, region activity
 │   ├── orders.py        # Order management (live OVH list, detail, follow-up, waive)
+│   ├── servers.py       # Owned dedicated servers (read-only list + detail)
 │   ├── accounts.py      # Multi-account CRUD + active switch + test
 │   ├── settings.py      # Notification channel settings (Telegram/Discord/Slack/SMTP)
-│   ├── account.py       # OVH account + payment methods + defaults
+│   ├── account.py       # OVH account + payment methods + defaults + bills
 │   └── errors.py        # OVH→HTTP error mapping
 ├── models/schemas.py    # Pydantic request/response models
 ├── utils/
@@ -131,11 +133,11 @@ app/
     ├── storage.py       # SQLite persistence (singleton)
     ├── logbus.py        # In-memory log ring buffer + SSE pub/sub (Logs tab)
     └── cache.py         # In-memory TTL cache
-static/js/app.js         # Frontend SPA (vanilla JS, ~3300 lines)
+static/js/app.js         # Frontend SPA (vanilla JS, ~4600 lines)
 static/css/input.css     # Tailwind source
 static/css/app.css       # Built/minified (do not edit — rebuild from input.css)
 templates/index.html     # SPA shell with cache-busted asset refs
-tests/                   # pytest suite (108 tests, uses TestClient)
+tests/                   # pytest suite (193 tests, uses TestClient)
 ```
 
 ## Multi-account model
@@ -161,12 +163,58 @@ were created under (`account_id` column on each table).
   so the monitor doesn't poll the new account with the old account's
   alerts.
 - **Monitor**: polls the active account only (Decision 1A). The poller
-  early-returns when there are no enabled alerts, so idle polling does
-  no OVH network I/O. Multi-account simultaneous polling is a future
-  iteration.
+  early-returns when there are no enabled alerts AND the region ticker
+  is off, so idle polling does no OVH network I/O. `_poll_once` resolves
+  the service + plan codes and delegates to `_poll_account(service,
+  plan_codes)` — the seam for a future multi-account polling iteration.
+- **Batch polling**: with 2+ watched plans (or the region ticker on),
+  `_fetch_availability_map` makes ONE unfiltered
+  `/dedicated/server/datacenter/availabilities` call (~28k entries /
+  ~680 plans / ~1.3s, verified live) instead of a call per plan, and
+  groups it in-process. Batch mode clamps the poll interval to
+  `BATCH_MIN_POLL_INTERVAL` (3s); a single watched plan keeps the small
+  filtered call and its 1s snipe fidelity. A failed batch fetch keeps
+  every plan's baseline (it must not read as a region-wide sell-out).
+  There is no server-side multi-planCode filter (comma lists return 0
+  rows — verified live).
+- **Silent baseline priming**: the FIRST poll for a plan after startup,
+  `reload()`, or an account switch only records the baseline — no SSE
+  broadcast, notifications, or stock events (an empty baseline would
+  otherwise mark everything "newly available" on every restart). Armed
+  snipers still fire on already-available stock during priming. The
+  region ticker primes the same way (`_region_primed`).
+- **Region restock ticker** (`region_ticker_enabled` setting, toggled
+  via `GET/PUT /api/monitor/region-watch`): each batch cycle diffs the
+  ENTIRE region; unwatched plans' transitions are logged to
+  stock_events (watched plans stay with the per-plan loop — no
+  duplicate rows) and a `region_restock` SSE event (capped 50 plans ×
+  5 FQNs) is broadcast alongside the classic `stock_update`. Feed API:
+  `GET /api/insights/region-activity`. `insights/summary` defaults to
+  `watched_only=true` so ticker volume doesn't drown the overview.
+- **Stock-event retention**: the monitor prunes `stock_events` hourly —
+  rows older than `OVH_STOCK_EVENT_RETENTION_DAYS` (90) deleted, table
+  hard-capped at `OVH_STOCK_EVENT_MAX_ROWS` (500k, oldest dropped).
+- **Price watches + promo scan**: every `OVH_PRICE_CHECK_INTERVAL`
+  seconds (900; 0 disables) the monitor fetches the catalog once,
+  evaluates enabled `price_watches` (notify at/below threshold; re-fire
+  only when the price moves; watched prices logged to price_history),
+  and scans every `pricings[].promotions` entry — new promos
+  (sha256-hash-deduped in `promo_events`) notify via all channels and
+  feed `GET /api/insights/promos`. The populated promotions shape is
+  UNVERIFIED (always empty outside sales) — the scan reads it
+  defensively; check against live data during the next OVH sale.
+  NOTE: `price_watches`/`promo_events` upserts are manual
+  SELECT-then-write because SQLite UNIQUE treats NULL account_ids as
+  distinct (ON CONFLICT/OR IGNORE would silently duplicate).
 - **Sniper**: fires under the alert's own `account_id`
   (`get_ovh_service(alert.account_id)`), not the active one — so an
   armed sniper keeps targeting the right region after a switch.
+  Snipers are **disarmed automatically** when their account is deleted
+  (`disarm_for_account`), their alert is deleted, or their alert is
+  paused (a disabled alert is never polled, and a "paused" alert must
+  never silently auto-order; the disable endpoint reports
+  `sniper_disarmed: true` and the UI toasts it). Re-enabling does NOT
+  re-arm — arming is always an explicit user action.
 - **Notifier + checkout_defaults**: global (not per-account).
 - **Frontend account switch**: `switchAccount()` in `app.js` tears down
   the SSE monitor + catalog auto-refresh, resets 8 account-scoped state
@@ -266,7 +314,7 @@ were created under (`account_id` column on each table).
   so `state.plans` isn't mutated; both the option cards and the order-form
   RAM/Storage/Bandwidth dropdowns read the same sorted `families` array.
 - **Frontend**: no framework, no build step for JS. `app.js` is a
-  ~3300-line vanilla SPA using a custom `el()` DOM helper. Cache
+  ~4600-line vanilla SPA using a custom `el()` DOM helper. Cache
   busting is automatic via content-hash query strings
   (`?v=<sha256[:12]>`) injected by `app/utils/cache_buster.py`.
 - **CSS**: Tailwind v4 with `@source` directives in

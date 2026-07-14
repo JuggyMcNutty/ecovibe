@@ -98,12 +98,15 @@ Generate the `.htpasswd` file with `htpasswd -c /etc/nginx/.htpasswd admin`.
 
 ### Flash Sale Monitor
 - **Real-time stock tracking** via SSE (Server-Sent Events) with a single shared background poller
+- **Batched polling** - watching 2+ plans uses ONE region-wide availabilities call per cycle instead of one per plan (poll interval clamps to ≥3s in batch mode; single-plan polling keeps 1s fidelity)
+- **Region restock ticker** (optional) - live feed of restocks across the ENTIRE region, streamed over SSE and logged for insights
+- **Silent start** - the first poll after a restart or account switch primes the stock baseline without re-notifying everything already in stock (armed snipers still fire)
 - **Browser notifications** when desired configs become available
 - **Multi-channel notifications** (Telegram, Discord, Slack, email) - never miss a flash sale when away from the browser
 - **Sound alerts** - audio notification (requires a user gesture first, e.g. clicking "Start Monitor")
 - **1-60 second polling** configurable interval (persisted across restarts)
-- **One-click Rush Order** when stock is detected
-- **Alert pause/resume** - disable alerts without deleting them
+- **One-click Rush Order** when stock is detected (incoming alerts never overwrite the form while you're editing it - a "Use this config" button applies them explicitly)
+- **Alert pause/resume** - disable alerts without deleting them (pausing disarms any sniper on the alert)
 
 ### Sniper Mode (auto-order)
 - Arm an alert with a saved checkout profile
@@ -146,8 +149,17 @@ Generate the `.htpasswd` file with `htpasswd -c /etc/nginx/.htpasswd admin`.
 - **Refresh all** - re-fetch all order statuses from OVH
 - **Filter** by status (all / pending / delivered / cancelled)
 
+### Price Watches & Promotions
+- **Price-drop alerts** - set a per-plan price cap; the monitor re-checks the catalog every 15 minutes and notifies (all channels) when the price falls to/below it. Re-fires only when the price moves again
+- **Promo detector** - OVH's catalog `promotions` field is scanned on the same cadence; newly published promotions notify and appear in the Insights "Recent promotions" panel
+
+### Owned Servers & Invoices
+- **Servers tab** - read-only list of your dedicated servers (state, range, datacenter, OS, expiry) with a detail panel
+- **Recent invoices** - last 6 months of invoices with totals and PDF links on the Billing tab
+
 ### Historical Insights
 - **Restock patterns** - stock events are logged to SQLite; view hourly bar chart aggregation to find the best times to monitor
+- **Region activity** - with the ticker on, every plan's transitions are recorded (retention-pruned: 90 days / 500k rows by default)
 - **Price history** - track price changes per plan over time with manual refresh
 - **Order tracking** - see the Orders tab above for full order management
 - **Stock events** - recent availability/unavailability events per plan
@@ -195,6 +207,9 @@ variables:
 | `OVH_CACHE_TTL` | `300` | Cache TTL in seconds |
 | `OVH_DB_PATH` | `<project>/ovh-flash-monitor.db` | SQLite database path (defaults to project root) |
 | `OVH_CORS_ORIGINS` | `[]` | Comma-separated allowed CORS origins |
+| `OVH_PRICE_CHECK_INTERVAL` | `900` | Price-watch/promo scan cadence in seconds (0 disables) |
+| `OVH_STOCK_EVENT_RETENTION_DAYS` | `90` | Stock events older than this are pruned hourly |
+| `OVH_STOCK_EVENT_MAX_ROWS` | `500000` | Hard cap on the stock_events table (oldest dropped) |
 | `OVH_LOG_LEVEL` | `INFO` | Log verbosity (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
 | `OVH_LOG_FILE` | `<project>/ecovibe.log` | Rotating log file path |
 | `OVH_LOG_FILE_MAX_BYTES` | `5000000` | Rotate the log file at this size |
@@ -254,11 +269,13 @@ GET  /api/catalog/availability?plan_code=XX - Check plan availability
 GET  /api/catalog/stock?plan_code=XX       - Live stock levels per RAM+storage combo
 
 # Monitor
-GET  /api/monitor/stream                    - SSE real-time stock updates
+GET  /api/monitor/stream                    - SSE real-time stock updates (+ region_restock events)
 GET  /api/monitor/availability?plans=XX,YY  - Current stock for plans
 GET  /api/monitor/status                    - Monitor status (interval, alert count)
 PUT  /api/monitor/poll-interval             - Set poll interval (body: {poll_interval: 1-60})
 POST /api/monitor/poll-interval             - Alias for PUT
+GET  /api/monitor/region-watch              - Region restock ticker state
+PUT  /api/monitor/region-watch              - Enable/disable the ticker (body: {enabled})
 
 # Alerts
 POST   /api/alerts                          - Create stock alert
@@ -292,12 +309,24 @@ POST /api/orders/{order_id}/waive-retraction    - Waive the retraction period (s
 POST /api/orders/{order_id}/cancel              - Cancel order (exercise right of retraction)
 
 # Insights (historical data)
+GET  /api/insights/summary?days=N&watched_only=  - Cross-plan overview (defaults to watched plans)
 GET  /api/insights/history/{plan_code}?days=N    - Recent stock events
 GET  /api/insights/patterns/{plan_code}          - Hourly restock count aggregation
+GET  /api/insights/region-activity?hours=N       - Region-wide stock events (ticker feed)
+GET  /api/insights/promos                        - Recently seen OVH promotions
 GET  /api/insights/price/{plan_code}             - Price history
 POST /api/insights/price/{plan_code}/refresh     - Fetch + log current price
 GET  /api/insights/orders                         - Recently placed orders
 GET  /api/insights/orders/{order_id}              - Fetch order status from OVH
+
+# Price Watches
+GET    /api/price-watches                        - List price watches (active account)
+POST   /api/price-watches                        - Create/update a watch (body: {plan_code, threshold_ucents})
+DELETE /api/price-watches/{id}                   - Delete a watch
+
+# Owned Servers (read-only)
+GET  /api/servers                                - List dedicated servers (enriched)
+GET  /api/servers/{service_name}                 - Full server detail + serviceInfos
 
 # Setup Wizard
 GET    /api/setup/credentials                    - Check if credentials are configured (masked)
@@ -328,6 +357,7 @@ GET  /api/currency/rates                          - ECB/Frankfurter FX rates (EU
 # Account & Billing
 GET  /api/account/me                             - OVH account info (name, nichandle, email)
 GET  /api/account/payment-methods                - Available payment methods on the account
+GET  /api/account/bills?limit=20&months=6        - Recent invoices (totals + PDF links)
 GET  /api/account/checkout-defaults              - Default checkout preferences (auto-pay, duration, etc.)
 PUT  /api/account/checkout-defaults              - Save default checkout preferences
 
@@ -392,12 +422,14 @@ ovh-gui/
 │   │   ├── alert.py         # Alert CRUD + enable/disable + profile assignment
 │   │   ├── checkout.py      # Rush order (one-shot)
 │   │   ├── profiles.py      # Saved checkout profile CRUD (per-account)
+│   │   ├── price_watch.py   # Price-drop watch CRUD (per-account)
 │   │   ├── sniper.py        # Sniper arm/disarm/status
-│   │   ├── insights.py      # History, patterns, price, orders (local)
+│   │   ├── insights.py      # History, patterns, price, promos, region activity
 │   │   ├── orders.py        # Order management (live OVH list, detail, follow-up, waive, cancel)
+│   │   ├── servers.py       # Owned dedicated servers (read-only)
 │   │   ├── accounts.py      # Multi-account CRUD + active switch + test
 │   │   ├── settings.py      # Notification channel settings (Telegram/Discord/Slack/SMTP)
-│   │   ├── account.py       # OVH account + payment methods + defaults
+│   │   ├── account.py       # OVH account + payment methods + defaults + bills
 │   │   └── errors.py        # OVH->HTTP error mapping
 │   ├── models/schemas.py    # Pydantic request/response models
 │   └── services/
@@ -407,11 +439,11 @@ ovh-gui/
 │       ├── storage.py       # SQLite persistence (alerts, profiles, events, prices, orders)
 │       ├── logbus.py        # In-memory log ring buffer + SSE pub/sub (Logs tab)
 │       └── cache.py         # In-memory TTL cache
-├── static/js/app.js         # Frontend SPA (vanilla JS, ~3300 lines)
+├── static/js/app.js         # Frontend SPA (vanilla JS, ~4600 lines)
 ├── static/css/input.css     # Tailwind v4 source
 ├── static/css/app.css       # Built/minified (do not edit)
 ├── templates/index.html    # SPA shell with cache-busted asset refs
-├── tests/                   # pytest suite (108 tests, uses TestClient)
+├── tests/                   # pytest suite (193 tests, uses TestClient)
 ├── requirements.txt         # Runtime dependencies
 ├── requirements-dev.txt     # Dev dependencies (ruff, pytest, httpx)
 ├── pyproject.toml           # Project metadata + tool config
