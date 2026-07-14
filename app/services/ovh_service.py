@@ -160,6 +160,12 @@ class OVHService:
                 return self._do_call(method, path, **kwargs)
             except OVHServiceError as e:
                 if e.status_code == 403 and self._is_stale_signature(e):
+                    # Deliberately retries ALL methods, including POST: a 403
+                    # signature rejection happens at the auth layer, before
+                    # OVH processes the request, so replaying a checkout
+                    # cannot duplicate an order. Excluding POST here would
+                    # leave the sniper's rush order broken after clock drift
+                    # until some unrelated GET healed the time delta.
                     logger.warning(
                         "OVH 403 'application key is invalid' - refreshing time_delta and retrying (query_id=%s)",
                         e.query_id,

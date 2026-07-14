@@ -376,6 +376,59 @@ def test_500_does_not_retry_indefinitely():
     assert len(calls) == 2
 
 
+def test_post_is_not_retried_on_500():
+    """POST must never retry on 5xx: OVH may have processed the request
+    (e.g. a checkout) before the response was lost, and a replay would
+    duplicate the order."""
+    from ovh.exceptions import APIError
+
+    svc = _make_service()
+    fake_response = MagicMock()
+    fake_response.status_code = 500
+    fake_response.headers = {}
+
+    calls = []
+
+    def side_effect(path, **kwargs):
+        calls.append(path)
+        raise APIError("Internal server error", response=fake_response)
+
+    svc._client.post = side_effect
+    with pytest.raises(OVHServiceError) as exc_info:
+        svc.post("/order/cart/x/checkout")
+    assert exc_info.value.status_code == 500
+    assert len(calls) == 1
+
+
+def test_post_is_retried_on_stale_signature_403():
+    """POST IS retried on a stale-signature 403: the rejection happens at
+    the auth layer before OVH processes the request, so a replay cannot
+    duplicate an order — and without it the sniper's rush order would stay
+    broken after clock drift until an unrelated GET healed the delta."""
+    from ovh.exceptions import APIError
+
+    svc = _make_service()
+    fake_response = MagicMock()
+    fake_response.status_code = 403
+    fake_response.headers = {}
+
+    calls = []
+
+    def side_effect(path, **kwargs):
+        calls.append(path)
+        if len(calls) == 1:
+            raise APIError("This application key is invalid", response=fake_response)
+        return {"orderId": 1}
+
+    svc._client.post = side_effect
+    svc._client._time_delta = 1234
+
+    result = svc.post("/order/cart/x/checkout")
+    assert result == {"orderId": 1}
+    assert len(calls) == 2
+    assert svc._client._time_delta is None
+
+
 def test_400_does_not_retry():
     """Only 500-599 should retry, not client errors like 400."""
     from ovh.exceptions import APIError

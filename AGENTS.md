@@ -388,7 +388,13 @@ were created under (`account_id` column on each table).
 - **500 retry**: `OVHService._call` retries once on 500/502/503/504
   after a 0.5s backoff, but **only for non-POST methods** — POST (e.g.
   checkout) is never retried to prevent duplicate orders when OVH
-  processed the request but the response was lost.
+  processed the request but the response was lost. The 403
+  stale-signature retry path, by contrast, **deliberately retries POST
+  too**: a signature rejection happens at the auth layer before OVH
+  processes the request, so a replay cannot duplicate an order, and
+  excluding POST would leave sniper rush orders broken after clock
+  drift. Both behaviours are locked in by tests in
+  `tests/test_ovh_service.py`.
 - **Settings UI**: separate full-page views (not monitor tabs),
   each a direct child of `#app` toggled by `showView()`:
   `#setup-view` (first-run wizard, shown only when unconfigured — add the
