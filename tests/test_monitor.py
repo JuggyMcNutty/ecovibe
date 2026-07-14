@@ -325,6 +325,118 @@ async def test_poll_once_persists_notified_at(monitor, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_batch_poll_single_region_fetch_for_multiple_plans(monitor, monkeypatch):
+    """With 2+ watched plans, one unfiltered get_stock(None) call replaces
+    per-plan availability calls, and diffs behave identically: restocks,
+    sell-outs (plan vanishing from the feed), and unwatched plans ignored."""
+    import app.services.monitor as monitor_mod
+
+    await monitor.add_alert("plan-a", "*")
+    await monitor.add_alert("plan-b", "*")
+
+    def entry(plan, fqn, availability):
+        return {
+            "planCode": plan,
+            "fqn": fqn,
+            "datacenters": [{"availability": availability, "datacenter": "gra"}],
+        }
+
+    entries = [
+        entry("plan-a", "plan-a.ram-1.disk-1", "1H-low"),
+        entry("plan-a", "plan-a.ram-2.disk-1", "unavailable"),  # not orderable
+        entry("plan-b", "plan-b.ram-1.disk-1", "72H"),
+        entry("plan-zzz", "plan-zzz.x", "1H-high"),  # unwatched plan
+    ]
+
+    fake = MagicMock()
+    fake.is_configured.return_value = True
+    fake.account_id = None
+    fake.default_currency_code.return_value = "EUR"
+    fake.get_stock.side_effect = lambda pc=None: list(entries)
+    monkeypatch.setattr(monitor_mod, "get_active_ovh_service", lambda: fake)
+
+    changes = await monitor._poll_once()  # priming cycle
+    assert changes == []
+    assert fake.get_stock.call_count == 1
+    fake.get_availability.assert_not_called()
+    assert monitor._last_cycle_batched
+
+    # plan-b gains a config → one restock diff for plan-b only.
+    entries.append(entry("plan-b", "plan-b.ram-2.disk-1", "1H-low"))
+    changes = await monitor._poll_once()
+    assert [c["plan_code"] for c in changes] == ["plan-b"]
+    assert changes[0]["newly_available"] == ["plan-b.ram-2.disk-1"]
+
+    # plan-a vanishing from the feed entirely = sold out.
+    entries[:] = [e for e in entries if e["planCode"] != "plan-a"]
+    changes = await monitor._poll_once()
+    assert any(
+        c["plan_code"] == "plan-a"
+        and c["now_unavailable"] == ["plan-a.ram-1.disk-1"]
+        for c in changes
+    )
+
+
+@pytest.mark.asyncio
+async def test_single_plan_poll_stays_per_plan(monitor, monkeypatch):
+    """One watched plan keeps the small filtered call (1s snipe fidelity)."""
+    import app.services.monitor as monitor_mod
+
+    await monitor.add_alert("plan-a", "*")
+
+    fake = MagicMock()
+    fake.is_configured.return_value = True
+    fake.account_id = None
+    fake.default_currency_code.return_value = "EUR"
+    fake.get_availability.return_value = [{"fqn": "plan-a.ram-1.disk-1"}]
+    monkeypatch.setattr(monitor_mod, "get_active_ovh_service", lambda: fake)
+
+    await monitor._poll_once()
+    fake.get_availability.assert_called_once_with("plan-a")
+    fake.get_stock.assert_not_called()
+    assert not monitor._last_cycle_batched
+
+
+def test_effective_sleep_clamps_only_in_batch_mode(monitor):
+    from app.services.monitor import BATCH_MIN_POLL_INTERVAL
+
+    monitor.set_poll_interval(1)
+    monitor._last_cycle_batched = False
+    assert monitor._effective_sleep() == 1
+    monitor._last_cycle_batched = True
+    assert monitor._effective_sleep() == BATCH_MIN_POLL_INTERVAL
+    monitor.set_poll_interval(30)
+    assert monitor._effective_sleep() == 30
+
+
+@pytest.mark.asyncio
+async def test_batch_fetch_failure_keeps_baselines(monitor, monkeypatch):
+    """If the unfiltered call fails, no plan is diffed (baselines kept) —
+    a transient OVH error must not look like a region-wide sell-out."""
+    import app.services.monitor as monitor_mod
+    from app.services.ovh_service import OVHServiceError
+
+    await monitor.add_alert("plan-a", "*")
+    await monitor.add_alert("plan-b", "*")
+
+    fake = MagicMock()
+    fake.is_configured.return_value = True
+    fake.account_id = None
+    fake.default_currency_code.return_value = "EUR"
+    fake.get_stock.side_effect = lambda pc=None: [{
+        "planCode": "plan-a", "fqn": "plan-a.x",
+        "datacenters": [{"availability": "1H-low", "datacenter": "gra"}],
+    }]
+    monkeypatch.setattr(monitor_mod, "get_active_ovh_service", lambda: fake)
+
+    await monitor._poll_once()  # prime with plan-a in stock
+    fake.get_stock.side_effect = OVHServiceError("boom", status_code=500)
+    changes = await monitor._poll_once()
+    assert changes == []  # not a sell-out — the fetch just failed
+    assert monitor._last_stock.get("plan-a") == {"plan-a.x": True}
+
+
+@pytest.mark.asyncio
 async def test_sweep_fires_snipers_for_non_active_account(monitor, monkeypatch):
     """A sniper armed under account A must keep firing after the user switches
     away: _sweep_snipers polls A's plan under A's own credentials and fires,

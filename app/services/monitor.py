@@ -13,9 +13,20 @@ from datetime import datetime, timezone
 from fnmatch import fnmatch
 from typing import Any
 
-from app.services.ovh_service import OVHServiceError, get_active_ovh_service, get_ovh_service
+from app.services.ovh_service import (
+    OVHServiceError,
+    get_active_ovh_service,
+    get_ovh_service,
+    orderable_entry,
+)
 
 logger = logging.getLogger(__name__)
+
+# Floor on the poll interval while batch mode is active. The unfiltered
+# region-wide availabilities response is ~28k entries (~1.3s fetch), so
+# hammering it every second would keep the per-account client lock busy
+# and strain OVH. Single-plan polling keeps its 1s fidelity for sniping.
+BATCH_MIN_POLL_INTERVAL = 3
 
 
 @dataclass
@@ -286,6 +297,10 @@ class MonitorService:
         # (they exist to order ASAP); only notifications/SSE/stock events
         # are suppressed.
         self._primed: set[str] = set()
+        # True when the last cycle used the batched region-wide fetch;
+        # _run() then clamps the sleep to BATCH_MIN_POLL_INTERVAL.
+        self._last_cycle_batched = False
+        self._batch_clamp_logged = False
         self._poll_interval = 3  # clamped to [1, 60]
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
@@ -405,7 +420,7 @@ class MonitorService:
                 raise
             except Exception:
                 logger.exception("sniper sweep failed")
-            await asyncio.sleep(self._poll_interval)
+            await asyncio.sleep(self._effective_sleep())
 
     async def subscribe(self) -> asyncio.Queue:
         """Register a new SSE client. Returns the queue it should await."""
@@ -523,6 +538,22 @@ class MonitorService:
     def get_poll_interval(self) -> int:
         return self._poll_interval
 
+    def _effective_sleep(self) -> int:
+        """The user's poll interval, clamped to BATCH_MIN_POLL_INTERVAL
+        while batch mode is active (the region-wide fetch is too heavy
+        for 1s cycles). Single-plan polling is never clamped."""
+        sleep_for = self._poll_interval
+        if self._last_cycle_batched and sleep_for < BATCH_MIN_POLL_INTERVAL:
+            if not self._batch_clamp_logged:
+                logger.info(
+                    "batch polling active: poll interval clamped to %ds "
+                    "(the region-wide fetch is too heavy for %ds cycles)",
+                    BATCH_MIN_POLL_INTERVAL, sleep_for,
+                )
+                self._batch_clamp_logged = True
+            return BATCH_MIN_POLL_INTERVAL
+        return sleep_for
+
     def get_stock_diff(
         self, plan_code: str, new_statuses: list[StockStatus]
     ) -> dict[str, Any]:
@@ -568,13 +599,68 @@ class MonitorService:
         if not service.is_configured():
             return changes
 
+        return await self._poll_account(service, plan_codes)
+
+    async def _fetch_availability_map(
+        self, service, plan_codes: list[str]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Fetch orderable configs for each plan, keyed by plan_code.
+
+        Two strategies:
+        - **Per-plan** (single watched plan): one filtered availabilities
+          call — the smallest, fastest request, preserving 1s snipe
+          fidelity. A failed plan is omitted from the map (baseline kept).
+        - **Batch** (2+ plans): ONE unfiltered call returns the whole
+          region (~28k entries / ~1.3s, verified live), replacing N
+          round-trips that would otherwise serialise behind the
+          per-account client lock. Plans with no orderable entry map to
+          [] (genuinely out of stock, so sell-out diffs still fire). If
+          the batch call fails, an empty map is returned (all baselines
+          kept).
+        """
+        if len(plan_codes) <= 1:
+            self._last_cycle_batched = False
+            out: dict[str, list[dict[str, Any]]] = {}
+            for plan_code in plan_codes:
+                try:
+                    out[plan_code] = await asyncio.to_thread(
+                        service.get_availability, plan_code
+                    )
+                except OVHServiceError:
+                    logger.debug(
+                        "availability fetch failed for %s", plan_code,
+                        exc_info=True,
+                    )
+            return out
+
+        self._last_cycle_batched = True
+        try:
+            entries = await asyncio.to_thread(service.get_stock, None)
+        except OVHServiceError:
+            logger.debug("batch availability fetch failed", exc_info=True)
+            return {}
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for entry in entries:
+            if orderable_entry(entry):
+                grouped.setdefault(entry.get("planCode", ""), []).append(
+                    {"fqn": entry.get("fqn", "")}
+                )
+        return {pc: grouped.get(pc, []) for pc in plan_codes}
+
+    async def _poll_account(
+        self, service, plan_codes: list[str]
+    ) -> list[dict[str, Any]]:
+        """Poll one account's watched plans and process diffs/alerts/snipers."""
+        changes: list[dict[str, Any]] = []
         storage = self._storage_get()
+        avail_map = await self._fetch_availability_map(service, plan_codes)
 
         for plan_code in plan_codes:
+            avail_configs = avail_map.get(plan_code)
+            if avail_configs is None:
+                # Fetch failed for this plan — keep its baseline untouched.
+                continue
             try:
-                avail_configs = await asyncio.to_thread(
-                    service.get_availability, plan_code
-                )
                 now = datetime.now(timezone.utc)
                 # OVH returns only currently-orderable configs, so every
                 # returned FQN is implicitly `available=True`.
@@ -711,9 +797,9 @@ class MonitorService:
                         except Exception:
                             logger.warning("sniper fire failed for %s", alert_obj.id, exc_info=True)
 
-            except OVHServiceError:
+            except Exception:
                 # One plan failing should not stop the others.
-                logger.debug("availability fetch failed for %s", plan_code, exc_info=True)
+                logger.exception("poll processing failed for %s", plan_code)
 
         return changes
 
