@@ -100,6 +100,11 @@ class Storage:
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_stock_events_plan ON stock_events(plan_code, timestamp)"
             )
+            # Bare-timestamp index for retention pruning (the composite
+            # plan_code index can't serve a pure timestamp range scan).
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_stock_events_ts ON stock_events(timestamp)"
+            )
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS price_history (
@@ -554,6 +559,34 @@ class Storage:
                 [(p, f, e, _iso(ts), aid) for p, f, e, ts, aid in events],
             )
             self._conn.commit()
+
+    def prune_stock_events(self, retention_days: int, max_rows: int) -> int:
+        """Delete stock events past the retention window, then enforce a
+        hard row cap (oldest overflow dropped). Returns rows deleted.
+
+        Called hourly (best-effort) by the monitor loop so the region
+        ticker can't grow the DB unbounded during busy sales.
+        """
+        from datetime import timedelta
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=retention_days)
+        ).isoformat()
+        deleted = 0
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute("DELETE FROM stock_events WHERE timestamp < ?", (cutoff,))
+            deleted += cur.rowcount
+            cur.execute("SELECT COUNT(*) AS n FROM stock_events")
+            overflow = cur.fetchone()["n"] - max_rows
+            if overflow > 0:
+                cur.execute(
+                    "DELETE FROM stock_events WHERE id IN ("
+                    "SELECT id FROM stock_events ORDER BY timestamp ASC, id ASC LIMIT ?)",
+                    (overflow,),
+                )
+                deleted += cur.rowcount
+            self._conn.commit()
+        return deleted
 
     def load_stock_events(
         self, plan_code: str, since: datetime | None = None, limit: int = 500,

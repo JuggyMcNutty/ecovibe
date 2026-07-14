@@ -93,6 +93,13 @@ class Settings(BaseSettings):
     smtp_from: str | None = None
     notify_email_to: str | None = None
 
+    # Stock-event retention. The monitor prunes stock_events hourly: rows
+    # older than the retention window are deleted, and the table is hard-
+    # capped at max_rows (oldest overflow dropped). Keeps the region
+    # ticker from growing the DB unbounded during busy sales.
+    stock_event_retention_days: int = 90
+    stock_event_max_rows: int = 500_000
+
     # Logging. `app.*` and `uvicorn.error` records flow to a rotating file
     # (durable) and an in-memory ring buffer (fed to the webui Logs tab).
     # See app/logging_config.py and app/services/logbus.py.

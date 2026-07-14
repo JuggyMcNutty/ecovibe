@@ -7,12 +7,14 @@ to SQLite.
 """
 import asyncio
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from fnmatch import fnmatch
 from typing import Any
 
+from app.config import get_settings
 from app.services.ovh_service import (
     OVHServiceError,
     get_active_ovh_service,
@@ -301,6 +303,8 @@ class MonitorService:
         # _run() then clamps the sleep to BATCH_MIN_POLL_INTERVAL.
         self._last_cycle_batched = False
         self._batch_clamp_logged = False
+        # Monotonic timestamp of the last stock-event prune (hourly).
+        self._last_prune = 0.0
         self._poll_interval = 3  # clamped to [1, 60]
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
@@ -420,6 +424,13 @@ class MonitorService:
                 raise
             except Exception:
                 logger.exception("sniper sweep failed")
+            # Hourly best-effort retention prune; never stops the loop.
+            try:
+                await self._maybe_prune_events()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("stock-event prune failed")
             await asyncio.sleep(self._effective_sleep())
 
     async def subscribe(self) -> asyncio.Queue:
@@ -537,6 +548,23 @@ class MonitorService:
 
     def get_poll_interval(self) -> int:
         return self._poll_interval
+
+    async def _maybe_prune_events(self) -> None:
+        """Prune old stock events at most once an hour (best-effort)."""
+        if time.monotonic() - self._last_prune < 3600:
+            return
+        self._last_prune = time.monotonic()
+        storage = self._storage_get()
+        if not storage:
+            return
+        settings = get_settings()
+        deleted = await asyncio.to_thread(
+            storage.prune_stock_events,
+            settings.stock_event_retention_days,
+            settings.stock_event_max_rows,
+        )
+        if deleted:
+            logger.info("pruned %d old stock events", deleted)
 
     def _effective_sleep(self) -> int:
         """The user's poll interval, clamped to BATCH_MIN_POLL_INTERVAL

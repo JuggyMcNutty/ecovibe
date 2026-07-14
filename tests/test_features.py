@@ -484,3 +484,32 @@ async def test_sniper_fire_enforces_max_price(client):
     result = sniper.status()["results"][alert["id"]]
     assert result["status"] == "error"
     assert "exceeds" in result["message"] or "max" in result["message"].lower()
+
+
+def test_prune_stock_events_retention_and_cap(client):
+    """prune_stock_events drops rows past the retention window, then
+    enforces the hard row cap by deleting the oldest overflow."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.services.storage import get_storage
+
+    storage = get_storage()
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(days=120)
+    storage.log_stock_events([
+        ("plan-old", "plan-old.x", "available", old, None),
+        ("plan-a", "plan-a.x", "available", now - timedelta(hours=3), None),
+        ("plan-b", "plan-b.x", "available", now - timedelta(hours=2), None),
+        ("plan-c", "plan-c.x", "available", now - timedelta(hours=1), None),
+    ])
+
+    # Retention pass: only the 120-day-old row goes.
+    deleted = storage.prune_stock_events(retention_days=90, max_rows=100)
+    assert deleted == 1
+    # Cap pass: 3 rows remain, cap of 2 drops the oldest (plan-a).
+    deleted = storage.prune_stock_events(retention_days=90, max_rows=2)
+    assert deleted == 1
+    remaining = {e["plan_code"] for e in storage.load_stock_events("plan-b")}
+    assert remaining == {"plan-b"}
+    assert storage.load_stock_events("plan-a") == []
+    assert len(storage.load_stock_events("plan-c")) == 1
