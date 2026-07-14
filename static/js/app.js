@@ -574,6 +574,10 @@ function catalogSubsidiaryForCurrency() {
 
 async function loadCatalog(country, force = false) {
     showLoading();
+    // Snapshot the generation token: a slow response from a previous
+    // account must not clobber state after the user switched away (the
+    // same guard refreshCatalogSilent/refreshStockForAllPlans use).
+    const gen = state._switchGen;
     // Keep the "Convert pricing" checkbox in sync with the current
     // endpoint/currency (covers paths that bypass loadAccountInfo, e.g.
     // when /account/me fails). Idempotent.
@@ -587,6 +591,7 @@ async function loadCatalog(country, force = false) {
         const qs = params.toString();
         const url = qs ? `/catalog/plans?${qs}` : '/catalog/plans';
         const resp = await apiRequest('GET', url);
+        if (gen !== state._switchGen) return;  // superseded by account switch
         state.plans = resp.plans || [];
         state.addonPrices = resp.addonPrices || {};
         state.productSpecs = resp.productSpecs || {};
@@ -609,9 +614,10 @@ async function loadCatalog(country, force = false) {
         // Awaited so the loading overlay stays visible until stock data
         // is ready — otherwise the list shows without OOS badges briefly.
         await refreshStockForAllPlans();
+        if (gen !== state._switchGen) return;
         renderCatalogList();
     } catch (e) {
-        showError(e.message);
+        if (gen === state._switchGen) showError(e.message);
     } finally {
         hideLoading();
     }
@@ -2125,8 +2131,12 @@ async function loadPaymentMethods() {
     const container = document.getElementById('payment-methods');
     if (!container) return;
     container.innerHTML = '';
+    // switchAccount calls this fire-and-forget, so guard internally: a
+    // stale response from the previous account must not render.
+    const gen = state._switchGen;
     try {
         const data = await apiRequest('GET', '/account/payment-methods');
+        if (gen !== state._switchGen) return;
         const methods = data?.payment_methods || [];
         if (methods.length === 0) {
             container.appendChild(el('p', { class: 'text-yellow-400 text-sm', text: 'No payment methods found. Add one in the OVH Manager.' }));
@@ -2153,8 +2163,11 @@ async function loadPaymentMethods() {
 }
 
 async function loadCheckoutDefaults() {
+    // Guarded like loadPaymentMethods: called fire-and-forget on switch.
+    const gen = state._switchGen;
     try {
         const defaults = await apiRequest('GET', '/account/checkout-defaults');
+        if (gen !== state._switchGen) return;
         if (!defaults) return;
         state.checkoutDefaults = defaults;
         document.getElementById('default-duration').value = defaults.duration || 'P1M';
