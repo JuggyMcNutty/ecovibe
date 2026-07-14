@@ -59,6 +59,49 @@ async def get_payment_methods() -> dict:
         raise_ovh_http_error(e)
 
 
+@router.get("/bills")
+async def list_bills(limit: int = 20, months: int = 6) -> dict:
+    """Recent invoices: IDs from /me/bill within a date window, detail
+    fetches capped at ``limit`` so a long billing history can't hang the
+    request. The /me/bill/{id} shape is read defensively (it could not be
+    verified live — see AGENTS.md)."""
+    import datetime as _dt
+
+    limit = max(1, min(limit, 50))
+    months = max(1, min(months, 24))
+    service = get_active_ovh_service()
+    if not service.is_configured():
+        raise HTTPException(status_code=503, detail="OVH API not configured")
+    date_from = (
+        _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=30 * months)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        ids = await asyncio.to_thread(service.list_bills, date_from)
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    bills = []
+    # Newest bills last in OVH's list; walk from the end so the cap keeps
+    # the most recent ones.
+    for bid in list(reversed(ids or []))[:limit]:
+        try:
+            b = await asyncio.to_thread(service.get_bill, bid)
+        except OVHServiceError:
+            logger.debug("bill detail fetch failed for %s", bid, exc_info=True)
+            bills.append({"bill_id": bid})
+            continue
+        price = b.get("priceWithTax") or {}
+        bills.append({
+            "bill_id": b.get("billId", bid),
+            "date": b.get("date"),
+            "price_with_tax": price.get("value"),
+            "price_text": price.get("text"),
+            "currency_code": price.get("currencyCode"),
+            "pdf_url": b.get("pdfUrl"),
+            "url": b.get("url"),
+        })
+    return {"bills": bills}
+
+
 @router.get("/checkout-defaults")
 async def get_checkout_defaults() -> CheckoutDefaults:
     """Return the persisted default checkout preferences."""

@@ -154,6 +154,7 @@ def create_app():
         orders,
         price_watch,
         profiles,
+        servers,
         sniper,
     )
     from app.api import (
@@ -199,6 +200,7 @@ def create_app():
     app.include_router(orders.router)
     app.include_router(price_watch.router)
     app.include_router(profiles.router)
+    app.include_router(servers.router)
     app.include_router(sniper.router)
     app.include_router(settings_api.router)
     app.include_router(account.router)
