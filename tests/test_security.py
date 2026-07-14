@@ -110,6 +110,17 @@ def test_put_blocked_cross_origin():
     assert r.status_code == 403
 
 
+def test_app_settings_put_blocked_cross_origin():
+    """PUT /api/settings/app is state-changing → CSRF-guarded like the rest."""
+    c = _client()
+    r = c.put(
+        "/api/settings/app",
+        json={},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert r.status_code == 403
+
+
 def test_xhr_header_overrides_cross_origin():
     """X-Requested-With allows the request even with a cross-origin Origin.
 

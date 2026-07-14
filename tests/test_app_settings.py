@@ -220,3 +220,79 @@ async def test_price_check_disabled_via_db(client, monkeypatch):
 
     await monitor._maybe_check_prices_and_promos()
     spy.assert_not_called()
+
+
+# ----- GET/PUT /api/settings/app -----
+
+def _default_body():
+    return {key: get_effective(key) for key in APP_SETTINGS}
+
+
+def test_get_app_settings_shape(client):
+    r = client.get("/api/settings/app")
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body["settings"]) == set(APP_SETTINGS)
+    assert body["settings"]["cache_ttl"] == 300
+    assert body["settings"]["use_cache"] is False
+    assert body["settings"]["ui_orders_days"] == 90
+    # Read-only env card.
+    assert set(body["env"]) == {"host", "port", "db_path", "log_file", "cors_origins"}
+    assert body["env"]["host"] == "127.0.0.1"
+
+
+def test_put_app_settings_round_trip(client):
+    body = _default_body()
+    body["price_check_interval"] = 300
+    body["ui_orders_days"] = 30
+    r = client.put("/api/settings/app", json=body, headers=XHR)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "saved"
+    got = client.get("/api/settings/app").json()["settings"]
+    assert got["price_check_interval"] == 300
+    assert got["ui_orders_days"] == 30
+    # Values survive: they're in the DB, not just the lru cache.
+    assert get_storage().get_setting("app_price_check_interval") == "300"
+
+
+def test_put_app_settings_invalid_writes_nothing(client):
+    body = _default_body()
+    body["cache_ttl"] = 5           # below min 10
+    body["ui_orders_days"] = 30     # valid — must NOT be persisted either
+    r = client.put("/api/settings/app", json=body, headers=XHR)
+    assert r.status_code == 422
+    assert "cache_ttl" in r.json()["detail"]
+    assert get_storage().get_setting("app_ui_orders_days") is None
+
+
+def test_put_app_settings_hooks_fire_only_on_change(client, monkeypatch):
+    from unittest.mock import MagicMock
+
+    import app.api.settings as settings_api  # noqa: F401  (hook targets are imported lazily)
+
+    reset_spy = MagicMock()
+    setup_spy = MagicMock()
+    monkeypatch.setattr("app.services.ovh_service.reset_ovh_service", reset_spy)
+    monkeypatch.setattr("app.logging_config.setup_logging", setup_spy)
+
+    # No-change PUT: no hooks.
+    body = _default_body()
+    r = client.put("/api/settings/app", json=body, headers=XHR)
+    assert r.status_code == 200
+    assert r.json()["applied"] == []
+    reset_spy.assert_not_called()
+    setup_spy.assert_not_called()
+
+    # Cache change → registry reset; log level change → setup_logging;
+    # buffer change → LogBus resized.
+    from app.services.logbus import get_log_bus
+    body["use_cache"] = True
+    body["log_level"] = "DEBUG"
+    body["log_buffer_size"] = 250
+    r = client.put("/api/settings/app", json=body, headers=XHR)
+    assert r.status_code == 200
+    applied = r.json()["applied"]
+    assert len(applied) == 3
+    reset_spy.assert_called_once_with(None)
+    setup_spy.assert_called_once()
+    assert get_log_bus()._buffer.maxlen == 250

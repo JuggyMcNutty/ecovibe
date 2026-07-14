@@ -1,9 +1,14 @@
-"""Notification settings - configure Telegram, Discord, Slack, SMTP from the UI."""
+"""Runtime settings APIs: notification channels + app-wide options."""
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from app.services.app_settings import (
+    APP_SETTINGS,
+    get_effective,
+    validate_value,
+)
 from app.services.storage import get_storage
 
 logger = logging.getLogger(__name__)
@@ -132,3 +137,100 @@ def _configured_channels(settings: dict) -> list[str]:
     if settings.get("smtp_host") and settings.get("notify_email_to") and settings.get("smtp_from"):
         out.append("email")
     return out
+
+
+# ---------------------------------------------------------------------------
+# App-wide options (Settings → App). Backed by the app_settings registry:
+# stored under app_* keys, env fallback, validated ranges, rebuild hooks.
+# ---------------------------------------------------------------------------
+
+
+class AppSettingsUpdate(BaseModel):
+    """Body for PUT /api/settings/app — full replace of every option."""
+    price_check_interval: int
+    stock_event_retention_days: int
+    stock_event_max_rows: int
+    use_cache: bool
+    cache_ttl: int
+    log_level: str
+    log_file_max_bytes: int
+    log_backup_count: int
+    log_buffer_size: int
+    ui_alert_autohide_ms: int
+    ui_orders_days: int
+    ui_orders_limit: int
+    ui_logs_limit: int
+    ui_region_feed_cap: int
+    ui_recent_alerts_shown: int
+
+
+@router.get("/app")
+async def get_app_settings() -> dict:
+    """Effective app options (DB-first, env fallback) + the read-only
+    env-only values (shown greyed out; changing them needs a restart)."""
+    from app.config import get_settings
+    env = get_settings()
+    return {
+        "settings": {key: get_effective(key) for key in APP_SETTINGS},
+        "env": {
+            "host": env.host,
+            "port": env.port,
+            "db_path": env.db_path,
+            "log_file": env.log_file,
+            "cors_origins": env.cors_origins,
+        },
+    }
+
+
+@router.put("/app")
+async def update_app_settings(request: AppSettingsUpdate) -> dict:
+    """Validate and persist all app options, then apply rebuild hooks.
+
+    All-or-nothing: every value is validated before anything is written,
+    so a single bad field can't leave the settings half-saved. Hooks run
+    only for groups whose effective value actually changed; the response
+    lists them so the UI can say what was rebuilt.
+    """
+    # 1. Validate everything up front.
+    validated: dict[str, object] = {}
+    for key in APP_SETTINGS:
+        try:
+            validated[key] = validate_value(key, getattr(request, key))
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+
+    # 2. Snapshot old effective values to detect which hooks must run.
+    old = {key: get_effective(key) for key in APP_SETTINGS}
+
+    # 3. Persist. Bools stored as "true"/"false" (parsed by app_setting_bool).
+    storage = get_storage()
+    for key, val in validated.items():
+        raw = str(val).lower() if isinstance(val, bool) else str(val)
+        storage.set_setting(f"app_{key}", raw)
+
+    # 4. Refresh the env-settings cache (parity with the notifications PUT).
+    from app.config import get_settings
+    get_settings.cache_clear()
+
+    # 5. Rebuild hooks for values frozen into long-lived objects.
+    applied: list[str] = []
+    if (old["use_cache"] != validated["use_cache"]
+            or old["cache_ttl"] != validated["cache_ttl"]):
+        from app.services.cache import get_cache
+        from app.services.ovh_service import reset_ovh_service
+        reset_ovh_service(None)
+        cache = get_cache(ttl=int(validated["cache_ttl"]))
+        cache.clear()
+        applied.append("catalog cache rebuilt")
+    if any(old[k] != validated[k] for k in
+           ("log_level", "log_file_max_bytes", "log_backup_count")):
+        from app.logging_config import setup_logging
+        setup_logging()
+        applied.append(f"log config applied (level {validated['log_level']})")
+    if old["log_buffer_size"] != validated["log_buffer_size"]:
+        from app.services.logbus import get_log_bus
+        get_log_bus().resize(int(validated["log_buffer_size"]))
+        applied.append("log buffer resized")
+
+    logger.info("App settings updated (%s)", "; ".join(applied) or "no hooks")
+    return {"status": "saved", "applied": applied}
