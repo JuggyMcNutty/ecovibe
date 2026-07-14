@@ -650,6 +650,43 @@ class Storage:
             rows = cur.fetchall()
         return [{"hour": r["hour"], "count": r["count"]} for r in rows]
 
+    def load_recent_stock_events(
+        self, since: datetime, limit: int = 200,
+        account_id: str | None = None, event_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return recent stock events across ALL plans, newest first.
+
+        Powers the region-activity feed (the ticker logs every plan's
+        transitions, so this is the region-wide view). ``event_type``
+        filters to 'available'/'unavailable'; None returns both.
+        """
+        where = "timestamp >= ?"
+        params: list[Any] = [_iso(since)]
+        if account_id is not None:
+            where += " AND account_id = ?"
+            params.append(account_id)
+        if event_type is not None:
+            where += " AND event_type = ?"
+            params.append(event_type)
+        params.append(limit)
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                f"SELECT plan_code, fqn, event_type, timestamp FROM stock_events "
+                f"WHERE {where} ORDER BY timestamp DESC, id DESC LIMIT ?",
+                params,
+            )
+            rows = cur.fetchall()
+        return [
+            {
+                "plan_code": r["plan_code"],
+                "fqn": r["fqn"],
+                "event_type": r["event_type"],
+                "timestamp": r["timestamp"],
+            }
+            for r in rows
+        ]
+
     def load_account_stock_events(
         self, since: datetime, account_id: str | None = None, limit: int = 5000
     ) -> list[dict[str, Any]]:

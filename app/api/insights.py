@@ -66,15 +66,27 @@ def _summarize_events(events: list[dict]) -> dict:
 
 
 @router.get("/summary")
-async def insights_summary(days: int = Query(default=30, ge=1, le=365)) -> dict:
+async def insights_summary(
+    days: int = Query(default=30, ge=1, le=365),
+    watched_only: bool = Query(default=True),
+) -> dict:
     """Cross-plan overview for the active account: one row per plan with
     restock count, last restock, current in-stock state, and typical
     time-in-stock. Lets the user scan all monitored plans without drilling
-    into each one."""
+    into each one.
+
+    With the region ticker on, stock_events covers hundreds of plans;
+    ``watched_only`` (default) keeps the summary scoped to the plans the
+    user actually has alerts on. Pass watched_only=false for everything.
+    """
     storage = get_storage()
     service = get_active_ovh_service()
     since = datetime.now(timezone.utc) - timedelta(days=days)
     events = storage.load_account_stock_events(since, account_id=service.account_id)
+    if watched_only:
+        from app.services.monitor import get_monitor_service
+        watched = {a.plan_code for a in get_monitor_service().get_alerts()}
+        events = [e for e in events if e["plan_code"] in watched]
     by_plan: dict[str, list[dict]] = {}
     for e in events:
         by_plan.setdefault(e["plan_code"], []).append(e)
@@ -86,6 +98,24 @@ async def insights_summary(days: int = Query(default=30, ge=1, le=365)) -> dict:
     # Most recently active first; plans with no restock sink to the bottom.
     plans.sort(key=lambda p: (p["last_restock"] or ""), reverse=True)
     return {"days": days, "plans": plans}
+
+
+@router.get("/region-activity")
+async def region_activity(
+    hours: int = Query(default=24, ge=1, le=720),
+    limit: int = Query(default=200, ge=1, le=1000),
+    event_type: str | None = Query(default=None, pattern="^(available|unavailable)$"),
+) -> dict:
+    """Recent region-wide stock events (newest first) for the active
+    account. Fed by the region restock ticker; empty unless it has been
+    enabled (PUT /api/monitor/region-watch)."""
+    storage = get_storage()
+    service = get_active_ovh_service()
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    events = storage.load_recent_stock_events(
+        since, limit=limit, account_id=service.account_id, event_type=event_type
+    )
+    return {"hours": hours, "events": events}
 
 
 @router.get("/history/{plan_code}")

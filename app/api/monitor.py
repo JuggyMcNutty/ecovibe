@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from app.api.errors import raise_ovh_http_error
-from app.models.schemas import PollIntervalRequest
+from app.models.schemas import PollIntervalRequest, RegionWatchRequest
 from app.services.monitor import get_monitor_service
 from app.services.ovh_service import OVHServiceError, get_active_ovh_service
 
@@ -115,3 +115,20 @@ async def set_poll_interval_post(request: PollIntervalRequest) -> dict[str, Any]
     monitor = get_monitor_service()
     monitor.set_poll_interval(request.poll_interval)
     return {"poll_interval": monitor.get_poll_interval()}
+
+
+@router.get("/region-watch")
+async def get_region_watch() -> dict[str, Any]:
+    """Whether the region-wide restock ticker is enabled."""
+    return {"enabled": get_monitor_service().is_region_enabled()}
+
+
+@router.put("/region-watch")
+async def set_region_watch(request: RegionWatchRequest) -> dict[str, Any]:
+    """Enable/disable the region restock ticker (persists across restarts).
+
+    While enabled, every poll cycle fetches the whole region's stock, so
+    the poll interval is clamped to 3s (see BATCH_MIN_POLL_INTERVAL)."""
+    monitor = get_monitor_service()
+    await monitor.set_region_enabled(request.enabled)
+    return {"enabled": monitor.is_region_enabled()}

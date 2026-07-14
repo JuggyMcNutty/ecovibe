@@ -202,7 +202,7 @@ def test_insights_summary_aggregates(client):
     # fqn2 is still open → currently in stock.
     storage.log_stock_event(plan, fqn2, "available", now - timedelta(minutes=10), account_id=aid)
 
-    r = client.get("/api/insights/summary?days=30")
+    r = client.get("/api/insights/summary?days=30&watched_only=false")
     assert r.status_code == 200
     plans = r.json()["plans"]
     assert len(plans) == 1

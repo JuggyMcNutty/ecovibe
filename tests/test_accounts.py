@@ -315,11 +315,11 @@ def test_insights_summary_scoped_to_active_account(client):
     storage.log_stock_event("plan-b", "plan-b.ram-16g-x", "available", now, account_id=b["id"])
 
     _switch(client, a["id"])
-    plans_a = client.get("/api/insights/summary").json()["plans"]
+    plans_a = client.get("/api/insights/summary?watched_only=false").json()["plans"]
     assert {p["plan_code"] for p in plans_a} == {"plan-a"}
 
     _switch(client, b["id"])
-    plans_b = client.get("/api/insights/summary").json()["plans"]
+    plans_b = client.get("/api/insights/summary?watched_only=false").json()["plans"]
     assert {p["plan_code"] for p in plans_b} == {"plan-b"}
 
 

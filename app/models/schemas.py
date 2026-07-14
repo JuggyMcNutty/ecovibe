@@ -39,3 +39,8 @@ class AssignProfileRequest(BaseModel):
 class PollIntervalRequest(BaseModel):
     """Body for PUT /api/monitor/poll-interval. Clamped to [1, 60] seconds."""
     poll_interval: int = Field(..., ge=1, le=60)
+
+
+class RegionWatchRequest(BaseModel):
+    """Body for PUT /api/monitor/region-watch."""
+    enabled: bool

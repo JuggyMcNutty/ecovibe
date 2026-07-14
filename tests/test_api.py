@@ -232,3 +232,64 @@ def test_catalog_currency_uses_pricing_currency_code_when_present(client):
     r = client.get("/api/catalog/plans?country=IE")
     assert r.status_code == 200
     assert r.json()["addonPrices"]["ram-16g"]["currencyCode"] == "EUR"
+
+
+def test_region_watch_toggle_and_persistence(client):
+    """PUT /api/monitor/region-watch flips the ticker and persists it."""
+    from app.services.storage import get_storage
+
+    r = client.get("/api/monitor/region-watch")
+    assert r.status_code == 200
+    assert r.json() == {"enabled": False}
+
+    r = client.put("/api/monitor/region-watch", json={"enabled": True}, headers=XHR)
+    assert r.status_code == 200
+    assert r.json() == {"enabled": True}
+    assert get_storage().get_setting("region_ticker_enabled") == "1"
+
+    r = client.put("/api/monitor/region-watch", json={"enabled": False}, headers=XHR)
+    assert r.json() == {"enabled": False}
+    assert get_storage().get_setting("region_ticker_enabled") == "0"
+
+
+def test_region_activity_feed(client):
+    """GET /api/insights/region-activity returns recent events newest-first
+    and honours the event_type filter."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.services.storage import get_storage
+
+    now = datetime.now(timezone.utc)
+    get_storage().log_stock_events([
+        ("plan-a", "plan-a.x", "available", now - timedelta(minutes=10), None),
+        ("plan-b", "plan-b.y", "unavailable", now - timedelta(minutes=5), None),
+        ("plan-c", "plan-c.z", "available", now - timedelta(days=3), None),  # outside window
+    ])
+
+    r = client.get("/api/insights/region-activity?hours=24")
+    assert r.status_code == 200
+    events = r.json()["events"]
+    assert [e["plan_code"] for e in events] == ["plan-b", "plan-a"]
+
+    r = client.get("/api/insights/region-activity?hours=24&event_type=available")
+    assert [e["plan_code"] for e in r.json()["events"]] == ["plan-a"]
+
+
+def test_insights_summary_watched_only_filter(client):
+    """summary defaults to watched plans; watched_only=false shows all."""
+    from datetime import datetime, timezone
+
+    from app.services.storage import get_storage
+
+    now = datetime.now(timezone.utc)
+    get_storage().log_stock_events([
+        ("plan-watched", "plan-watched.x", "available", now, None),
+        ("plan-random", "plan-random.y", "available", now, None),
+    ])
+    client.post("/api/alerts", json={"plan_code": "plan-watched"}, headers=XHR)
+
+    plans = client.get("/api/insights/summary").json()["plans"]
+    assert {p["plan_code"] for p in plans} == {"plan-watched"}
+
+    plans = client.get("/api/insights/summary?watched_only=false").json()["plans"]
+    assert {p["plan_code"] for p in plans} == {"plan-watched", "plan-random"}
