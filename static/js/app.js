@@ -260,7 +260,7 @@ function showView(viewName) {
 // Switch between the two settings pages (Accounts / Notifications) and
 // highlight the active sub-nav button.
 function showSettings(page) {
-    const target = ['accounts', 'notifications', 'billing'].includes(page) ? page : 'accounts';
+    const target = ['accounts', 'notifications', 'billing', 'app'].includes(page) ? page : 'accounts';
     document.querySelectorAll('[data-settings-nav]').forEach(btn => {
         const active = btn.dataset.settingsNav === target;
         btn.classList.toggle('bg-blue-600', active);
@@ -271,6 +271,7 @@ function showSettings(page) {
     showView(target);
     if (target === 'notifications') loadNotificationSettings();
     else if (target === 'billing') loadCheckoutDefaults();
+    else if (target === 'app') loadAppSettings();
     else loadAccountsPage();
 }
 
@@ -2184,6 +2185,72 @@ async function saveNotificationSettings() {
         await apiRequest('PUT', '/settings/notifications', body);
         showToast('Notification settings saved.');
         await loadNotificationSettings();
+    } catch (e) {
+        showError(e.message);
+    }
+}
+
+// Settings → App: runtime app options (DB-backed, env fallback).
+
+// input id ↔ API key for every editable app option.
+const APP_SETTING_FIELDS = [
+    ['app-price-check-interval', 'price_check_interval'],
+    ['app-stock-retention-days', 'stock_event_retention_days'],
+    ['app-stock-max-rows', 'stock_event_max_rows'],
+    ['app-cache-ttl', 'cache_ttl'],
+    ['app-log-max-bytes', 'log_file_max_bytes'],
+    ['app-log-backup-count', 'log_backup_count'],
+    ['app-log-buffer-size', 'log_buffer_size'],
+    ['app-ui-alert-autohide', 'ui_alert_autohide_ms'],
+    ['app-ui-orders-days', 'ui_orders_days'],
+    ['app-ui-orders-limit', 'ui_orders_limit'],
+    ['app-ui-logs-limit', 'ui_logs_limit'],
+    ['app-ui-region-cap', 'ui_region_feed_cap'],
+    ['app-ui-recent-alerts', 'ui_recent_alerts_shown'],
+];
+
+async function loadAppSettings() {
+    try {
+        const data = await apiRequest('GET', '/settings/app');
+        const s = data.settings || {};
+        for (const [id, key] of APP_SETTING_FIELDS) {
+            const input = document.getElementById(id);
+            if (input && s[key] != null) input.value = s[key];
+        }
+        document.getElementById('app-use-cache').checked = !!s.use_cache;
+        document.getElementById('app-log-level').value = s.log_level || 'INFO';
+        const env = data.env || {};
+        document.getElementById('app-env-bind').value = `${env.host || ''}:${env.port || ''}`;
+        document.getElementById('app-env-cors').value = (env.cors_origins || []).join(', ') || '(none)';
+        document.getElementById('app-env-db').value = env.db_path || '';
+        document.getElementById('app-env-logfile').value = env.log_file || '';
+        document.getElementById('app-settings-status').textContent = '';
+    } catch (e) {
+        showError(e.message);
+    }
+}
+
+async function saveAppSettings() {
+    const body = {
+        use_cache: document.getElementById('app-use-cache').checked,
+        log_level: document.getElementById('app-log-level').value,
+    };
+    for (const [id, key] of APP_SETTING_FIELDS) {
+        body[key] = parseInt(document.getElementById(id).value, 10);
+        if (isNaN(body[key])) {
+            showError(`Enter a number for ${key.replaceAll('_', ' ')}`);
+            return;
+        }
+    }
+    try {
+        const resp = await apiRequest('PUT', '/settings/app', body);
+        const applied = resp?.applied || [];
+        showToast(applied.length
+            ? `App options saved — ${applied.join(', ')}`
+            : 'App options saved.', 4000);
+        const status = document.getElementById('app-settings-status');
+        if (status) status.textContent = applied.length ? `Applied: ${applied.join('; ')}` : 'Saved.';
+        await loadAppSettings();
     } catch (e) {
         showError(e.message);
     }
@@ -4701,6 +4768,7 @@ async function init() {
     document.getElementById('checkout-defaults-form')?.addEventListener('submit', saveCheckoutDefaults);
 
     document.getElementById('notif-save-btn')?.addEventListener('click', saveNotificationSettings);
+    document.getElementById('app-settings-save-btn')?.addEventListener('click', saveAppSettings);
 
     document.getElementById('rush-order-btn').addEventListener('click', () => {
         document.getElementById('rush-submit-btn').click();

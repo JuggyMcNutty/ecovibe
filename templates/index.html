@@ -124,6 +124,7 @@
                     <button data-settings-nav="accounts" class="settings-nav-btn px-4 py-2 rounded-lg text-sm">OVH Accounts</button>
                     <button data-settings-nav="notifications" class="settings-nav-btn px-4 py-2 rounded-lg text-sm">Notifications</button>
                     <button data-settings-nav="billing" class="settings-nav-btn px-4 py-2 rounded-lg text-sm">Billing</button>
+                    <button data-settings-nav="app" class="settings-nav-btn px-4 py-2 rounded-lg text-sm">App</button>
                 </div>
 
                 <div class="bg-gray-800 rounded-lg p-6 mb-4">
@@ -205,6 +206,7 @@
                     <button data-settings-nav="accounts" class="settings-nav-btn px-4 py-2 rounded-lg text-sm">OVH Accounts</button>
                     <button data-settings-nav="notifications" class="settings-nav-btn px-4 py-2 rounded-lg text-sm">Notifications</button>
                     <button data-settings-nav="billing" class="settings-nav-btn px-4 py-2 rounded-lg text-sm">Billing</button>
+                    <button data-settings-nav="app" class="settings-nav-btn px-4 py-2 rounded-lg text-sm">App</button>
                 </div>
 
                 <div class="bg-gray-800 rounded-lg p-6 mb-4">
@@ -301,6 +303,7 @@
                     <button data-settings-nav="accounts" class="settings-nav-btn px-4 py-2 rounded-lg text-sm">OVH Accounts</button>
                     <button data-settings-nav="notifications" class="settings-nav-btn px-4 py-2 rounded-lg text-sm">Notifications</button>
                     <button data-settings-nav="billing" class="settings-nav-btn px-4 py-2 rounded-lg text-sm">Billing</button>
+                    <button data-settings-nav="app" class="settings-nav-btn px-4 py-2 rounded-lg text-sm">App</button>
                 </div>
 
                 <div class="bg-gray-800 rounded-lg p-6 mb-4">
@@ -340,6 +343,138 @@
                             Save Defaults
                         </button>
                     </form>
+                </div>
+
+                <button class="settings-back-btn bg-gray-700 hover:bg-gray-600 text-white px-6 py-2 rounded-lg">
+                    ← Back to Monitor
+                </button>
+            </div>
+        </div>
+
+        <div id="app-view" class="hidden">
+            <div class="max-w-2xl mx-auto">
+                <!-- Settings sub-nav -->
+                <div class="flex gap-2 mb-6" role="tablist">
+                    <button data-settings-nav="accounts" class="settings-nav-btn px-4 py-2 rounded-lg text-sm">OVH Accounts</button>
+                    <button data-settings-nav="notifications" class="settings-nav-btn px-4 py-2 rounded-lg text-sm">Notifications</button>
+                    <button data-settings-nav="billing" class="settings-nav-btn px-4 py-2 rounded-lg text-sm">Billing</button>
+                    <button data-settings-nav="app" class="settings-nav-btn px-4 py-2 rounded-lg text-sm">App</button>
+                </div>
+
+                <div class="bg-gray-800 rounded-lg p-6 mb-4">
+                    <h2 class="text-2xl font-bold mb-2 text-blue-400">App Options</h2>
+                    <p class="text-gray-300 mb-6">Runtime configuration — stored in the database and applied live (environment variables remain the defaults).</p>
+
+                    <h3 class="font-bold text-lg mb-3">Monitoring &amp; data</h3>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1" for="app-price-check-interval">Price/promo check (s)</label>
+                            <input type="number" id="app-price-check-interval" class="w-full bg-gray-700 px-3 py-2 rounded"
+                                   min="0" max="86400" title="0 disables; otherwise 60-86400 seconds">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1" for="app-stock-retention-days">Stock-event retention (days)</label>
+                            <input type="number" id="app-stock-retention-days" class="w-full bg-gray-700 px-3 py-2 rounded" min="1" max="3650">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1" for="app-stock-max-rows">Stock-event row cap</label>
+                            <input type="number" id="app-stock-max-rows" class="w-full bg-gray-700 px-3 py-2 rounded" min="1000" max="10000000">
+                        </div>
+                    </div>
+
+                    <h3 class="font-bold text-lg mb-3">Catalog cache</h3>
+                    <div class="flex flex-wrap items-end gap-4 mb-6">
+                        <label class="flex items-center gap-2 pb-2">
+                            <input type="checkbox" id="app-use-cache" class="w-5 h-5">
+                            <span>Cache catalog responses</span>
+                        </label>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1" for="app-cache-ttl">Cache TTL (s)</label>
+                            <input type="number" id="app-cache-ttl" class="w-32 bg-gray-700 px-3 py-2 rounded" min="10" max="86400">
+                        </div>
+                    </div>
+
+                    <h3 class="font-bold text-lg mb-3">Logging</h3>
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1" for="app-log-level">Log level</label>
+                            <select id="app-log-level" class="w-full bg-gray-700 px-3 py-2 rounded">
+                                <option value="DEBUG">DEBUG</option>
+                                <option value="INFO">INFO</option>
+                                <option value="WARNING">WARNING</option>
+                                <option value="ERROR">ERROR</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1" for="app-log-max-bytes">Rotate at (bytes)</label>
+                            <input type="number" id="app-log-max-bytes" class="w-full bg-gray-700 px-3 py-2 rounded" min="100000" max="1000000000">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1" for="app-log-backup-count">Rotated backups</label>
+                            <input type="number" id="app-log-backup-count" class="w-full bg-gray-700 px-3 py-2 rounded" min="0" max="50">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1" for="app-log-buffer-size">In-app buffer (lines)</label>
+                            <input type="number" id="app-log-buffer-size" class="w-full bg-gray-700 px-3 py-2 rounded" min="100" max="100000">
+                        </div>
+                    </div>
+
+                    <h3 class="font-bold text-lg mb-3">UI preferences</h3>
+                    <div class="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-6">
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1" for="app-ui-alert-autohide">Alert auto-hide (ms)</label>
+                            <input type="number" id="app-ui-alert-autohide" class="w-full bg-gray-700 px-3 py-2 rounded"
+                                   min="0" max="600000" title="0 keeps the stock-alert panel open until dismissed">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1" for="app-ui-orders-days">Orders window (days)</label>
+                            <input type="number" id="app-ui-orders-days" class="w-full bg-gray-700 px-3 py-2 rounded" min="1" max="365">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1" for="app-ui-orders-limit">Orders shown</label>
+                            <input type="number" id="app-ui-orders-limit" class="w-full bg-gray-700 px-3 py-2 rounded" min="1" max="200">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1" for="app-ui-logs-limit">Logs snapshot (lines)</label>
+                            <input type="number" id="app-ui-logs-limit" class="w-full bg-gray-700 px-3 py-2 rounded" min="50" max="5000">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1" for="app-ui-region-cap">Region feed cap</label>
+                            <input type="number" id="app-ui-region-cap" class="w-full bg-gray-700 px-3 py-2 rounded" min="10" max="1000">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1" for="app-ui-recent-alerts">Recent alerts shown</label>
+                            <input type="number" id="app-ui-recent-alerts" class="w-full bg-gray-700 px-3 py-2 rounded" min="1" max="50">
+                        </div>
+                    </div>
+
+                    <button id="app-settings-save-btn" class="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded-lg font-bold">
+                        Save App Options
+                    </button>
+                    <div id="app-settings-status" class="text-sm text-gray-400 mt-3"></div>
+                </div>
+
+                <div class="bg-gray-800 rounded-lg p-6 mb-4">
+                    <h3 class="font-bold text-lg mb-1">Environment</h3>
+                    <p class="text-gray-500 text-sm mb-4">Set via environment variables (OVH_HOST, OVH_PORT, ...) — changes require a restart.</p>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 opacity-60">
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">Bind address</label>
+                            <input type="text" id="app-env-bind" class="w-full bg-gray-700 px-3 py-2 rounded" disabled>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">CORS origins</label>
+                            <input type="text" id="app-env-cors" class="w-full bg-gray-700 px-3 py-2 rounded" disabled>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">Database path</label>
+                            <input type="text" id="app-env-db" class="w-full bg-gray-700 px-3 py-2 rounded" disabled>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">Log file</label>
+                            <input type="text" id="app-env-logfile" class="w-full bg-gray-700 px-3 py-2 rounded" disabled>
+                        </div>
+                    </div>
                 </div>
 
                 <button class="settings-back-btn bg-gray-700 hover:bg-gray-600 text-white px-6 py-2 rounded-lg">
