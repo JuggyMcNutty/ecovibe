@@ -112,8 +112,7 @@ app/
 │   ├── monitor.py       # SSE stream + poll-interval
 │   ├── logs.py          # Runtime log viewer: GET /api/logs + SSE /api/logs/stream
 │   ├── alert.py         # Alert CRUD + enable/disable
-│   ├── checkout.py      # /api/checkout/rush (one-shot order) + legacy /{cart_id}
-│   ├── cart.py          # Granular cart lifecycle (legacy)
+│   ├── checkout.py      # /api/checkout/rush (one-shot order)
 │   ├── profiles.py      # Saved checkout profile CRUD (per-account)
 │   ├── sniper.py        # Arm/disarm auto-order
 │   ├── insights.py      # History, patterns, price, orders (local)
@@ -231,9 +230,6 @@ were created under (`account_id` column on each table).
   and a top-level `currencyCode` field; `detectCatalogCurrency()` (app.js)
   prefers that field. Without it, CAD microcents would be mislabelled as
   EUR and FX-converted against the wrong base.
-- **Route ordering**: in `checkout.py`, `POST /rush` must be
-  registered BEFORE `POST /{cart_id}` or FastAPI matches the
-  wildcard route first, causing "Invalid Cart ID" 404s.
 - **Addon labels**: addon cards use OVH's `invoiceName` as the
   primary label (from `addonPrices` map). The `humanizeAddon()`
   functions are only a fallback when no price entry exists.
@@ -294,8 +290,11 @@ were created under (`account_id` column on each table).
 - **`max_price`** must be passed in rush-order requests from both
   the catalog "Order Now" form AND the monitor tab's rush form.
   (Resolved — all three paths pass it: catalog form, monitor form, sniper.)
-- **Route order** in `checkout.py`: `/rush` before `/{cart_id}` or
-  FastAPI's wildcard match shadows the static route.
+- **Legacy cart API removed** (2026-07): the granular `/api/cart/*`
+  router and `POST /api/checkout/{cart_id}` were deleted — the frontend
+  never called them and `/api/checkout/rush` is the only order path.
+  The `OVHService` cart primitives (create/assign/add/checkout) remain;
+  the rush flow uses them directly.
 - **Cache busters** are automatic (content-hash based, see
   `app/utils/cache_buster.py`); no manual `?v=N` bumping is needed.
 - **Logging**: use `logger.info()`/`logger.warning()` on a

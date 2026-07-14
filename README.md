@@ -269,17 +269,8 @@ PUT    /api/alerts/{id}/enable              - Enable alert
 PUT    /api/alerts/{id}/disable             - Disable alert
 PUT    /api/alerts/{id}/profile             - Assign checkout profile (for sniper mode)
 
-# Cart (legacy granular API; prefer /api/checkout/rush for one-shot)
-POST /api/cart                              - Create cart (body: {description})
-GET  /api/cart/{id}                         - Get cart details
-POST /api/cart/{id}/server                  - Add server item
-POST /api/cart/{id}/options                  - Add option to item
-POST /api/cart/{id}/config                   - Set item configuration
-GET  /api/cart/{id}/summary                  - Order summary
-
 # Checkout
 POST /api/checkout/rush                      - One-shot rush order (builds cart, tries DCs in order, checks out)
-POST /api/checkout/{cart_id}                 - Place order from existing cart (body: {auto_pay, waive_retractation})
 
 # Checkout Profiles
 GET    /api/profiles                         - List saved profiles
@@ -399,8 +390,7 @@ ovh-gui/
 │   │   ├── monitor.py       # SSE stock streaming + poll-interval
 │   │   ├── logs.py          # Runtime log viewer (snapshot + SSE live tail)
 │   │   ├── alert.py         # Alert CRUD + enable/disable + profile assignment
-│   │   ├── cart.py          # Cart lifecycle (legacy)
-│   │   ├── checkout.py      # Rush order (one-shot) + legacy cart checkout
+│   │   ├── checkout.py      # Rush order (one-shot)
 │   │   ├── profiles.py      # Saved checkout profile CRUD (per-account)
 │   │   ├── sniper.py        # Sniper arm/disarm/status
 │   │   ├── insights.py      # History, patterns, price, orders (local)

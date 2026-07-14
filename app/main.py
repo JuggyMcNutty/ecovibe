@@ -145,7 +145,6 @@ def create_app():
         account,
         accounts,
         alert,
-        cart,
         catalog,
         checkout,
         currency,
@@ -191,7 +190,6 @@ def create_app():
         app.mount("/static", CachedStaticFiles(directory=static_path), name="static")
 
     app.include_router(catalog.router)
-    app.include_router(cart.router)
     app.include_router(checkout.router)
     app.include_router(monitor.router)
     app.include_router(logs.router)

@@ -9,7 +9,6 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.api.errors import raise_ovh_http_error
-from app.models.schemas import CheckoutRequest
 from app.services.monitor import DuplicateAlertError, get_monitor_service, get_sniper_service
 from app.services.ovh_service import OVHServiceError, get_active_ovh_service
 from app.services.storage import get_storage
@@ -352,33 +351,4 @@ async def rush_checkout(request: RushOrderRequest) -> dict[str, Any]:
         "order placed: %s fqn=%s order=%s",
         request.plan_code, request.fqn, result.get("orderId"),
     )
-    return result
-
-
-@router.post("/{cart_id}")
-async def checkout(cart_id: str, request: CheckoutRequest) -> dict[str, Any]:
-    """Legacy single-cart checkout (for pre-built carts)."""
-    service = get_active_ovh_service()
-    if not service.is_configured():
-        raise HTTPException(status_code=503, detail="OVH API not configured")
-    try:
-        result = await asyncio.to_thread(
-            service.checkout_cart,
-            cart_id=cart_id,
-            auto_pay=request.auto_pay,
-            waive_retractation=request.waive_retractation,
-        )
-    except OVHServiceError as e:
-        raise_ovh_http_error(e)
-    storage = get_storage()
-    storage.log_order(
-        order_id=result.get("orderId"),
-        cart_id=cart_id,
-        plan_code="",
-        status=None,
-        url=result.get("url"),
-        placed_at=datetime.now(timezone.utc),
-        account_id=service.account_id,
-    )
-    logger.info("order placed from cart %s: order=%s", cart_id, result.get("orderId"))
     return result

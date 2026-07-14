@@ -52,14 +52,13 @@ def test_catalog_unconfigured_returns_503(client):
     assert r.status_code == 503
 
 
-def test_cart_unconfigured_returns_503(client):
+def test_legacy_cart_routes_removed(client):
+    """The granular cart API and POST /api/checkout/{cart_id} were removed
+    (frontend never called them; /api/checkout/rush is the only order path)."""
     r = client.post("/api/cart", json={"description": "x"})
-    assert r.status_code == 503
-
-
-def test_checkout_unconfigured_returns_503(client):
-    r = client.post("/api/checkout/nope", json={"auto_pay": False, "waive_retractation": False})
-    assert r.status_code == 503
+    assert r.status_code == 404
+    r = client.post("/api/checkout/nope", json={"auto_pay": False})
+    assert r.status_code in (404, 405)
 
 
 def test_monitor_status(client):

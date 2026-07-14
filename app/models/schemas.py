@@ -78,38 +78,6 @@ class OrderSummary(BaseModel):
 # Request bodies (snake_case, the public API contract)
 # ---------------------------------------------------------------------------
 
-class CreateCartRequest(BaseModel):
-    """Body for POST /api/cart."""
-    description: str = ""
-
-
-class AddServerRequest(BaseModel):
-    """Body for POST /api/cart/{id}/server."""
-    plan_code: str
-    duration: str = "P1M"
-    quantity: int = 1
-
-
-class AddOptionRequest(BaseModel):
-    """Body for POST /api/cart/{id}/options."""
-    item_id: int
-    plan_code: str
-    duration: str = "P1M"
-
-
-class AddConfigRequest(BaseModel):
-    """Body for POST /api/cart/{id}/config."""
-    item_id: int
-    label: str
-    value: str
-
-
-class CheckoutRequest(BaseModel):
-    """Body for POST /api/checkout/{id}."""
-    auto_pay: bool = False
-    waive_retractation: bool = False
-
-
 class AlertCreate(BaseModel):
     """Body for POST /api/alerts."""
     plan_code: str
