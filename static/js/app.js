@@ -4120,19 +4120,57 @@ function stockBadge(inStock) {
 }
 
 async function loadInsightsDetail(planCode, days) {
-    const [histRes, priceRes] = await Promise.allSettled([
+    const [histRes, priceRes, patternsRes] = await Promise.allSettled([
         apiRequest('GET', `/insights/history/${encodeURIComponent(planCode)}?days=${days}`),
         apiRequest('GET', `/insights/price/${encodeURIComponent(planCode)}`),
+        apiRequest('GET', `/insights/patterns/${encodeURIComponent(planCode)}?days=${days}`),
     ]);
     const eventsDesc = (histRes.status === 'fulfilled' ? histRes.value?.events : []) || [];
     const priceHistory = (priceRes.status === 'fulfilled' ? priceRes.value?.history : []) || [];
+    const hourlyCounts = (patternsRes.status === 'fulfilled' ? patternsRes.value?.hourly_counts : []) || [];
     const eventsAsc = [...eventsDesc].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
     const windows = computeAvailabilityWindows(eventsAsc);
     renderInsightsSummary(eventsAsc, windows, priceHistory);
     renderRestockHeatmap(eventsAsc);
+    renderHourlyPatterns(hourlyCounts);
     renderInsightsWindows(windows);
     renderInsightsActivity(eventsDesc);
     renderPriceTrend(planCode, priceHistory);
+}
+
+// Hour-of-day restock bars from the server-side aggregate
+// (GET /insights/patterns). Unlike the heatmap, which is derived from the
+// (capped) event history payload, this aggregation runs over ALL events in
+// SQLite. Server hours are UTC; shift into the viewer's local time.
+function renderHourlyPatterns(hourlyCounts) {
+    const container = document.getElementById('insights-hourly');
+    if (!container) return;
+    container.innerHTML = '';
+    if (!hourlyCounts.length) {
+        container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No restocks logged yet for this range.' }));
+        return;
+    }
+    const tzShift = -new Date().getTimezoneOffset() / 60;  // UTC → local
+    const local = new Array(24).fill(0);
+    hourlyCounts.forEach(({ hour, count }) => {
+        local[(((hour + tzShift) % 24) + 24) % 24] += count;
+    });
+    const max = Math.max(...local, 1);
+    const bars = el('div', { class: 'flex items-end gap-px h-16' });
+    for (let h = 0; h < 24; h++) {
+        const pct = Math.round((local[h] / max) * 100);
+        bars.appendChild(el('div', {
+            class: 'flex-1 rounded-t bg-blue-500/70 min-h-[2px]',
+            style: `height: ${Math.max(pct, 3)}%`,
+            title: `${h}:00 — ${local[h]} restock${local[h] === 1 ? '' : 's'}`,
+        }));
+    }
+    container.appendChild(bars);
+    const axis = el('div', { class: 'flex gap-px mt-1' });
+    for (let h = 0; h < 24; h++) {
+        axis.appendChild(el('div', { class: 'flex-1 text-center text-[10px] text-gray-500', text: h % 3 === 0 ? String(h) : '' }));
+    }
+    container.appendChild(axis);
 }
 
 // Pair each `available` event with the following `unavailable` for the same
