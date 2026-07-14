@@ -22,6 +22,17 @@ logger = logging.getLogger(__name__)
 _NOT_ORDERABLE = {"unavailable", "comingSoon"}
 
 
+def orderable_entry(entry: dict[str, Any]) -> bool:
+    """True when an availabilities entry is orderable in at least one DC.
+
+    The single source of truth for "in stock": shared by
+    ``OVHService.get_availability`` and the monitor's batch poll path so
+    the two can never drift apart.
+    """
+    dcs = entry.get("datacenters") or []
+    return any(dc.get("availability") not in _NOT_ORDERABLE for dc in dcs)
+
+
 class OVHServiceError(Exception):
     """Carries the OVH status code and query ID for error mapping."""
 
@@ -345,29 +356,36 @@ class OVHService:
         """
         out: list[dict[str, Any]] = []
         for entry in self.get_stock(plan_code):
-            dcs = entry.get("datacenters") or []
-            if any(dc.get("availability") not in _NOT_ORDERABLE for dc in dcs):
+            if orderable_entry(entry):
                 out.append({
                     "fqn": entry.get("fqn", ""),
                     "memory": entry.get("memory"),
                     "storage": entry.get("storage"),
-                    "datacenters": dcs,
+                    "datacenters": entry.get("datacenters") or [],
                 })
         return out
 
-    def get_stock(self, plan_code: str) -> list[dict[str, Any]]:
-        """Return live stock levels per RAM+storage combo for a plan.
+    def get_stock(self, plan_code: str | None = None) -> list[dict[str, Any]]:
+        """Return live stock levels per RAM+storage combo.
 
         Queries ``/dedicated/server/datacenter/availabilities`` and returns
-        the raw entries. Each entry has ``fqn``, ``memory``, ``storage``,
-        and ``datacenters: [{datacenter, availability}]`` where
+        the raw entries. Each entry has ``fqn``, ``planCode``, ``memory``,
+        ``storage``, and ``datacenters: [{datacenter, availability}]`` where
         ``availability`` is ``'unavailable'`` or a freshness tag like
         ``'1H-low'``, ``'24H'``, etc.
 
-        The frontend uses this to show which configs are in stock before
-        the user attempts an order - OVH returns a confusing 500 at
-        checkout if the selected combo is out of stock.
+        With ``plan_code=None`` the filter is omitted and OVH returns the
+        ENTIRE region's stock — verified live at ~28k entries across ~680
+        plan codes in ~1.3s. The monitor uses this to batch-poll many
+        watched plans with one call (and to power the region restock
+        ticker) instead of one request per plan.
+
+        The frontend uses the per-plan form to show which configs are in
+        stock before the user attempts an order - OVH returns a confusing
+        500 at checkout if the selected combo is out of stock.
         """
+        if plan_code is None:
+            return self.get("/dedicated/server/datacenter/availabilities")
         return self.get(
             "/dedicated/server/datacenter/availabilities", planCode=plan_code
         )

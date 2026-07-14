@@ -515,3 +515,32 @@ def test_get_stock_returns_empty_for_unknown_plan():
     svc = _make_service()
     svc._client.get = MagicMock(return_value=[])
     assert svc.get_stock("nope") == []
+
+
+def test_get_stock_without_plan_code_omits_filter():
+    """get_stock(None) must call the availabilities endpoint with NO
+    planCode kwarg — OVH then returns the entire region's stock, which
+    the monitor uses for batch polling and the region ticker."""
+    svc = _make_service()
+    svc._client.get = MagicMock(return_value=[])
+    svc.get_stock()
+    svc._client.get.assert_called_once_with(
+        "/dedicated/server/datacenter/availabilities"
+    )
+
+
+def test_orderable_entry_rule():
+    """orderable_entry: in stock iff any DC availability is outside
+    {unavailable, comingSoon} — comingSoon is NOT orderable."""
+    from app.services.ovh_service import orderable_entry
+
+    assert orderable_entry({"datacenters": [
+        {"availability": "unavailable", "datacenter": "hil"},
+        {"availability": "1H-low", "datacenter": "vin"},
+    ]})
+    assert not orderable_entry({"datacenters": [
+        {"availability": "unavailable", "datacenter": "hil"},
+        {"availability": "comingSoon", "datacenter": "vin"},
+    ]})
+    assert not orderable_entry({"datacenters": []})
+    assert not orderable_entry({})
