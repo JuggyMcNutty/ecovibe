@@ -55,6 +55,7 @@ let state = {
     lastStockAlert: null,
     regionTicker: false,
     regionFeed: [],   // [{time, planCode, fqns: []}] newest first, cap 100
+    editingProfileId: null,
     billingLoaded: false,
     checkoutDefaults: null,
     addonPrices: {},
@@ -406,6 +407,7 @@ async function switchAccount(accountId) {
     state.recentAlerts = [];
     state.lastStockAlert = null;
     state.regionFeed = [];
+    state.editingProfileId = null;
     state.selectedPlanCode = null;
     state.stockByPlan = {};
     state.allOrders = [];
@@ -3011,6 +3013,10 @@ async function loadProfileIntoForm(profileId) {
     if (!profileId) return;
     const profile = state.profiles?.find(p => p.id === profileId);
     if (!profile) return;
+    // Loading a profile enters edit mode: saving with the same name
+    // updates it in place instead of creating a duplicate.
+    state.editingProfileId = profile.id;
+    document.getElementById('profile-name').value = profile.name || '';
     document.getElementById('rush-plan-code').value = profile.plan_code || '';
     document.getElementById('rush-fqn').value = profile.fqn || '';
     // Always assign (not just when truthy) so switching to a profile that
@@ -3050,7 +3056,20 @@ async function saveProfile() {
         waive_retractation: document.getElementById('rush-waive').checked,
     };
     try {
-        await apiRequest('POST', '/profiles', profile);
+        // Update in place when editing a loaded profile and the name still
+        // matches it; a changed name means "save as new" so users can fork
+        // a profile by loading it and renaming.
+        const editing = state.editingProfileId
+            ? state.profiles?.find(p => p.id === state.editingProfileId)
+            : null;
+        if (editing && editing.name === name) {
+            await apiRequest('PUT', `/profiles/${encodeURIComponent(editing.id)}`, profile);
+            showToast(`Profile "${name}" updated.`);
+        } else {
+            await apiRequest('POST', '/profiles', profile);
+            showToast(`Profile "${name}" saved.`);
+        }
+        state.editingProfileId = null;
         document.getElementById('profile-name').value = '';
         await loadProfiles();
     } catch (e) {
@@ -3063,6 +3082,7 @@ async function deleteProfile() {
     if (!id) return;
     try {
         await apiRequest('DELETE', `/profiles/${encodeURIComponent(id)}`);
+        if (state.editingProfileId === id) state.editingProfileId = null;
         await loadProfiles();
     } catch (e) {
         showError(e.message);
