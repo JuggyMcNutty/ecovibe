@@ -68,6 +68,30 @@ The `Makefile` has `install`, `dev`, `test`, `lint`, `css`, `run`,
 `clean` targets — but `make css` will fail because `tailwindcss` is
 not on PATH; use the absolute path above.
 
+## Release process
+
+- **Repo**: public on GitHub at `git@github.com:JuggyMcNutty/ecovibe.git`
+  (remote `origin`, default branch `main`). Auth is SSH (key in
+  `~/.ssh/id_ed25519`, added to the GitHub account) — HTTPS password
+  auth does not work (GitHub requires a PAT for that path; SSH was
+  chosen instead).
+- **gh CLI**: installed to `~/.local/bin/gh` (NOT via `dnf` — this is
+  Bazzite, an immutable/atomic Fedora image, and `dnf install` is
+  blocked by design; `rpm-ostree` would work but requires a reboot to
+  layer, so the plain binary tarball from the GitHub releases page was
+  extracted straight into `~/.local/bin` instead, which is already on
+  PATH). Already authenticated (`gh auth status`) — no need to redo
+  `gh auth login` unless the token is revoked.
+- **Cutting a release**: bump `version` in `pyproject.toml`, commit it,
+  then:
+  ```bash
+  git tag -a vX.Y.Z -m "EcoVibe vX.Y.Z"
+  git push origin vX.Y.Z
+  gh release create vX.Y.Z --generate-notes
+  ```
+  `--generate-notes` auto-summarizes commits since the previous tag.
+  Current released version: **v0.2.0** (first public release, 2026-07-14).
+
 ## Workflow (follow every session)
 
 1. **Before editing**: read the target file and its neighbors to
