@@ -1,5 +1,4 @@
 """SQLite persistence for alerts, profiles, credentials, and history."""
-import json
 import logging
 import os
 import sqlite3
@@ -422,12 +421,6 @@ class Storage:
                 (key, value),
             )
             self._conn.commit()
-
-    def save_snapshot(self, snapshot: dict[str, Any], path: str) -> None:
-        tmp = f"{path}.tmp"
-        with open(tmp, "w") as f:
-            json.dump(snapshot, f, default=str)
-        os.replace(tmp, path)
 
     # ----- accounts (multi-region credentials) -----
 

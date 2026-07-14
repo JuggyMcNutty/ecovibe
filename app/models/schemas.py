@@ -1,78 +1,12 @@
 """Pydantic request/response models for the API layer.
 
-Two naming conventions coexist intentionally:
-  - camelCase models (Price, Cart, CartItem, ...) mirror OVH's wire format
-    and are used to document response shapes (and may be attached as
-    `response_model` in future).
-  - snake_case models (AddServerRequest, CheckoutRequest, ...) are the
-    request bodies the API accepts - Python-idiomatic for the public API.
+All models are snake_case (the public API contract). OVH's own camelCase
+wire shapes are passed through as plain dicts where needed; prices from
+OVH are raw integers in microcents (divide by 10^8 for currency units).
 
 All durations use ISO 8601 period strings (e.g. "P1M" = 1 month).
 """
-from typing import Any
-
 from pydantic import BaseModel, Field
-
-# ---------------------------------------------------------------------------
-# OVH response-shape models (camelCase, mirroring OVH's wire format)
-# ---------------------------------------------------------------------------
-
-class Price(BaseModel):
-    """OVH price object. `priceInUcents` is in microcents of euro (1€ = 1_000_000)."""
-    currencyCode: str
-    priceInUcents: int
-    text: str
-    value: float
-
-
-class CartItem(BaseModel):
-    """A line item in a cart."""
-    itemId: int
-    planCode: str
-    duration: str
-    quantity: int
-    prices: list[dict[str, Any]]
-
-
-class Cart(BaseModel):
-    """An OVH shopping cart."""
-    cartId: str
-    description: str | None = ""
-    expire: str
-    readOnly: bool
-    items: list[dict[str, Any]] = []
-
-
-class ServerOption(BaseModel):
-    """An addon option (RAM/storage/bandwidth upgrade) for an ECO server."""
-    planCode: str
-    label: str
-    invoiceName: str
-    price: Price
-
-
-class PlanInfo(BaseModel):
-    """A catalog plan entry."""
-    planCode: str
-    invoiceName: str
-    durations: list[str]
-    price: Price
-
-
-class ServerAvailability(BaseModel):
-    """One orderable FQN configuration for a plan."""
-    planCode: str
-    fqn: str
-    referencePrice: Price | None = None
-
-
-class OrderSummary(BaseModel):
-    """Checkout summary returned by OVH."""
-    details: list[dict[str, Any]]
-    prices: dict[str, Any]
-    orderId: int | None = None
-    url: str | None = None
-
 
 # ---------------------------------------------------------------------------
 # Request bodies (snake_case, the public API contract)

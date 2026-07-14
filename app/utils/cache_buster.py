@@ -28,8 +28,3 @@ def get_file_hash(rel_path: str) -> str:
             return hashlib.sha256(f.read()).hexdigest()[:12]
     except FileNotFoundError:
         return "dev"
-
-
-def asset_url(rel_path: str, url: str) -> str:
-    """Build a cache-busted asset URL: '/static/.../foo.css?v=<hash>'."""
-    return f"{url}?v={get_file_hash(rel_path)}"

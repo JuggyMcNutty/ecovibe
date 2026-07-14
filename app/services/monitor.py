@@ -776,10 +776,6 @@ class MonitorService:
                     "sniper sweep fire failed for %s", alert_id, exc_info=True
                 )
 
-    async def poll_and_notify(self) -> list[dict[str, Any]]:
-        """One-shot poll (legacy entry point; the SSE handler uses subscribe() instead)."""
-        return await self._poll_once()
-
     @staticmethod
     def _matches_pattern(fqn: str, pattern: str) -> bool:
         """Glob match an FQN against a pattern. `*` matches everything.
@@ -790,10 +786,6 @@ class MonitorService:
         if pattern == "*":
             return True
         return fnmatch(fqn.lower(), pattern.lower())
-
-    def get_current_stock(self) -> dict[str, list[StockStatus]]:
-        """Return the latest cached stock snapshot per plan."""
-        return self._stock_cache
 
 
 _monitor_service: MonitorService | None = None
