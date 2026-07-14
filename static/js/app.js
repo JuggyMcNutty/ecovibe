@@ -45,6 +45,7 @@ let state = {
     profiles: [],
     recentAlerts: [],
     currentStock: {},
+    lastStockAlert: null,
     cart: null,
     cartCreatedAt: null,
     orderResult: null,
@@ -405,6 +406,7 @@ async function switchAccount(accountId) {
     // Reset stale account-scoped state so the new account starts clean.
     state.currentStock = {};
     state.recentAlerts = [];
+    state.lastStockAlert = null;
     state.selectedPlanCode = null;
     state.stockByPlan = {};
     state.allOrders = [];
@@ -2472,8 +2474,20 @@ function showStockAlert(planCode, fqns) {
         `${fqns.length} config(s) now available for ${planCode}: ${fqns.join(', ')}`;
     panel.classList.remove('hidden');
 
-    document.getElementById('rush-plan-code').value = planCode;
-    document.getElementById('rush-fqn').value = fqns[0];
+    // Remember the alert so "Use this config" can apply it explicitly.
+    state.lastStockAlert = { planCode, fqn: fqns[0] };
+    // Only autofill the rush form when the user hasn't typed into it —
+    // values we set are tagged autofilled (the tag is cleared by the
+    // fields' input listeners), so consecutive alerts may overwrite each
+    // other but never the user's own edits mid-typing.
+    const planEl = document.getElementById('rush-plan-code');
+    const fqnEl = document.getElementById('rush-fqn');
+    const untouched = (el) => !el.value || el.dataset.autofilled === '1';
+    if (untouched(planEl) && untouched(fqnEl)) {
+        applyAlertConfigToRushForm();
+    } else {
+        document.getElementById('use-alert-config-btn')?.classList.remove('hidden');
+    }
 
     if (alertPanelTimer) {
         clearTimeout(alertPanelTimer);
@@ -2482,6 +2496,17 @@ function showStockAlert(planCode, fqns) {
         panel.classList.add('hidden');
         alertPanelTimer = null;
     }, 30000);
+}
+
+function applyAlertConfigToRushForm() {
+    if (!state.lastStockAlert) return;
+    const planEl = document.getElementById('rush-plan-code');
+    const fqnEl = document.getElementById('rush-fqn');
+    planEl.value = state.lastStockAlert.planCode;
+    fqnEl.value = state.lastStockAlert.fqn;
+    planEl.dataset.autofilled = '1';
+    fqnEl.dataset.autofilled = '1';
+    document.getElementById('use-alert-config-btn')?.classList.add('hidden');
 }
 
 async function requestNotificationPermission() {
@@ -4132,6 +4157,15 @@ async function init() {
     document.getElementById('rush-order-btn').addEventListener('click', () => {
         document.getElementById('rush-submit-btn').click();
     });
+
+    // User input into the rush target fields clears the autofill tag so
+    // later stock alerts stop overwriting them (see showStockAlert).
+    for (const id of ['rush-plan-code', 'rush-fqn']) {
+        document.getElementById(id).addEventListener('input', (e) => {
+            delete e.target.dataset.autofilled;
+        });
+    }
+    document.getElementById('use-alert-config-btn').addEventListener('click', applyAlertConfigToRushForm);
 
     document.getElementById('rush-order-form').addEventListener('submit', rushOrder);
 
