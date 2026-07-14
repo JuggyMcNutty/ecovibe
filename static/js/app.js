@@ -1008,19 +1008,22 @@ function renderCatalogList() {
             role: 'button',
             tabindex: '0'
         }, [left, price]);
+        // Each row remembers its own unselected background so deselection
+        // restores it correctly — the closure's `inStock` belongs to the
+        // clicked row, not the previously selected one.
+        div.dataset.baseBg = inStock ? 'bg-gray-700' : 'bg-gray-700/50';
 
         const selectPlan = () => {
             document.getElementById('plan-select').value = plan.planCode;
             renderCatalogDetail(plan);
-            // Re-render the list to update the highlight on the newly
-            // selected row. This is cheap (100 rows max) and keeps the
-            // highlight in sync without a full catalog refetch.
+            // Hand-toggle the highlight classes on the two affected rows;
+            // cheaper than re-rendering the list and keeps focus intact.
             const prev = container.querySelector('.bg-blue-600\\/40');
             if (prev) {
                 prev.classList.remove('bg-blue-600/40', 'border', 'border-blue-500');
-                prev.classList.add(inStock ? 'bg-gray-700' : 'bg-gray-700/50');
+                prev.classList.add(prev.dataset.baseBg || 'bg-gray-700');
             }
-            div.classList.remove(inStock ? 'bg-gray-700' : 'bg-gray-700/50');
+            div.classList.remove(div.dataset.baseBg);
             div.classList.add('bg-blue-600/40', 'border', 'border-blue-500');
         };
         div.addEventListener('click', selectPlan);
