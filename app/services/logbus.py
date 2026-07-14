@@ -18,8 +18,6 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
-from app.config import get_settings
-
 # Map level names to numeric severity so the `level` filter means
 # "this level and above" (e.g. WARNING shows WARNING + ERROR).
 _LEVELS = logging.getLevelNamesMapping()
@@ -43,11 +41,25 @@ class LogBus:
 
     def __init__(self, maxlen: int | None = None) -> None:
         if maxlen is None:
-            maxlen = get_settings().log_buffer_size
+            # DB-first (Settings → App) with OVH_LOG_BUFFER_SIZE fallback.
+            from app.services.app_settings import app_setting_int
+            maxlen = app_setting_int("log_buffer_size")
         self._buffer: deque[dict[str, Any]] = deque(maxlen=maxlen)
         self._subscribers: list[asyncio.Queue] = []
         self._lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
+
+    def resize(self, maxlen: int) -> None:
+        """Change the ring buffer capacity at runtime.
+
+        ``deque.maxlen`` is immutable, so the buffer is rebuilt; passing
+        the old deque keeps the NEWEST entries when shrinking (a deque
+        drops from the left as it fills). Called by the Settings → App
+        PUT hook when log_buffer_size changes.
+        """
+        with self._lock:
+            if self._buffer.maxlen != maxlen:
+                self._buffer = deque(self._buffer, maxlen=maxlen)
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Record the running event loop so off-loop emits can fan out.

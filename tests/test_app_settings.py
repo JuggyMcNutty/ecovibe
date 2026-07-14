@@ -146,3 +146,40 @@ def test_fetch_catalog_uses_db_cache_ttl(client):
     svc.fetch_catalog()
     assert cache_mod.get_cache()._ttl == 77
     cache_mod._cache = None
+
+
+# ----- DB-first read sites: logging -----
+
+def test_logbus_resize_keeps_newest(client):
+    from collections import deque
+
+    from app.services.logbus import LogBus
+
+    bus = LogBus(maxlen=10)
+    for i in range(10):
+        bus._buffer.append({"n": i})
+    bus.resize(3)
+    assert bus._buffer.maxlen == 3
+    assert [e["n"] for e in bus._buffer] == [7, 8, 9]  # newest kept
+    bus.resize(20)
+    assert bus._buffer.maxlen == 20
+    assert len(bus._buffer) == 3
+    assert isinstance(bus._buffer, deque)
+
+
+def test_setup_logging_applies_db_log_level(client):
+    import logging
+
+    from app.logging_config import setup_logging
+
+    get_storage().set_setting("app_log_level", "DEBUG")
+    setup_logging()
+    app_logger = logging.getLogger("app")
+    assert app_logger.level == logging.DEBUG
+    tagged = [h for h in app_logger.handlers if getattr(h, "_ecovibe_log_handler", False)]
+    assert tagged and all(h.level == logging.DEBUG for h in tagged)
+
+    # And back — proves the re-run applies changes both ways.
+    get_storage().set_setting("app_log_level", "WARNING")
+    setup_logging()
+    assert logging.getLogger("app").level == logging.WARNING

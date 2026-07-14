@@ -15,6 +15,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 from app.config import get_settings
+from app.services.app_settings import app_setting_int, app_setting_str
 from app.services.logbus import LogBusHandler, get_log_bus
 
 # Loggers we mirror into the file + ring buffer.
@@ -27,14 +28,20 @@ _FILE_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 
 
 def setup_logging() -> None:
-    """Attach (or refresh) the file + LogBus handlers on the target loggers."""
+    """Attach (or refresh) the file + LogBus handlers on the target loggers.
+
+    Level and rotation settings are read DB-first (Settings → App) with
+    env fallback; the Settings PUT hook re-runs this function so changes
+    apply at runtime. ``log_file`` (the path) stays env-only — moving the
+    log file requires a restart.
+    """
     settings = get_settings()
-    level = settings.log_level.upper()
+    level = app_setting_str("log_level").upper()
 
     file_handler = RotatingFileHandler(
         settings.log_file,
-        maxBytes=settings.log_file_max_bytes,
-        backupCount=settings.log_backup_count,
+        maxBytes=app_setting_int("log_file_max_bytes"),
+        backupCount=app_setting_int("log_backup_count"),
         encoding="utf-8",
     )
     file_handler.setFormatter(logging.Formatter(_FILE_FORMAT))
