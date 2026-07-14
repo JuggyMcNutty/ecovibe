@@ -126,7 +126,7 @@ Generate the `.htpasswd` file with `htpasswd -c /etc/nginx/.htpasswd admin`.
 - **Setup/installation fees** surfaced alongside monthly pricing
 - **Currency selector** - view all prices in EUR/USD/GBP/CAD (display-only; converts via daily ECB rates, defaults to the account's billing currency)
 - **Search & filter** plans by name/code, sort by price/name/CPU score
-- **Region filter** - only show plans orderable on your configured endpoint
+- **Location badges & filter** - each plan is badged with the location groups it can actually deploy to (EU/CA/US/APAC, from its real datacenter list — hover for the DCs), with a dropdown to filter by location and search matching DC codes. Note: OVH-CA's catalog has no separate "-eu" plan codes, but most of its home plans deploy to European datacenters — the badges reflect that
 - View configurations, pricing, and availability
 - **Addon labels** use OVH's official invoiceName (e.g. "2x SSD NVMe 512GB Datacenter Class Soft RAID")
 - Quick-add servers to watchlist (click or keyboard)

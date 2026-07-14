@@ -416,6 +416,10 @@ async function switchAccount(accountId) {
     state.addonPrices = {};
     state.productSpecs = {};
     state.catalogCountry = null;
+    // The new endpoint's catalog offers a different set of location groups;
+    // reset the filter so plans aren't hidden by a stale selection.
+    const locFilter = document.getElementById('catalog-location-filter');
+    if (locFilter) locFilter.value = '';
     // Clear detail panels so stale content doesn't linger.
     const catDetail = document.getElementById('catalog-detail');
     if (catDetail) catDetail.innerHTML = '<p class="text-gray-500 text-sm">Select a plan to see details.</p>';
@@ -610,6 +614,7 @@ async function loadCatalog(country, force = false) {
         detectCatalogCurrency();
         // Re-render prices if the display currency differs from native.
         renderPlanSelect();
+        populateLocationFilter();
         renderCatalogList();
         if (state.selectedPlanCode) {
             const p = state.plans.find(x => x.planCode === state.selectedPlanCode);
@@ -694,6 +699,7 @@ async function refreshCatalogSilent() {
             p._inStock = state.stockByPlan[p.planCode] ?? true;
         }
         renderPlanSelect();
+        populateLocationFilter();
         renderCatalogList();
         if (state.selectedPlanCode) {
             const p = state.plans.find(x => x.planCode === state.selectedPlanCode);
@@ -890,6 +896,47 @@ const ENDPOINT_HOME_REGION = {
     'ovh-ca': 'Canada',
 };
 
+// Datacenter code → coarse location group. Badges/filtering use the plan's
+// REAL deployable locations (configurations.dedicated_datacenter), not the
+// plan-code suffix: ovh-ca has no "-eu" plan codes at all, yet most of its
+// suffixless home plans deploy to European DCs (verified live 2026-07 —
+// gra/fra/sbg/waw/rbx/lon appear in 38-46 of its 47 home plans), so a
+// suffix-derived [Canada] badge hides exactly the servers a user scanning
+// for Europe is looking for.
+const DC_REGION_GROUPS = {
+    gra: 'EU', sbg: 'EU', rbx: 'EU', fra: 'EU', waw: 'EU', lon: 'EU', eri: 'EU',
+    'eu-west-par-a': 'EU', 'eu-west-par-b': 'EU', 'eu-west-par-c': 'EU',
+    bhs: 'CA',
+    vin: 'US', hil: 'US',
+    sgp: 'APAC', syd: 'APAC', mum: 'APAC', ynm: 'APAC',
+};
+const LOCATION_GROUP_ORDER = ['EU', 'CA', 'US', 'APAC'];
+
+// Ordered unique location groups a plan can actually deploy to, from its
+// dedicated_datacenter configuration. Unknown DC codes surface uppercased
+// (never silently mislabelled — same principle as planRegion's unknown-
+// suffix rule). Falls back to the suffix-derived planRegion() when the
+// plan carries no DC configuration.
+function planLocations(plan) {
+    const dcs = (plan?.configurations || [])
+        .find(c => c.name === 'dedicated_datacenter')?.values || [];
+    if (!dcs.length) {
+        const region = planRegion(plan?.planCode, state.endpoint);
+        return region ? [region] : [];
+    }
+    const groups = new Set(dcs.map(dc => DC_REGION_GROUPS[dc.toLowerCase()] || dc.toUpperCase()));
+    return [
+        ...LOCATION_GROUP_ORDER.filter(g => groups.has(g)),
+        ...[...groups].filter(g => !LOCATION_GROUP_ORDER.includes(g)).sort(),
+    ];
+}
+
+// The raw DC codes a plan deploys to (for tooltips + search matching).
+function planDatacenters(plan) {
+    return (plan?.configurations || [])
+        .find(c => c.name === 'dedicated_datacenter')?.values || [];
+}
+
 function planRegion(planCode, endpoint) {
     // planCode looks like "24sk102-ca" → extract "ca" → "Canada".
     // PlanCodes may also carry a version/generation segment (e.g. "26sk10b-v1"
@@ -913,8 +960,8 @@ function planRegion(planCode, endpoint) {
 
 function planLabel(plan) {
     const name = plan.invoiceName || plan.planCode;
-    const region = planRegion(plan.planCode, state.endpoint);
-    return region ? `${name} [${region}]` : name;
+    const locations = planLocations(plan);
+    return locations.length ? `${name} [${locations.join('·')}]` : name;
 }
 
 function renderPlanSelect() {
@@ -932,11 +979,31 @@ function renderPlanSelect() {
     });
 }
 
+// Fill the location filter with the groups actually present in the loaded
+// catalog (ovh-ca offers EU/CA/APAC, ovh-us adds US, ...), preserving the
+// current selection when it still exists.
+function populateLocationFilter() {
+    const select = document.getElementById('catalog-location-filter');
+    if (!select) return;
+    const current = select.value;
+    const groups = new Set();
+    (state.plans || []).forEach(p => planLocations(p).forEach(g => groups.add(g)));
+    const ordered = [
+        ...LOCATION_GROUP_ORDER.filter(g => groups.has(g)),
+        ...[...groups].filter(g => !LOCATION_GROUP_ORDER.includes(g)).sort(),
+    ];
+    select.innerHTML = '';
+    select.appendChild(el('option', { value: '', text: 'All locations' }));
+    ordered.forEach(g => select.appendChild(el('option', { value: g, text: g })));
+    if (ordered.includes(current)) select.value = current;
+}
+
 function getFilteredPlans() {
     const q = (document.getElementById('catalog-search')?.value || '').trim().toLowerCase();
     const sort = document.getElementById('catalog-sort')?.value || 'default';
     const orderableOnly = document.getElementById('catalog-orderable-filter')?.checked;
     const stockFirst = document.getElementById('catalog-stock-first')?.checked;
+    const location = document.getElementById('catalog-location-filter')?.value || '';
     let plans = state.plans.slice();
     if (orderableOnly) {
         // Show only servers that are actually orderable right now — i.e. their
@@ -946,10 +1013,18 @@ function getFilteredPlans() {
         // stock stays visible so nothing is hidden before stock loads).
         plans = plans.filter(p => p._inStock !== false);
     }
+    if (location) {
+        // Filter by REAL deployable location (dedicated_datacenter groups),
+        // not the plan-code suffix — see planLocations().
+        plans = plans.filter(p => planLocations(p).includes(location));
+    }
     if (q) {
         plans = plans.filter(p =>
             (p.invoiceName || '').toLowerCase().includes(q) ||
-            (p.planCode || '').toLowerCase().includes(q)
+            (p.planCode || '').toLowerCase().includes(q) ||
+            // Match deployable DC codes ("gra") and location groups ("eu").
+            planDatacenters(p).some(dc => dc.toLowerCase().includes(q)) ||
+            planLocations(p).some(loc => loc.toLowerCase() === q)
         );
     }
     const priceOf = (p) => {
@@ -1000,10 +1075,15 @@ function renderCatalogList() {
             class: 'ml-1 bg-red-600/30 text-red-400 text-xs px-1.5 py-0.5 rounded font-bold',
             text: 'OUT OF STOCK',
         });
-        const region = planRegion(plan.planCode, state.endpoint);
-        const regionSpan = region ? el('span', { class: 'text-yellow-400 ml-1 text-xs', text: `[${region}]` }) : null;
+        // One badge per real deployable location group; tooltip lists the DCs.
+        const dcList = planDatacenters(plan).join(', ');
+        const locationSpans = planLocations(plan).map(loc => el('span', {
+            class: 'text-yellow-400 ml-1 text-xs',
+            text: `[${loc}]`,
+            title: dcList || undefined,
+        }));
         const code = el('span', { class: 'text-gray-400 ml-2 text-xs', text: plan.planCode });
-        const left = el('div', {}, [name, stockBadge, regionSpan, code].filter(Boolean));
+        const left = el('div', {}, [name, stockBadge, ...locationSpans, code].filter(Boolean));
         // Out-of-stock rows still show a readable price — the red badge marks
         // availability, so the price stays legible (muted, no dimming/strike).
         const price = el('span', {
@@ -1347,7 +1427,6 @@ function renderCatalogDetail(plan) {
     const setup = getPlanSetupFee(plan);
     const priceText = displayPrice(monthly?.price, monthly?.formattedPrice, monthly?.currencyCode || state.catalogCurrency);
     const setupText = displayPrice(setup?.price, setup?.formattedPrice, setup?.currencyCode || state.catalogCurrency);
-    const region = planRegion(plan.planCode, state.endpoint);
 
     // Parse server name + CPU from invoiceName (format: "MODEL | CPU")
     const parts = (plan.invoiceName || plan.planCode).split('|');
@@ -1423,8 +1502,15 @@ function renderCatalogDetail(plan) {
         }
         container.appendChild(badgesRow);
     }
-    if (region) {
-        container.appendChild(el('span', { class: 'inline-block bg-yellow-600/30 text-yellow-400 text-xs px-2 py-1 rounded mb-2', text: region }));
+    // Location badges from the plan's real deployable datacenters (hover
+    // for the DC list); the per-DC stock table below gives the live detail.
+    const detailDcs = planDatacenters(plan).join(', ');
+    for (const loc of planLocations(plan)) {
+        container.appendChild(el('span', {
+            class: 'inline-block bg-yellow-600/30 text-yellow-400 text-xs px-2 py-1 rounded mb-2 mr-1',
+            text: loc,
+            title: detailDcs || undefined,
+        }));
     }
     container.appendChild(el('p', { class: 'text-gray-500 text-xs font-mono mb-4', text: plan.planCode }));
 
@@ -4555,6 +4641,7 @@ async function init() {
 
     document.getElementById('catalog-search')?.addEventListener('input', renderCatalogList);
     document.getElementById('catalog-sort')?.addEventListener('change', renderCatalogList);
+    document.getElementById('catalog-location-filter')?.addEventListener('change', renderCatalogList);
     document.getElementById('catalog-orderable-filter')?.addEventListener('change', renderCatalogList);
     document.getElementById('catalog-stock-first')?.addEventListener('change', renderCatalogList);
 

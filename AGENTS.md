@@ -313,6 +313,18 @@ were created under (`account_id` column on each table).
   then code — included→small→large). Families are shallow-cloned before sorting
   so `state.plans` isn't mutated; both the option cards and the order-form
   RAM/Storage/Bandwidth dropdowns read the same sorted `families` array.
+- **Catalog location badges**: badges/filtering come from each plan's REAL
+  deployable locations (`configurations.dedicated_datacenter` →
+  `DC_REGION_GROUPS` → `planLocations()` in app.js), NOT the plan-code
+  suffix. Verified live (2026-07): ovh-ca's catalog has **zero** `-eu`
+  plan codes (unlike ovh-us, which lists 41), yet 38-46 of its 47
+  suffixless home plans deploy to European DCs (gra/fra/sbg/waw/rbx/lon)
+  — a suffix-derived `[Canada]` badge hid exactly those. The suffix logic
+  (`planRegion()`) remains only as the fallback for plans with no DC
+  configuration. Unknown DC codes surface uppercased (never mislabelled
+  as a known group). The `catalog-location-filter` dropdown is populated
+  by `populateLocationFilter()` from the loaded catalog and reset on
+  account switch; catalog search also matches DC codes.
 - **Frontend**: no framework, no build step for JS. `app.js` is a
   ~4600-line vanilla SPA using a custom `el()` DOM helper. Cache
   busting is automatic via content-hash query strings

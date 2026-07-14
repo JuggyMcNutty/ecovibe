@@ -610,8 +610,14 @@
                             <span id="currency-status" class="text-xs text-gray-500"></span>
                         </div>
                         <div class="flex gap-2 mb-3">
-                            <input type="text" id="catalog-search" placeholder="Search plan name or code..."
+                            <input type="text" id="catalog-search" placeholder="Search plan name, code, or DC..."
                                    class="flex-1 bg-gray-700 px-3 py-1 rounded text-sm">
+                            <!-- Options filled by populateLocationFilter() from the
+                                 loaded catalog's real deployable datacenters. -->
+                            <select id="catalog-location-filter" class="bg-gray-700 px-2 py-1 rounded text-sm"
+                                    title="Filter by deployable location (from each plan's datacenter list)">
+                                <option value="">All locations</option>
+                            </select>
                             <select id="catalog-sort" class="bg-gray-700 px-2 py-1 rounded text-sm">
                                 <option value="default">Default</option>
                                 <option value="price-asc">Price: low to high</option>
