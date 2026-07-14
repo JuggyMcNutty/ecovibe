@@ -23,6 +23,11 @@ const OVH_REGIONS = {
     }
 };
 
+// SSE reconnect backoff: start at 1s, double per failed attempt, cap at
+// 30s; reset on a successful open or an explicit stop.
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS = 30000;
+
 const ALERT_SOUND_DATA = 'data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdH2Onp6dn5yXl5aXmJmam5ydn56dn5+goaKjpKWlp6eorK2tr7GxsrKys7S0tbW2tra3t7e4uLm5uru7u7y8vL29vr6/v8DAwMHBwsLCwsPDw8TExMXFxcbGxsfHx8jIyMnJysrKy8vLzMzMzc3Ozs/Pz9DQ0NHR0tLS09PT1NTU1dXW1tbX19fY2NjZ2dra29vb3Nzc3d3e3t/f3+Dg4OHh4uLi4+Pj5OTk5eXm5ubn5+fo6Ojp6erq6+vr7Ozs7e3u7u/v7/Dw8PHx8vLy8/Pz9PT09fX29vb39/f4+Pj5+fr6+vv7+/z8/P39/v7///8=';
 
 let state = {
@@ -35,6 +40,8 @@ let state = {
     monitoring: false,
     eventSource: null,
     reconnectTimer: null,
+    reconnectDelay: 1000,      // RECONNECT_BASE_MS (declared above state)
+    logsReconnectDelay: 1000,
     catalog: null,
     plans: [],
     catalogCountry: null,
@@ -2401,6 +2408,7 @@ function startMonitoring() {
     state.eventSource = new EventSource(`${API_BASE}/monitor/stream`);
 
     state.eventSource.onopen = () => {
+        state.reconnectDelay = RECONNECT_BASE_MS;
         updateConnectionStatus(true);
     };
 
@@ -2442,18 +2450,23 @@ function startMonitoring() {
             state.eventSource = null;
         }
         if (state.monitoring && !state.reconnectTimer) {
+            // Exponential backoff so a persistently failing endpoint isn't
+            // hammered every few seconds; reset on successful open/stop.
+            const delay = state.reconnectDelay;
+            state.reconnectDelay = Math.min(delay * 2, RECONNECT_MAX_MS);
             state.reconnectTimer = setTimeout(() => {
                 state.reconnectTimer = null;
                 if (state.monitoring) {
                     startMonitoring();
                 }
-            }, 3000);
+            }, delay);
         }
     };
 }
 
 function stopMonitoring() {
     state.monitoring = false;
+    state.reconnectDelay = RECONNECT_BASE_MS;
     if (state.reconnectTimer) {
         clearTimeout(state.reconnectTimer);
         state.reconnectTimer = null;
@@ -3323,6 +3336,9 @@ function startLogStream() {
         state.logsReconnectTimer = null;
     }
     state.logsEventSource = new EventSource(`${API_BASE}/logs/stream`);
+    state.logsEventSource.onopen = () => {
+        state.logsReconnectDelay = RECONNECT_BASE_MS;
+    };
     state.logsEventSource.onmessage = (event) => {
         try {
             appendLogEntry(JSON.parse(event.data));
@@ -3339,15 +3355,18 @@ function startLogStream() {
         const logsTab = document.getElementById('logs-tab');
         const visible = logsTab && !logsTab.classList.contains('hidden');
         if (visible && !state.logsReconnectTimer) {
+            const delay = state.logsReconnectDelay;
+            state.logsReconnectDelay = Math.min(delay * 2, RECONNECT_MAX_MS);
             state.logsReconnectTimer = setTimeout(() => {
                 state.logsReconnectTimer = null;
                 startLogStream();
-            }, 3000);
+            }, delay);
         }
     };
 }
 
 function stopLogStream() {
+    state.logsReconnectDelay = RECONNECT_BASE_MS;
     if (state.logsReconnectTimer) {
         clearTimeout(state.logsReconnectTimer);
         state.logsReconnectTimer = null;
