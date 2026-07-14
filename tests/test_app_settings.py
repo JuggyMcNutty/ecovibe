@@ -183,3 +183,40 @@ def test_setup_logging_applies_db_log_level(client):
     get_storage().set_setting("app_log_level", "WARNING")
     setup_logging()
     assert logging.getLogger("app").level == logging.WARNING
+
+
+# ----- DB-first read sites: monitor -----
+
+@pytest.mark.asyncio
+async def test_prune_uses_db_retention_settings(client, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from app.services.monitor import MonitorService
+
+    storage = get_storage()
+    storage.set_setting("app_stock_event_retention_days", "7")
+    storage.set_setting("app_stock_event_max_rows", "2000")
+
+    monitor = MonitorService()
+    monitor._last_prune = 0.0
+    spy = MagicMock(return_value=0)
+    monkeypatch.setattr(storage, "prune_stock_events", spy)
+
+    await monitor._maybe_prune_events()
+    spy.assert_called_once_with(7, 2000)
+
+
+@pytest.mark.asyncio
+async def test_price_check_disabled_via_db(client, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from app.services.monitor import MonitorService
+
+    get_storage().set_setting("app_price_check_interval", "0")
+    monitor = MonitorService()
+    monitor._last_price_check = 0.0
+    spy = MagicMock()
+    monkeypatch.setattr(monitor, "_check_prices_and_promos", spy)
+
+    await monitor._maybe_check_prices_and_promos()
+    spy.assert_not_called()

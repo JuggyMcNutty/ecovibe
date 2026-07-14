@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from fnmatch import fnmatch
 from typing import Any
 
-from app.config import get_settings
+from app.services.app_settings import app_setting_int
 from app.services.ovh_service import (
     OVHServiceError,
     get_active_ovh_service,
@@ -665,8 +665,11 @@ class MonitorService:
     async def _maybe_check_prices_and_promos(self) -> None:
         """Every ``price_check_interval`` seconds: fetch the catalog once,
         evaluate all enabled price watches against it, and scan every
-        plan's pricings for new promotions. Best-effort; never raises."""
-        interval = get_settings().price_check_interval
+        plan's pricings for new promotions. Best-effort; never raises.
+
+        The interval is read DB-first (Settings → App) each cycle, so a
+        change takes effect immediately without a restart."""
+        interval = app_setting_int("price_check_interval")
         if interval <= 0:
             return
         if time.monotonic() - self._last_price_check < interval:
@@ -765,11 +768,11 @@ class MonitorService:
         storage = self._storage_get()
         if not storage:
             return
-        settings = get_settings()
+        # DB-first (Settings → App) with env fallback, read per prune.
         deleted = await asyncio.to_thread(
             storage.prune_stock_events,
-            settings.stock_event_retention_days,
-            settings.stock_event_max_rows,
+            app_setting_int("stock_event_retention_days"),
+            app_setting_int("stock_event_max_rows"),
         )
         if deleted:
             logger.info("pruned %d old stock events", deleted)
