@@ -53,6 +53,8 @@ let state = {
     recentAlerts: [],
     currentStock: {},
     lastStockAlert: null,
+    regionTicker: false,
+    regionFeed: [],   // [{time, planCode, fqns: []}] newest first, cap 100
     billingLoaded: false,
     checkoutDefaults: null,
     addonPrices: {},
@@ -403,6 +405,7 @@ async function switchAccount(accountId) {
     state.currentStock = {};
     state.recentAlerts = [];
     state.lastStockAlert = null;
+    state.regionFeed = [];
     state.selectedPlanCode = null;
     state.stockByPlan = {};
     state.allOrders = [];
@@ -465,6 +468,9 @@ async function switchAccount(accountId) {
         }
         await loadSniperStatus();
         if (gen !== state._switchGen) return;
+        // The ticker setting is global, but the feed's events are
+        // account-scoped — refill it for the new account (self-guarded).
+        loadRegionWatch();
         if (state.billingLoaded) {
             loadPaymentMethods();
             loadCheckoutDefaults();
@@ -2313,6 +2319,87 @@ function renderRecentAlerts() {
     });
 }
 
+// Region restock ticker
+
+async function loadRegionWatch() {
+    // Guarded like other loaders: don't render a stale account's feed.
+    const gen = state._switchGen;
+    try {
+        const resp = await apiRequest('GET', '/monitor/region-watch');
+        if (gen !== state._switchGen) return;
+        state.regionTicker = !!(resp && resp.enabled);
+        const toggle = document.getElementById('region-ticker-toggle');
+        if (toggle) toggle.checked = state.regionTicker;
+        state.regionFeed = [];
+        if (state.regionTicker) {
+            const data = await apiRequest('GET', '/insights/region-activity?hours=24&limit=100&event_type=available');
+            if (gen !== state._switchGen) return;
+            state.regionFeed = (data.events || []).map(e => ({
+                time: e.timestamp,
+                planCode: e.plan_code,
+                fqns: [e.fqn],
+            }));
+        }
+        renderRegionFeed();
+    } catch (e) {
+        console.error('Failed to load region watch:', e);
+    }
+}
+
+async function setRegionTicker(enabled) {
+    try {
+        const resp = await apiRequest('PUT', '/monitor/region-watch', { enabled });
+        state.regionTicker = !!(resp && resp.enabled);
+        state.regionFeed = [];
+        renderRegionFeed();
+        if (state.regionTicker) {
+            showToast('Region ticker on — polling clamped to ≥3s', 3500);
+        }
+    } catch (e) {
+        showError(e.message);
+        const toggle = document.getElementById('region-ticker-toggle');
+        if (toggle) toggle.checked = state.regionTicker;
+    }
+}
+
+function addRegionRestocks(event) {
+    // One SSE region_restock event carries up to 50 plans.
+    for (const r of (event.restocks || [])) {
+        state.regionFeed.unshift({
+            time: event.timestamp,
+            planCode: r.plan_code,
+            fqns: r.fqns || [],
+        });
+    }
+    if (state.regionFeed.length > 100) state.regionFeed.length = 100;
+    renderRegionFeed();
+}
+
+function renderRegionFeed() {
+    const container = document.getElementById('region-restocks');
+    if (!container) return;
+    container.innerHTML = '';
+    if (!state.regionTicker) {
+        container.appendChild(el('p', { class: 'text-gray-500', text: 'Ticker disabled' }));
+        return;
+    }
+    if (state.regionFeed.length === 0) {
+        container.appendChild(el('p', { class: 'text-gray-500', text: 'No restocks seen yet' }));
+        return;
+    }
+    state.regionFeed.forEach(item => {
+        const time = new Date(item.time).toLocaleTimeString();
+        const row = el('div', { class: 'bg-gray-700/50 rounded p-2 flex justify-between items-center gap-2' }, [
+            el('div', {}, [
+                el('span', { class: 'text-green-400 font-bold', text: item.planCode }),
+                el('p', { class: 'text-gray-400 text-xs truncate', text: (item.fqns || []).join(', ') }),
+            ]),
+            el('span', { class: 'text-gray-500 text-xs whitespace-nowrap', text: time }),
+        ]);
+        container.appendChild(row);
+    });
+}
+
 async function addAlert(planCode, fqnPattern) {
     try {
         await apiRequest('POST', '/alerts', {
@@ -2414,6 +2501,8 @@ function startMonitoring() {
                 });
 
                 renderMonitoredList();
+            } else if (data.type === 'region_restock') {
+                addRegionRestocks(data);
             }
         } catch (e) {
             console.error('Failed to parse SSE message:', e);
@@ -2740,6 +2829,7 @@ async function saveSetupAccount() {
             await loadProfiles();
             await loadOrders();
             await loadSniperStatus();
+            await loadRegionWatch();
             showView('monitor');
         }, 1200);
     } catch (e) {
@@ -3976,6 +4066,7 @@ async function init() {
         await loadProfiles();
         await loadOrders();
         await loadSniperStatus();
+        await loadRegionWatch();
         showView('monitor');
     }
 
@@ -4155,6 +4246,10 @@ async function init() {
         });
     }
     document.getElementById('use-alert-config-btn').addEventListener('click', applyAlertConfigToRushForm);
+
+    document.getElementById('region-ticker-toggle').addEventListener('change', (e) => {
+        setRegionTicker(e.target.checked);
+    });
 
     document.getElementById('rush-order-form').addEventListener('submit', rushOrder);
 

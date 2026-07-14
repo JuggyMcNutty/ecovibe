@@ -577,6 +577,20 @@
                     </div>
 
                     <div class="bg-gray-800 rounded-lg p-4">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-xl font-bold">Region Restocks</h2>
+                            <label class="flex items-center gap-2 text-sm text-gray-400" for="region-ticker-toggle">
+                                <input type="checkbox" id="region-ticker-toggle" class="w-4 h-4">
+                                <span>Ticker</span>
+                            </label>
+                        </div>
+                        <p class="text-gray-500 text-xs mb-2">Live restocks across the whole region (clamps polling to &ge;3s while on).</p>
+                        <div id="region-restocks" class="space-y-1 text-sm max-h-64 overflow-y-auto">
+                            <p class="text-gray-500">Ticker disabled</p>
+                        </div>
+                    </div>
+
+                    <div class="bg-gray-800 rounded-lg p-4">
                         <h2 class="text-xl font-bold mb-4">Recent Orders</h2>
                         <div id="orders-list" class="space-y-2 text-sm">
                             <p class="text-gray-500">No orders placed</p>
