@@ -110,3 +110,39 @@ def test_registry_covers_expected_keys():
         "ui_alert_autohide_ms", "ui_orders_days", "ui_orders_limit",
         "ui_logs_limit", "ui_region_feed_cap", "ui_recent_alerts_shown",
     }
+
+
+# ----- DB-first read sites: cache -----
+
+def test_ovh_service_use_cache_from_db(client):
+    from unittest.mock import MagicMock, patch
+
+    from app.services.ovh_service import OVHService
+
+    get_storage().set_setting("app_use_cache", "true")
+    with patch("app.services.ovh_service.ovh.Client") as MockClient:
+        MockClient.return_value = MagicMock()
+        svc = OVHService("ovh-eu", "ak", "as", "ck")
+    assert svc._use_cache is True
+    # Explicit constructor argument still wins (test seam).
+    with patch("app.services.ovh_service.ovh.Client") as MockClient:
+        MockClient.return_value = MagicMock()
+        svc = OVHService("ovh-eu", "ak", "as", "ck", use_cache=False)
+    assert svc._use_cache is False
+
+
+def test_fetch_catalog_uses_db_cache_ttl(client):
+    from unittest.mock import MagicMock, patch
+
+    import app.services.cache as cache_mod
+    from app.services.ovh_service import OVHService
+
+    cache_mod._cache = None
+    get_storage().set_setting("app_cache_ttl", "77")
+    with patch("app.services.ovh_service.ovh.Client") as MockClient:
+        MockClient.return_value = MagicMock()
+        svc = OVHService("ovh-eu", "ak", "as", "ck", use_cache=True)
+    svc._client.get = MagicMock(return_value={"plans": []})
+    svc.fetch_catalog()
+    assert cache_mod.get_cache()._ttl == 77
+    cache_mod._cache = None

@@ -12,6 +12,7 @@ import ovh
 from ovh.exceptions import APIError
 
 from app.config import get_settings
+from app.services.app_settings import app_setting_bool, app_setting_int
 from app.services.cache import get_cache
 
 logger = logging.getLogger(__name__)
@@ -66,7 +67,10 @@ class OVHService:
         use_cache: bool | None = None,
     ) -> None:
         settings = get_settings()
-        self._use_cache = settings.use_cache if use_cache is None else use_cache
+        # DB-first (Settings → App page) with env fallback; an explicit
+        # use_cache argument (tests) always wins. Frozen per instance —
+        # the settings PUT hook resets the service registry to apply.
+        self._use_cache = app_setting_bool("use_cache") if use_cache is None else use_cache
         self._endpoint: str = endpoint or settings.endpoint
         self._account_id = account_id
         # Retain credentials so the client can be rebuilt without an external
@@ -323,11 +327,12 @@ class OVHService:
 
         Results are cached per-subsidiary when `use_cache` is enabled. Pass
         `force=True` to bypass the cache (e.g. for an explicit refresh button).
-        The TTL is read from `Settings.cache_ttl` so `OVH_CACHE_TTL` is honoured.
+        The TTL is read DB-first (Settings → App) with OVH_CACHE_TTL as the
+        env fallback, and applies live to subsequent cache writes.
         """
         sub = subsidiary or self._default_subsidiary()
         cache_key = f"catalog_{sub}"
-        cache = get_cache(ttl=get_settings().cache_ttl)
+        cache = get_cache(ttl=app_setting_int("cache_ttl"))
 
         if self._use_cache and not force:
             cached = cache.get(cache_key)
