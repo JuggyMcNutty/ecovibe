@@ -23,6 +23,15 @@ class SimpleCache:
         expires_at = datetime.now() + timedelta(seconds=self._ttl)
         self._cache[key] = (value, expires_at)
 
+    def set_ttl(self, ttl: int) -> None:
+        """Change the TTL for entries written from now on.
+
+        Existing entries keep the expiry computed when they were set;
+        callers that need the new TTL to apply immediately should also
+        call ``clear()`` (the settings PUT hook does).
+        """
+        self._ttl = ttl
+
     def clear(self) -> None:
         self._cache.clear()
 
@@ -30,9 +39,13 @@ class SimpleCache:
 _cache: SimpleCache | None = None
 
 
-def get_cache(ttl: int = 300) -> SimpleCache:
-    """Shared singleton. TTL is fixed on first creation."""
+def get_cache(ttl: int | None = None) -> SimpleCache:
+    """Shared singleton. A differing ``ttl`` updates the cache's TTL for
+    subsequent writes (it used to be silently frozen at first creation,
+    which made OVH_CACHE_TTL changes a no-op after the first fetch)."""
     global _cache
     if _cache is None:
-        _cache = SimpleCache(ttl=ttl)
+        _cache = SimpleCache(ttl=ttl if ttl is not None else 300)
+    elif ttl is not None and ttl != _cache._ttl:
+        _cache.set_ttl(ttl)
     return _cache

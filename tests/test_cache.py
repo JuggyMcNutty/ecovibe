@@ -35,3 +35,31 @@ def test_cache_clear():
     c.set("k", "v")
     c.clear()
     assert c.get("k") is None
+
+
+def test_get_cache_updates_ttl_on_later_call():
+    """get_cache(ttl) must honour a changed TTL — it used to freeze the
+    first value forever, making runtime TTL changes a silent no-op."""
+    import app.services.cache as cache_mod
+
+    cache_mod._cache = None
+    c1 = cache_mod.get_cache(ttl=300)
+    assert c1._ttl == 300
+    c2 = cache_mod.get_cache(ttl=60)
+    assert c2 is c1          # still the singleton
+    assert c1._ttl == 60     # but the TTL followed
+
+    # No-arg calls leave the TTL untouched.
+    cache_mod.get_cache()
+    assert c1._ttl == 60
+    cache_mod._cache = None
+
+
+def test_set_ttl_affects_only_new_entries():
+    c = SimpleCache(ttl=100)
+    c.set("old", "v")
+    c.set_ttl(1)
+    c.set("new", "v")
+    time.sleep(1.1)
+    assert c.get("old") == "v"   # kept its original 100s expiry
+    assert c.get("new") is None  # expired under the new 1s TTL
