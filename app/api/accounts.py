@@ -189,6 +189,15 @@ async def delete_account(account_id: str) -> dict:
     was_active = storage.get_active_account_id() == account_id
     storage.delete_account(account_id)
     reset_ovh_service(account_id)
+    # Disarm any snipers armed under this account — with the credentials
+    # gone they could never fire and would sit "armed" forever.
+    from app.services.monitor import get_sniper_service
+    disarmed = get_sniper_service().disarm_for_account(account_id)
+    if disarmed:
+        logger.info(
+            "disarmed %d sniper(s) armed under deleted account %s",
+            len(disarmed), account_id,
+        )
     if was_active:
         remaining = storage.list_accounts()
         storage.set_active_account_id(remaining[0]["id"] if remaining else None)

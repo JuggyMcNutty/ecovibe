@@ -339,3 +339,23 @@ def test_delete_active_account_reloads_monitor(client):
     # Active fell back to B (which has no alerts); A's alert must be gone from
     # the in-memory monitor.
     assert not any(al.plan_code == "24ska01" for al in monitor.get_alerts())
+
+
+def test_delete_account_disarms_its_snipers(client):
+    """Deleting an account must disarm snipers armed under it — the sweep
+    skips unconfigured services, so they'd otherwise sit armed forever."""
+    import app.services.monitor as monitor_mod
+    monitor_mod._sniper_service = None
+    sniper = monitor_mod.get_sniper_service()
+
+    a = _create_account(client, label="A")
+    b = _create_account(client, label="B", endpoint="ovh-us")
+    sniper.arm("alert-a", "prof-1", plan_code="24ska01",
+               fqn_pattern="*", account_id=a["id"])
+    sniper.arm("alert-b", "prof-2", plan_code="24skb01",
+               fqn_pattern="*", account_id=b["id"])
+
+    r = client.delete(f"/api/accounts/{b['id']}", headers=XHR)
+    assert r.status_code == 200
+    assert sniper.is_armed("alert-a")       # other account untouched
+    assert not sniper.is_armed("alert-b")   # deleted account's sniper gone

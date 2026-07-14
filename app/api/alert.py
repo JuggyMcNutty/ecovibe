@@ -72,12 +72,22 @@ async def enable_alert(alert_id: str) -> AlertResponse:
 
 @router.put("/{alert_id}/disable")
 async def disable_alert(alert_id: str) -> AlertResponse:
-    """Pause an alert without deleting it."""
+    """Pause an alert without deleting it.
+
+    If a sniper was armed on the alert it is disarmed (a paused alert is
+    never polled, so the sniper could not fire anyway) and the response
+    carries ``sniper_disarmed: true`` so the UI can say so.
+    """
+    from app.services.monitor import get_sniper_service
+    was_armed = get_sniper_service().is_armed(alert_id)
     monitor = get_monitor_service()
     alert = await monitor.set_alert_enabled(alert_id, False)
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
-    return _to_response(alert)
+    resp = _to_response(alert)
+    if was_armed:
+        resp.sniper_disarmed = True
+    return resp
 
 
 @router.put("/{alert_id}/profile")

@@ -124,6 +124,9 @@ class AlertResponse(BaseModel):
     enabled: bool
     notified_at: str | None = None
     auto_order_profile_id: str | None = None
+    # Set by PUT /disable when pausing the alert also disarmed its sniper
+    # (a paused alert is never polled, so an armed sniper on it is dead).
+    sniper_disarmed: bool | None = None
 
 
 class AssignProfileRequest(BaseModel):

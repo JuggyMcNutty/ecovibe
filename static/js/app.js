@@ -2224,7 +2224,13 @@ function renderAlertsList() {
         ]);
         toggleBtn.addEventListener('click', async () => {
             try {
-                await apiRequest('PUT', `/alerts/${encodeURIComponent(alert.id)}/${alert.enabled ? 'disable' : 'enable'}`);
+                const resp = await apiRequest('PUT', `/alerts/${encodeURIComponent(alert.id)}/${alert.enabled ? 'disable' : 'enable'}`);
+                // Pausing an alert disarms its sniper (a paused alert is
+                // never polled) — tell the user so it isn't a surprise.
+                if (resp && resp.sniper_disarmed) {
+                    showToast('Sniper disarmed: paused alerts never fire', 4000);
+                    await loadSniperStatus();
+                }
                 await loadAlerts();
             } catch (e) {
                 showError(e.message);
@@ -2324,6 +2330,9 @@ async function deleteAlert(alertId) {
     try {
         await apiRequest('DELETE', `/alerts/${encodeURIComponent(alertId)}`);
         await loadAlerts();
+        // Deleting an alert disarms its sniper server-side; refresh the
+        // armed-sniper panel so it doesn't keep showing a dead entry.
+        await loadSniperStatus();
     } catch (e) {
         showError(e.message);
     }

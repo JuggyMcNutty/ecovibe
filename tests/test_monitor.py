@@ -136,6 +136,42 @@ async def test_persistence_round_trip(monitor):
 
 
 @pytest.mark.asyncio
+async def test_remove_alert_disarms_sniper(monitor):
+    """Deleting an alert must disarm its sniper — nothing would ever fire
+    it again (poller: alert gone; sweep: skips the active account)."""
+    import app.services.monitor as monitor_mod
+    monitor_mod._sniper_service = None
+    sniper = monitor_mod.get_sniper_service()
+
+    alert = await monitor.add_alert("24sk10", "*")
+    sniper.arm(alert.id, "prof-1", plan_code="24sk10",
+               fqn_pattern="*", account_id=None)
+
+    await monitor.remove_alert(alert.id)
+    assert not sniper.is_armed(alert.id)
+
+
+@pytest.mark.asyncio
+async def test_disable_alert_disarms_sniper(monitor):
+    """Pausing an alert disarms its sniper: a disabled alert is never
+    polled, so a 'paused' alert must not silently auto-order."""
+    import app.services.monitor as monitor_mod
+    monitor_mod._sniper_service = None
+    sniper = monitor_mod.get_sniper_service()
+
+    alert = await monitor.add_alert("24sk10", "*")
+    sniper.arm(alert.id, "prof-1", plan_code="24sk10",
+               fqn_pattern="*", account_id=None)
+
+    await monitor.set_alert_enabled(alert.id, False)
+    assert not sniper.is_armed(alert.id)
+
+    # Re-enabling does NOT re-arm — arming is an explicit user action.
+    await monitor.set_alert_enabled(alert.id, True)
+    assert not sniper.is_armed(alert.id)
+
+
+@pytest.mark.asyncio
 async def test_poll_once_persists_stock_events_in_one_batch(monitor, monkeypatch):
     """The poller must persist a cycle's stock events with a single batched
     write (off the event loop), not one INSERT+commit per event."""

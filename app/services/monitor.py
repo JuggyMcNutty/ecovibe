@@ -89,6 +89,19 @@ class SniperService:
         """Cancel sniper mode for an alert. In-flight orders are not aborted."""
         self._armed.pop(alert_id, None)
 
+    def disarm_for_account(self, account_id: str) -> list[str]:
+        """Disarm every sniper armed under an account and return their alert
+        ids. Called when the account is deleted — otherwise its armed entries
+        would sit in ``_armed`` forever: the sweep skips them (the service is
+        unconfigured) and the poller never sees their alerts again."""
+        ids = [
+            aid for aid, v in self._armed.items()
+            if v.get("account_id") == account_id
+        ]
+        for aid in ids:
+            self._armed.pop(aid, None)
+        return ids
+
     def is_armed(self, alert_id: str) -> bool:
         return alert_id in self._armed
 
@@ -450,6 +463,13 @@ class MonitorService:
                 self._last_stock.pop(alert.plan_code, None)
                 self._stock_cache.pop(alert.plan_code, None)
                 self._primed.discard(alert.plan_code)
+        # A deleted alert can never fire again — neither the poller (alert
+        # gone from _alerts) nor the sweep (skips the active account) would
+        # ever trigger its sniper, so drop the armed entry too.
+        sniper = get_sniper_service()
+        if sniper.is_armed(alert_id):
+            sniper.disarm(alert_id)
+            logger.info("disarmed sniper for deleted alert %s", alert_id)
         storage = self._storage_get()
         if storage:
             try:
@@ -471,6 +491,16 @@ class MonitorService:
             alert = self._alerts.get(alert_id)
             if alert is not None:
                 alert.enabled = enabled
+        if alert is not None and not enabled:
+            # A disabled alert is not polled, and the sweep skips the active
+            # account — an armed sniper on it would sit "armed" but dead.
+            # Pausing an alert therefore disarms its sniper; the API surfaces
+            # this so the UI can tell the user. (Deliberate semantic: a
+            # "paused" alert must never silently auto-order.)
+            sniper = get_sniper_service()
+            if sniper.is_armed(alert_id):
+                sniper.disarm(alert_id)
+                logger.info("disarmed sniper for disabled alert %s", alert_id)
         storage = self._storage_get()
         if storage and alert is not None:
             try:
