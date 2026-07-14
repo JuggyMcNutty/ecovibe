@@ -981,7 +981,8 @@ function getFilteredPlans() {
 function renderCatalogList() {
     const container = document.getElementById('catalog-plans');
     container.innerHTML = '';
-    const plans = getFilteredPlans().slice(0, 100);
+    const filtered = getFilteredPlans();
+    const plans = filtered.slice(0, 100);
     if (plans.length === 0) {
         container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No plans match your search.' }));
         return;
@@ -1051,6 +1052,12 @@ function renderCatalogList() {
         });
         container.appendChild(div);
     });
+    if (filtered.length > plans.length) {
+        container.appendChild(el('p', {
+            class: 'text-gray-500 text-xs text-center py-2',
+            text: `Showing ${plans.length} of ${filtered.length} plans — refine your search to see the rest.`,
+        }));
+    }
 }
 
 // Human-readable addon label parsers
