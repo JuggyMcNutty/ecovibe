@@ -303,6 +303,18 @@ class MonitorService:
         # _run() then clamps the sleep to BATCH_MIN_POLL_INTERVAL.
         self._last_cycle_batched = False
         self._batch_clamp_logged = False
+        # Region restock ticker: when enabled, every batch cycle diffs the
+        # ENTIRE region's stock (not just watched plans), logs all
+        # transitions, and broadcasts a compact region_restock SSE event.
+        # Observational only — alerts/snipers still fire on watched plans.
+        self._region_enabled = False
+        self._last_region_avail: dict[str, set[str]] = {}
+        self._region_primed = False
+        # Snapshot handed from _fetch_availability_map (batch path) to
+        # _process_region_snapshot; None when the cycle wasn't batched.
+        self._region_snapshot: dict[str, set[str]] | None = None
+        # One-shot region_restock event picked up by _run's broadcast.
+        self._region_event: dict[str, Any] | None = None
         # Monotonic timestamp of the last stock-event prune (hourly).
         self._last_prune = 0.0
         self._poll_interval = 3  # clamped to [1, 60]
@@ -358,6 +370,9 @@ class MonitorService:
             interval_str = storage.get_setting("poll_interval")
             if interval_str:
                 self.set_poll_interval(int(interval_str))
+            self._region_enabled = (
+                storage.get_setting("region_ticker_enabled") == "1"
+            )
             if loaded:
                 logger.info("loaded %d alerts from storage", len(loaded))
         except Exception:
@@ -391,6 +406,9 @@ class MonitorService:
             self._stock_cache.clear()
             self._last_stock.clear()
             self._primed.clear()
+            self._last_region_avail = {}
+            self._region_primed = False
+            self._region_event = None
         await self._load_from_storage()
 
     async def _run(self) -> None:
@@ -403,13 +421,22 @@ class MonitorService:
         while True:
             try:
                 changes = await self._poll_once()
+                # Queue items are either a list of plan diffs (wrapped as a
+                # stock_update by the SSE handler) or a pre-typed dict event
+                # like region_restock (passed through as-is).
+                items: list[Any] = []
                 if changes:
+                    items.append(changes)
+                if self._region_event is not None:
+                    items.append(self._region_event)
+                    self._region_event = None
+                for item in items:
                     # Fan out to every connected SSE client. Slow subscribers
                     # (full queue) are dropped with a warning rather than
                     # blocking the poller.
                     for q in list(self._subscribers):
                         try:
-                            q.put_nowait(changes)
+                            q.put_nowait(item)
                         except asyncio.QueueFull:
                             logger.warning("dropping stock update for slow subscriber")
             except asyncio.CancelledError:
@@ -549,6 +576,83 @@ class MonitorService:
     def get_poll_interval(self) -> int:
         return self._poll_interval
 
+    def is_region_enabled(self) -> bool:
+        return self._region_enabled
+
+    async def set_region_enabled(self, enabled: bool) -> None:
+        """Toggle the region restock ticker. Persists across restarts and
+        re-primes the region baseline so re-enabling starts silent."""
+        async with self._lock:
+            self._region_enabled = enabled
+            self._last_region_avail = {}
+            self._region_primed = False
+            self._region_event = None
+        storage = self._storage_get()
+        if storage:
+            try:
+                storage.set_setting("region_ticker_enabled", "1" if enabled else "0")
+            except Exception:
+                logger.warning("failed to persist region_ticker_enabled", exc_info=True)
+
+    async def _process_region_snapshot(
+        self, service, storage, watched: set[str]
+    ) -> None:
+        """Diff the region-wide stock snapshot and emit the ticker event.
+
+        First cycle primes silently (same rule as watched plans). After
+        that: every transition is logged to stock_events (watched plans
+        are skipped — the per-plan loop already logs them edge-accurately)
+        and one compact ``region_restock`` SSE event is queued for
+        broadcast, capped at 50 plans / 5 FQNs each so a sale-opening
+        stampede doesn't produce a megabyte event.
+        """
+        snapshot = self._region_snapshot
+        self._region_snapshot = None
+        if snapshot is None:
+            return
+        now = datetime.now(timezone.utc)
+        async with self._lock:
+            if not self._region_primed:
+                self._last_region_avail = snapshot
+                self._region_primed = True
+                logger.info(
+                    "primed region-wide stock baseline (%d plans orderable)",
+                    len(snapshot),
+                )
+                return
+            prev = self._last_region_avail
+            self._last_region_avail = snapshot
+
+        pending: list[tuple[str, str, str, datetime, str | None]] = []
+        restocks: list[dict[str, Any]] = []
+        for plan in sorted(set(prev) | set(snapshot)):
+            new_fqns = snapshot.get(plan, set()) - prev.get(plan, set())
+            gone_fqns = prev.get(plan, set()) - snapshot.get(plan, set())
+            if plan not in watched:
+                for fqn in sorted(new_fqns):
+                    pending.append((plan, fqn, "available", now, service.account_id))
+                for fqn in sorted(gone_fqns):
+                    pending.append((plan, fqn, "unavailable", now, service.account_id))
+            if new_fqns:
+                restocks.append({"plan_code": plan, "fqns": sorted(new_fqns)[:5]})
+
+        if storage and pending:
+            try:
+                await asyncio.to_thread(storage.log_stock_events, pending)
+            except Exception:
+                logger.debug("failed to log region stock events", exc_info=True)
+
+        if restocks:
+            self._region_event = {
+                "type": "region_restock",
+                "timestamp": now.isoformat(),
+                "restocks": restocks[:50],
+                "total_plans": len(restocks),
+            }
+            logger.info(
+                "region restock: %d plan(s) gained stock", len(restocks)
+            )
+
     async def _maybe_prune_events(self) -> None:
         """Prune old stock events at most once an hour (best-effort)."""
         if time.monotonic() - self._last_prune < 3600:
@@ -620,7 +724,8 @@ class MonitorService:
             plan_codes = sorted(
                 {a.plan_code for a in self._alerts.values() if a.enabled}
             )
-        if not plan_codes:
+        # The region ticker polls even with no alerts (it watches everything).
+        if not plan_codes and not self._region_enabled:
             return changes
 
         service = get_active_ovh_service()
@@ -646,7 +751,8 @@ class MonitorService:
           the batch call fails, an empty map is returned (all baselines
           kept).
         """
-        if len(plan_codes) <= 1:
+        self._region_snapshot = None
+        if len(plan_codes) <= 1 and not self._region_enabled:
             self._last_cycle_batched = False
             out: dict[str, list[dict[str, Any]]] = {}
             for plan_code in plan_codes:
@@ -673,6 +779,13 @@ class MonitorService:
                 grouped.setdefault(entry.get("planCode", ""), []).append(
                     {"fqn": entry.get("fqn", "")}
                 )
+        if self._region_enabled:
+            # Hand the full region snapshot to _process_region_snapshot.
+            self._region_snapshot = {
+                pc: {c["fqn"] for c in configs}
+                for pc, configs in grouped.items()
+                if pc
+            }
         return {pc: grouped.get(pc, []) for pc in plan_codes}
 
     async def _poll_account(
@@ -682,6 +795,14 @@ class MonitorService:
         changes: list[dict[str, Any]] = []
         storage = self._storage_get()
         avail_map = await self._fetch_availability_map(service, plan_codes)
+
+        if self._region_enabled and self._region_snapshot is not None:
+            try:
+                await self._process_region_snapshot(
+                    service, storage, set(plan_codes)
+                )
+            except Exception:
+                logger.exception("region ticker processing failed")
 
         for plan_code in plan_codes:
             avail_configs = avail_map.get(plan_code)

@@ -437,6 +437,89 @@ async def test_batch_fetch_failure_keeps_baselines(monitor, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_region_ticker_diffs_all_plans(monitor, monkeypatch):
+    """With the region ticker on, unwatched plans' transitions are logged
+    and a region_restock event is queued — first cycle primes silently."""
+    import app.services.monitor as monitor_mod
+
+    await monitor.add_alert("plan-a", "*")
+    await monitor.set_region_enabled(True)
+
+    def entry(plan, fqn, availability="1H-low"):
+        return {
+            "planCode": plan,
+            "fqn": fqn,
+            "datacenters": [{"availability": availability, "datacenter": "gra"}],
+        }
+
+    entries = [
+        entry("plan-a", "plan-a.x"),
+        entry("plan-other", "plan-other.x"),
+    ]
+
+    fake = MagicMock()
+    fake.is_configured.return_value = True
+    fake.account_id = None
+    fake.default_currency_code.return_value = "EUR"
+    fake.get_stock.side_effect = lambda pc=None: list(entries)
+    monkeypatch.setattr(monitor_mod, "get_active_ovh_service", lambda: fake)
+
+    await monitor._poll_once()  # primes both watched + region baselines
+    assert monitor._region_event is None
+    assert monitor._region_primed
+
+    # An unwatched plan gains stock → region event + logged stock event.
+    entries.append(entry("plan-new", "plan-new.y"))
+    await monitor._poll_once()
+    event = monitor._region_event
+    assert event is not None and event["type"] == "region_restock"
+    assert event["restocks"] == [{"plan_code": "plan-new", "fqns": ["plan-new.y"]}]
+
+    storage = monitor._storage_get()
+    logged = storage.load_stock_events("plan-new")
+    assert len(logged) == 1 and logged[0]["event_type"] == "available"
+    # The watched plan's events come from the per-plan loop, not the region
+    # diff — no duplicate rows.
+    assert len(storage.load_stock_events("plan-a")) == 0  # primed, no change
+
+
+@pytest.mark.asyncio
+async def test_region_ticker_polls_with_no_alerts(monitor, monkeypatch):
+    """The ticker keeps polling even when there are no alerts at all."""
+    import app.services.monitor as monitor_mod
+
+    await monitor.set_region_enabled(True)
+
+    fake = MagicMock()
+    fake.is_configured.return_value = True
+    fake.account_id = None
+    fake.get_stock.side_effect = lambda pc=None: []
+    monkeypatch.setattr(monitor_mod, "get_active_ovh_service", lambda: fake)
+
+    await monitor._poll_once()
+    assert fake.get_stock.call_count == 1
+    assert monitor._last_cycle_batched  # ticker always uses the batch fetch
+
+
+@pytest.mark.asyncio
+async def test_region_ticker_disabled_no_batch_for_single_plan(monitor, monkeypatch):
+    """Ticker off + one plan = the old lightweight per-plan call."""
+    import app.services.monitor as monitor_mod
+
+    await monitor.add_alert("plan-a", "*")
+
+    fake = MagicMock()
+    fake.is_configured.return_value = True
+    fake.account_id = None
+    fake.default_currency_code.return_value = "EUR"
+    fake.get_availability.return_value = []
+    monkeypatch.setattr(monitor_mod, "get_active_ovh_service", lambda: fake)
+
+    await monitor._poll_once()
+    fake.get_stock.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_sweep_fires_snipers_for_non_active_account(monitor, monkeypatch):
     """A sniper armed under account A must keep firing after the user switches
     away: _sweep_snipers polls A's plan under A's own credentials and fires,

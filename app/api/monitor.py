@@ -33,18 +33,23 @@ async def stream_stock_updates() -> StreamingResponse:
         try:
             while True:
                 try:
-                    # Wait for the next diff batch, or send a keep-alive.
-                    changes = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    # Wait for the next queue item, or send a keep-alive.
+                    item = await asyncio.wait_for(queue.get(), timeout=15.0)
                 except asyncio.TimeoutError:
                     # SSE comment - keeps the connection alive without
                     # producing a client-visible event.
                     yield ": ping\n\n"
                     continue
-                data = {
-                    "type": "stock_update",
-                    "changes": changes,
-                    "alerts_triggered": len(changes),
-                }
+                if isinstance(item, dict) and item.get("type"):
+                    # Pre-typed event (e.g. region_restock) — pass through.
+                    data = item
+                else:
+                    # A list of plan diffs — the classic stock_update shape.
+                    data = {
+                        "type": "stock_update",
+                        "changes": item,
+                        "alerts_triggered": len(item),
+                    }
                 yield f"data: {json.dumps(data)}\n\n"
         except asyncio.CancelledError:
             raise
