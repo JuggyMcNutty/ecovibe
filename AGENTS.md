@@ -26,7 +26,7 @@ When developing or coming up with decisions on this project always choose to do 
   credentials for querying the live API during development. Load them
   with `os.environ` and save to a temp dev DB to test catalog/checkout
   flows (see `app/services/storage.py` for the save flow).
-  **dev to test enviroment**: we are building in the dev folder, when the user runs the current iteration of the project they always rsync into the test enviroment which is currently located at `/var/home/corpeder/Documents/EcoVibe`
+  **dev to test enviroment**: we are building in the dev folder, when the user runs the current iteration of the project they always rsync into a separate test environment (e.g. `/path/to/EcoVibe-test`)
 
 ## Security
 
