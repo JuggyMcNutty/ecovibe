@@ -513,3 +513,43 @@ def test_prune_stock_events_retention_and_cap(client):
     assert remaining == {"plan-b"}
     assert storage.load_stock_events("plan-a") == []
     assert len(storage.load_stock_events("plan-c")) == 1
+
+
+def test_price_watch_crud_and_upsert(client):
+    """One watch per (plan, account); re-saving updates the threshold and
+    re-arms notification state — including for NULL account ids."""
+    from app.services.storage import get_storage
+
+    storage = get_storage()
+    wid = storage.upsert_price_watch(None, "24sk10", 5_000_000_000)
+    watches = storage.load_price_watches()
+    assert len(watches) == 1
+    assert watches[0]["threshold_ucents"] == 5_000_000_000
+
+    storage.mark_price_watch_notified(wid, 4_900_000_000)
+    assert storage.load_price_watches()[0]["last_notified_price"] == 4_900_000_000
+
+    # Re-save the same plan: same row, new threshold, notification re-armed.
+    wid2 = storage.upsert_price_watch(None, "24sk10", 4_000_000_000)
+    assert wid2 == wid
+    watches = storage.load_price_watches()
+    assert len(watches) == 1
+    assert watches[0]["threshold_ucents"] == 4_000_000_000
+    assert watches[0]["last_notified_price"] is None
+
+    assert storage.delete_price_watch(wid) is True
+    assert storage.load_price_watches() == []
+    assert storage.delete_price_watch(wid) is False
+
+
+def test_record_promo_dedupes(client):
+    """record_promo returns True only on first sighting of (plan, promo) —
+    including with a NULL account_id."""
+    from app.services.storage import get_storage
+
+    storage = get_storage()
+    assert storage.record_promo("24sk10", "abc123", '{"d": 1}') is True
+    assert storage.record_promo("24sk10", "abc123", '{"d": 1}') is False
+    assert storage.record_promo("24sk10", "other99", '{"d": 2}') is True
+    promos = storage.load_recent_promos()
+    assert {p["promo_key"] for p in promos} == {"abc123", "other99"}

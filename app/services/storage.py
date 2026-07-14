@@ -170,6 +170,35 @@ class Storage:
             )
             cur.execute(
                 """
+                CREATE TABLE IF NOT EXISTS price_watches (
+                    id TEXT PRIMARY KEY,
+                    plan_code TEXT NOT NULL,
+                    threshold_ucents INTEGER NOT NULL,
+                    currency_code TEXT,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    last_notified_price INTEGER,
+                    notified_at TEXT,
+                    account_id TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(plan_code, account_id)
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS promo_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    plan_code TEXT NOT NULL,
+                    promo_key TEXT NOT NULL,
+                    payload TEXT,
+                    first_seen TEXT NOT NULL,
+                    account_id TEXT,
+                    UNIQUE(plan_code, promo_key, account_id)
+                )
+                """
+            )
+            cur.execute(
+                """
                 CREATE TABLE IF NOT EXISTS accounts (
                     id TEXT PRIMARY KEY,
                     label TEXT NOT NULL,
@@ -775,6 +804,133 @@ class Storage:
             )
             row = cur.fetchone()
         return row["price_in_ucents"] if row else None
+
+    # ----- price watches + promo events -----
+
+    def upsert_price_watch(
+        self, watch_id: str | None, plan_code: str, threshold_ucents: int,
+        currency_code: str | None = None, account_id: str | None = None,
+    ) -> str:
+        """Insert or update a price watch. One watch per (plan, account);
+        re-saving the same plan updates the threshold and re-arms the
+        notification state. Returns the watch id."""
+        wid = watch_id or uuid.uuid4().hex
+        with self._lock:
+            cur = self._conn.cursor()
+            # Manual upsert: SQLite UNIQUE treats NULLs as distinct, so
+            # ON CONFLICT would not fire for rows with a NULL account_id.
+            cur.execute(
+                "SELECT id FROM price_watches WHERE plan_code = ? AND account_id IS ?",
+                (plan_code, account_id),
+            )
+            row = cur.fetchone()
+            if row:
+                wid = row["id"]
+                cur.execute(
+                    "UPDATE price_watches SET threshold_ucents = ?, "
+                    "currency_code = ?, enabled = 1, last_notified_price = NULL, "
+                    "notified_at = NULL WHERE id = ?",
+                    (threshold_ucents, currency_code, wid),
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO price_watches "
+                    "(id, plan_code, threshold_ucents, currency_code, enabled, "
+                    " last_notified_price, notified_at, account_id, created_at) "
+                    "VALUES (?, ?, ?, ?, 1, NULL, NULL, ?, ?)",
+                    (wid, plan_code, threshold_ucents, currency_code, account_id,
+                     _iso(datetime.now(timezone.utc))),
+                )
+            self._conn.commit()
+        return wid
+
+    def load_price_watches(
+        self, account_id: str | None = None, enabled_only: bool = False
+    ) -> list[dict[str, Any]]:
+        where, params = "1=1", []
+        if account_id is not None:
+            where += " AND account_id = ?"
+            params.append(account_id)
+        if enabled_only:
+            where += " AND enabled = 1"
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                f"SELECT id, plan_code, threshold_ucents, currency_code, enabled, "
+                f"last_notified_price, notified_at, account_id, created_at "
+                f"FROM price_watches WHERE {where} ORDER BY created_at",
+                params,
+            )
+            rows = cur.fetchall()
+        return [dict(r) | {"enabled": bool(r["enabled"])} for r in rows]
+
+    def delete_price_watch(self, watch_id: str, account_id: str | None = None) -> bool:
+        with self._lock:
+            cur = self._conn.cursor()
+            if account_id:
+                cur.execute(
+                    "DELETE FROM price_watches WHERE id = ? AND account_id = ?",
+                    (watch_id, account_id),
+                )
+            else:
+                cur.execute("DELETE FROM price_watches WHERE id = ?", (watch_id,))
+            deleted = cur.rowcount > 0
+            self._conn.commit()
+        return deleted
+
+    def mark_price_watch_notified(self, watch_id: str, price_ucents: int) -> None:
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                "UPDATE price_watches SET last_notified_price = ?, notified_at = ? "
+                "WHERE id = ?",
+                (price_ucents, _iso(datetime.now(timezone.utc)), watch_id),
+            )
+            self._conn.commit()
+
+    def record_promo(
+        self, plan_code: str, promo_key: str, payload: str,
+        account_id: str | None = None,
+    ) -> bool:
+        """Record a promotion sighting. Returns True the FIRST time this
+        (plan, promo) pair is seen — the caller notifies only then."""
+        with self._lock:
+            cur = self._conn.cursor()
+            # Manual dedup for the same NULL-account reason as price watches.
+            cur.execute(
+                "SELECT 1 FROM promo_events WHERE plan_code = ? AND "
+                "promo_key = ? AND account_id IS ?",
+                (plan_code, promo_key, account_id),
+            )
+            if cur.fetchone():
+                return False
+            cur.execute(
+                "INSERT INTO promo_events "
+                "(plan_code, promo_key, payload, first_seen, account_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (plan_code, promo_key, payload,
+                 _iso(datetime.now(timezone.utc)), account_id),
+            )
+            self._conn.commit()
+        return True
+
+    def load_recent_promos(
+        self, limit: int = 50, account_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        where, params = "1=1", []
+        if account_id is not None:
+            where += " AND account_id = ?"
+            params.append(account_id)
+        params.append(limit)
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                f"SELECT plan_code, promo_key, payload, first_seen FROM promo_events "
+                f"WHERE {where} ORDER BY first_seen DESC, id DESC LIMIT ?",
+                params,
+            )
+            rows = cur.fetchall()
+        return [dict(r) for r in rows]
 
     # ----- checkout profiles -----
 
