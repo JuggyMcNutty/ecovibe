@@ -44,3 +44,10 @@ class PollIntervalRequest(BaseModel):
 class RegionWatchRequest(BaseModel):
     """Body for PUT /api/monitor/region-watch."""
     enabled: bool
+
+
+class PriceWatchCreate(BaseModel):
+    """Body for POST /api/price-watches. Threshold is in microcents
+    (currency units x 10^8) of the catalog's native currency."""
+    plan_code: str
+    threshold_ucents: int = Field(..., gt=0)

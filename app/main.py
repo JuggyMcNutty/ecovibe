@@ -152,6 +152,7 @@ def create_app():
         logs,
         monitor,
         orders,
+        price_watch,
         profiles,
         sniper,
     )
@@ -196,6 +197,7 @@ def create_app():
     app.include_router(alert.router)
     app.include_router(insights.router)
     app.include_router(orders.router)
+    app.include_router(price_watch.router)
     app.include_router(profiles.router)
     app.include_router(sniper.router)
     app.include_router(settings_api.router)

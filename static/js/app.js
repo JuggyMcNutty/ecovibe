@@ -3688,6 +3688,7 @@ function median(nums) {
 async function loadInsightsData() {
     const days = insightsDays();
     loadInsightsOverview(days);
+    loadInsightsPromos();
     const planCode = document.getElementById('insights-plan-select').value;
     const detail = document.getElementById('insights-detail');
     if (!planCode) {
@@ -3696,10 +3697,110 @@ async function loadInsightsData() {
     }
     if (detail) detail.classList.remove('hidden');
     loadInsightsDetail(planCode, days);
+    loadPriceWatchPanel(planCode);
 }
 
 function insightsDays() {
     return parseInt(document.getElementById('insights-days').value, 10) || 30;
+}
+
+// Price watches: notify when a plan's monthly price drops to a cap.
+
+async function loadPriceWatchPanel(planCode) {
+    const gen = state._switchGen;
+    const current = document.getElementById('price-watch-current');
+    const currencyEl = document.getElementById('price-watch-currency');
+    if (currencyEl) currencyEl.textContent = state.catalogCurrency || '';
+    if (!current) return;
+    try {
+        const data = await apiRequest('GET', '/price-watches');
+        if (gen !== state._switchGen) return;
+        const watch = (data.watches || []).find(w => w.plan_code === planCode);
+        current.innerHTML = '';
+        if (!watch) {
+            current.appendChild(el('span', { class: 'text-gray-500', text: 'No price watch on this plan.' }));
+            return;
+        }
+        const thresholdUnits = (watch.threshold_ucents / 100000000).toFixed(2);
+        current.appendChild(el('span', {
+            text: `Watching: alert below ${thresholdUnits} ${watch.currency_code || ''} `,
+        }));
+        const del = el('button', { class: 'text-red-400 hover:text-red-300 ml-1 text-xs', text: 'remove' });
+        del.addEventListener('click', async () => {
+            try {
+                await apiRequest('DELETE', `/price-watches/${encodeURIComponent(watch.id)}`);
+                showToast('Price watch removed.');
+                await loadPriceWatchPanel(planCode);
+            } catch (e) {
+                showError(e.message);
+            }
+        });
+        current.appendChild(del);
+        if (watch.notified_at) {
+            current.appendChild(el('div', {
+                class: 'text-xs text-gray-500',
+                text: `Last alert: ${new Date(watch.notified_at).toLocaleString()}`,
+            }));
+        }
+    } catch (e) {
+        console.error('Failed to load price watches:', e);
+    }
+}
+
+async function savePriceWatch() {
+    const planCode = document.getElementById('insights-plan-select').value;
+    if (!planCode) {
+        showToast('Select a plan first.', 3000);
+        return;
+    }
+    const raw = document.getElementById('price-watch-threshold').value.trim();
+    const units = parseFloat(raw);
+    if (!raw || isNaN(units) || units <= 0) {
+        showToast('Enter a valid threshold price.', 3000);
+        return;
+    }
+    try {
+        await apiRequest('POST', '/price-watches', {
+            plan_code: planCode,
+            threshold_ucents: Math.round(units * 100000000),
+        });
+        showToast(`Price watch saved: ${planCode} below ${units.toFixed(2)}`);
+        await loadPriceWatchPanel(planCode);
+    } catch (e) {
+        showError(e.message);
+    }
+}
+
+async function loadInsightsPromos() {
+    const gen = state._switchGen;
+    const container = document.getElementById('insights-promos');
+    if (!container) return;
+    try {
+        const data = await apiRequest('GET', '/insights/promos');
+        if (gen !== state._switchGen) return;
+        const promos = data.promos || [];
+        container.innerHTML = '';
+        if (promos.length === 0) {
+            container.appendChild(el('p', { class: 'text-gray-500', text: 'No promotions seen' }));
+            return;
+        }
+        promos.forEach(p => {
+            let desc = p.payload;
+            try {
+                const parsed = JSON.parse(p.payload);
+                desc = parsed.description || parsed.name || p.payload;
+            } catch { /* raw payload fallback */ }
+            container.appendChild(el('div', { class: 'bg-gray-700/50 rounded p-2 flex justify-between items-center gap-2' }, [
+                el('div', {}, [
+                    el('span', { class: 'text-yellow-400 font-bold font-mono', text: p.plan_code }),
+                    el('p', { class: 'text-gray-300 text-xs truncate', text: String(desc).slice(0, 160) }),
+                ]),
+                el('span', { class: 'text-gray-500 text-xs whitespace-nowrap', text: relativeTime(p.first_seen) }),
+            ]));
+        });
+    } catch (e) {
+        console.error('Failed to load promos:', e);
+    }
 }
 
 function selectInsightsPlan(code) {
@@ -4281,6 +4382,7 @@ async function init() {
     // Insights tab
     document.getElementById('insights-plan-select')?.addEventListener('change', loadInsightsData);
     document.getElementById('insights-days')?.addEventListener('change', loadInsightsData);
+    document.getElementById('price-watch-save-btn')?.addEventListener('click', savePriceWatch);
 }
 
 document.addEventListener('DOMContentLoaded', init);

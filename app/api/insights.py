@@ -183,6 +183,14 @@ async def refresh_price(
     return {"plan_code": plan_code, "price_in_ucents": price_ucents}
 
 
+@router.get("/promos")
+async def recent_promos(limit: int = Query(default=50, ge=1, le=500)) -> dict:
+    """Recently seen OVH promotions (from the periodic catalog scan)."""
+    storage = get_storage()
+    service = get_active_ovh_service()
+    return {"promos": storage.load_recent_promos(limit=limit, account_id=service.account_id)}
+
+
 @router.get("/orders")
 async def list_orders(limit: int = Query(default=50, ge=1, le=500)) -> dict:
     """Return recently placed orders for the active account."""

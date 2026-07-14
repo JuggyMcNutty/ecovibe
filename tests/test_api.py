@@ -293,3 +293,37 @@ def test_insights_summary_watched_only_filter(client):
 
     plans = client.get("/api/insights/summary?watched_only=false").json()["plans"]
     assert {p["plan_code"] for p in plans} == {"plan-watched", "plan-random"}
+
+
+def test_price_watch_api_crud(client):
+    """POST upserts one watch per plan; DELETE removes; GET lists."""
+    r = client.post("/api/price-watches",
+                    json={"plan_code": "24sk10", "threshold_ucents": 5_000_000_000},
+                    headers=XHR)
+    assert r.status_code == 201
+    watch = r.json()["watch"]
+    assert watch["plan_code"] == "24sk10"
+
+    # Re-posting the same plan updates in place (no second row).
+    r = client.post("/api/price-watches",
+                    json={"plan_code": "24sk10", "threshold_ucents": 4_000_000_000},
+                    headers=XHR)
+    assert r.status_code == 201
+    watches = client.get("/api/price-watches").json()["watches"]
+    assert len(watches) == 1
+    assert watches[0]["threshold_ucents"] == 4_000_000_000
+
+    r = client.delete(f"/api/price-watches/{watch['id']}", headers=XHR)
+    assert r.status_code == 200
+    assert client.get("/api/price-watches").json()["watches"] == []
+    r = client.delete(f"/api/price-watches/{watch['id']}", headers=XHR)
+    assert r.status_code == 404
+
+
+def test_promos_endpoint(client):
+    from app.services.storage import get_storage
+
+    get_storage().record_promo("24sk10", "k1", '{"description": "sale"}')
+    promos = client.get("/api/insights/promos").json()["promos"]
+    assert len(promos) == 1
+    assert promos[0]["plan_code"] == "24sk10"

@@ -759,6 +759,15 @@
                 </div>
             </div>
 
+            <!-- Recent promotions -->
+            <div class="bg-gray-800 rounded-lg p-4">
+                <h2 class="text-lg font-bold mb-1">Recent promotions</h2>
+                <p class="text-gray-400 text-xs mb-3">Promotions OVH published on catalog pricing (checked every 15 min).</p>
+                <div id="insights-promos" class="space-y-1 text-sm">
+                    <p class="text-gray-500">No promotions seen</p>
+                </div>
+            </div>
+
             <!-- Per-plan detail -->
             <div id="insights-detail" class="hidden space-y-6">
                 <!-- At-a-glance stat tiles -->
@@ -775,6 +784,17 @@
                         <h2 class="text-lg font-bold mb-1">Price trend</h2>
                         <p class="text-gray-400 text-xs mb-3">Monthly price logged over time.</p>
                         <div id="insights-price"></div>
+                        <div class="border-t border-gray-700 mt-3 pt-3">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <label class="text-sm text-gray-400" for="price-watch-threshold">Alert below</label>
+                                <input type="number" id="price-watch-threshold" min="0" step="0.01"
+                                       class="w-28 bg-gray-700 px-2 py-1 rounded text-sm" placeholder="49.99">
+                                <span id="price-watch-currency" class="text-gray-400 text-sm"></span>
+                                <button id="price-watch-save-btn"
+                                        class="bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-sm">Save watch</button>
+                            </div>
+                            <div id="price-watch-current" class="text-sm text-gray-400 mt-2"></div>
+                        </div>
                     </div>
                 </div>
 
