@@ -355,6 +355,7 @@
                 <button data-tab="monitor-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-700 text-gray-400 hover:text-gray-200">Monitor</button>
                 <button data-tab="billing-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-700 text-gray-400 hover:text-gray-200">Billing</button>
                 <button data-tab="orders-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-700 text-gray-400 hover:text-gray-200">Orders</button>
+                <button data-tab="servers-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-700 text-gray-400 hover:text-gray-200">Servers</button>
                 <button data-tab="insights-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-700 text-gray-400 hover:text-gray-200">Insights</button>
                 <button data-tab="logs-tab" class="tab-btn px-4 py-2 rounded-t-lg bg-gray-700 text-gray-400 hover:text-gray-200">Logs</button>
             </div>
@@ -692,6 +693,13 @@
                                 <p class="text-gray-500 text-sm">Loading payment methods...</p>
                             </div>
                         </div>
+
+                        <div class="bg-gray-800 rounded-lg p-4">
+                            <h2 class="text-xl font-bold mb-4">Recent Invoices</h2>
+                            <div id="billing-invoices" class="space-y-2 text-sm">
+                                <p class="text-gray-500">Loading invoices...</p>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="space-y-4">
@@ -732,6 +740,24 @@
                 </div>
                 <div id="order-detail" class="bg-gray-800 rounded-lg p-4">
                     <p class="text-gray-500 text-sm">Select an order to see details.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Servers tab -->
+        <div id="servers-tab" class="hidden">
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div class="bg-gray-800 rounded-lg p-4">
+                    <div class="flex justify-between items-center mb-3">
+                        <h2 class="text-xl font-bold">Your Servers</h2>
+                        <button id="servers-refresh-btn" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm">Refresh</button>
+                    </div>
+                    <div id="servers-list" class="space-y-2 text-sm">
+                        <p class="text-gray-500">Loading servers...</p>
+                    </div>
+                </div>
+                <div id="server-detail" class="bg-gray-800 rounded-lg p-4">
+                    <p class="text-gray-500 text-sm">Select a server to see details.</p>
                 </div>
             </div>
         </div>

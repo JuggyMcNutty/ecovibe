@@ -457,6 +457,14 @@ async function switchAccount(accountId) {
             await loadOrdersTab();
             if (gen !== state._switchGen) return;
         }
+        // Same in-place reload for the lazy-loaded Servers tab.
+        const serversTabVisible = !document.getElementById('servers-tab')?.classList.contains('hidden');
+        if (serversTabVisible) {
+            await loadServersTab();
+            if (gen !== state._switchGen) return;
+            const detail = document.getElementById('server-detail');
+            if (detail) detail.innerHTML = '<p class="text-gray-500 text-sm">Select a server to see details.</p>';
+        }
         // The Insights tab is likewise only (re)loaded lazily on tab switch, so
         // if it's active during an account switch it keeps rendering the
         // previous account's overview/charts/dropdown. Reload it in place.
@@ -1988,6 +1996,8 @@ function switchTab(tabId) {
     if (insightsTab) insightsTab.classList.toggle('hidden', tabId !== 'insights-tab');
     const ordersTab = document.getElementById('orders-tab');
     if (ordersTab) ordersTab.classList.toggle('hidden', tabId !== 'orders-tab');
+    const serversTab = document.getElementById('servers-tab');
+    if (serversTab) serversTab.classList.toggle('hidden', tabId !== 'servers-tab');
     const logsTab = document.getElementById('logs-tab');
     if (logsTab) logsTab.classList.toggle('hidden', tabId !== 'logs-tab');
     // Stop the live log tail whenever we leave the logs tab.
@@ -2001,6 +2011,10 @@ function switchTab(tabId) {
     // other callers ignore the return value and it runs fire-and-forget.
     if (tabId === 'orders-tab') {
         return loadOrdersTab();
+    }
+    // Lazy-load owned servers when switching to the servers tab.
+    if (tabId === 'servers-tab') {
+        return loadServersTab();
     }
     // Refresh insights plan dropdown + overview when switching to that tab
     if (tabId === 'insights-tab') {
@@ -2016,7 +2030,7 @@ function switchTab(tabId) {
 // Billing & account info
 
 async function loadBillingInfo() {
-    await Promise.all([loadAccountInfo(), loadPaymentMethods(), loadCheckoutDefaults()]);
+    await Promise.all([loadAccountInfo(), loadPaymentMethods(), loadCheckoutDefaults(), loadBillingInvoices()]);
     state.billingLoaded = true;
 }
 
@@ -2115,6 +2129,43 @@ async function loadAccountInfo() {
         }
         container.appendChild(grid);
     } catch (e) {
+        container.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
+    }
+}
+
+async function loadBillingInvoices() {
+    const container = document.getElementById('billing-invoices');
+    if (!container) return;
+    const gen = state._switchGen;
+    try {
+        const data = await apiRequest('GET', '/account/bills?limit=20&months=6');
+        if (gen !== state._switchGen) return;
+        const bills = data?.bills || [];
+        container.innerHTML = '';
+        if (bills.length === 0) {
+            container.appendChild(el('p', { class: 'text-gray-500', text: 'No invoices in the last 6 months.' }));
+            return;
+        }
+        bills.forEach(b => {
+            const date = b.date ? new Date(b.date).toLocaleDateString() : '—';
+            const row = el('div', { class: 'bg-gray-700/50 rounded p-2 flex justify-between items-center gap-2' }, [
+                el('div', {}, [
+                    el('span', { class: 'text-gray-200 font-mono', text: b.bill_id || '?' }),
+                    el('p', { class: 'text-gray-500 text-xs', text: date }),
+                ]),
+                el('div', { class: 'flex items-center gap-3' }, [
+                    el('span', { class: 'text-green-400 tabular-nums', text: b.price_text || '' }),
+                    b.pdf_url ? el('a', {
+                        href: b.pdf_url, target: '_blank', rel: 'noopener',
+                        class: 'text-blue-400 hover:text-blue-300 text-xs', text: 'PDF',
+                    }) : null,
+                ].filter(Boolean)),
+            ]);
+            container.appendChild(row);
+        });
+    } catch (e) {
+        if (gen !== state._switchGen) return;
+        container.innerHTML = '';
         container.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
     }
 }
@@ -3230,6 +3281,103 @@ async function openOrderInTab(orderId) {
     state.selectedOrderId = orderId;
     renderOrdersList();
     loadOrderDetail(orderId);
+}
+
+// Owned servers tab
+
+async function loadServersTab() {
+    const container = document.getElementById('servers-list');
+    if (!container) return;
+    container.innerHTML = '';
+    container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'Loading servers from OVH...' }));
+    const gen = state._switchGen;
+    try {
+        const data = await apiRequest('GET', '/servers');
+        if (gen !== state._switchGen) return;
+        renderServersList(data?.servers || []);
+    } catch (e) {
+        if (gen !== state._switchGen) return;
+        container.innerHTML = '';
+        container.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
+    }
+}
+
+function renderServersList(servers) {
+    const container = document.getElementById('servers-list');
+    if (!container) return;
+    container.innerHTML = '';
+    if (!servers.length) {
+        container.appendChild(el('p', { class: 'text-gray-500', text: 'No dedicated servers on this account.' }));
+        return;
+    }
+    servers.forEach(s => {
+        const stateColor = s.state === 'ok' ? 'text-green-400' : 'text-yellow-400';
+        const row = el('div', {
+            class: 'bg-gray-700/50 hover:bg-gray-700 rounded p-2 cursor-pointer flex justify-between items-center gap-2',
+            role: 'button', tabindex: '0',
+        }, [
+            el('div', {}, [
+                el('span', { class: 'text-blue-400 font-bold', text: s.display_name || s.service_name }),
+                el('p', { class: 'text-gray-400 text-xs', text: [
+                    s.commercial_range, s.datacenter, s.os,
+                ].filter(Boolean).join(' · ') || s.service_name }),
+            ]),
+            el('div', { class: 'text-right' }, [
+                s.state ? el('p', { class: `text-xs font-bold ${stateColor}`, text: s.state }) : null,
+                s.expiration ? el('p', { class: 'text-gray-500 text-xs', text: `exp. ${s.expiration}` }) : null,
+            ].filter(Boolean)),
+        ]);
+        const open = () => loadServerDetail(s.service_name);
+        row.addEventListener('click', open);
+        row.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+        });
+        container.appendChild(row);
+    });
+}
+
+async function loadServerDetail(serviceName) {
+    const container = document.getElementById('server-detail');
+    if (!container) return;
+    container.innerHTML = '';
+    container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'Loading server details...' }));
+    const gen = state._switchGen;
+    try {
+        const data = await apiRequest('GET', `/servers/${encodeURIComponent(serviceName)}`);
+        if (gen !== state._switchGen) return;
+        container.innerHTML = '';
+        const summary = data.summary || {};
+        container.appendChild(el('h3', { class: 'text-lg font-bold mb-3', text: summary.display_name || serviceName }));
+        const grid = el('div', { class: 'grid grid-cols-1 sm:grid-cols-2 gap-2' });
+        const detail = data.detail || {};
+        const info = data.service_info || {};
+        const fields = [
+            ['Service', serviceName],
+            ['State', detail.state],
+            ['Datacenter', detail.datacenter],
+            ['Range', detail.commercialRange],
+            ['OS', detail.os],
+            ['IP', detail.ip],
+            ['Reverse', detail.reverse],
+            ['Rack', detail.rack],
+            ['Monitoring', detail.monitoring != null ? String(detail.monitoring) : null],
+            ['Expiration', info.expiration],
+            ['Renewal', info.renewalType],
+            ['Creation', info.creation],
+        ];
+        for (const [label, value] of fields) {
+            if (value == null || value === '') continue;
+            grid.appendChild(el('div', { class: 'bg-gray-700 rounded p-2' }, [
+                el('p', { class: 'text-gray-500 text-xs', text: label }),
+                el('p', { class: 'text-gray-200 text-sm break-all', text: String(value) }),
+            ]));
+        }
+        container.appendChild(grid);
+    } catch (e) {
+        if (gen !== state._switchGen) return;
+        container.innerHTML = '';
+        container.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
+    }
 }
 
 async function loadOrdersTab(refresh = false) {
@@ -4351,6 +4499,8 @@ async function init() {
     document.getElementById('region-ticker-toggle').addEventListener('change', (e) => {
         setRegionTicker(e.target.checked);
     });
+
+    document.getElementById('servers-refresh-btn')?.addEventListener('click', () => loadServersTab());
 
     document.getElementById('rush-order-form').addEventListener('submit', rushOrder);
 
