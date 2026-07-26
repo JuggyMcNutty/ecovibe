@@ -187,17 +187,41 @@ were created under (`account_id` column on each table).
   values). The seam is `accounts._verify_credentials`, stubbed by
   `conftest.isolated_state` so offline tests can create fake accounts.
 - **Active account**: stored in `settings.active_account_id`; cached by
-  the registry. Switching via `PUT /api/accounts/active` calls
-  `monitor.reload()` which clears in-memory alerts, stock cache, and
-  `_last_stock` (the stock-diff baseline) and re-reads the active
-  account's alerts. If `reload()` fails, the active account is reverted
-  so the monitor doesn't poll the new account with the old account's
-  alerts.
-- **Monitor**: polls the active account only (Decision 1A). The poller
-  early-returns when there are no enabled alerts AND the region ticker
-  is off, so idle polling does no OVH network I/O. `_poll_once` resolves
-  the service + plan codes and delegates to `_poll_account(service,
-  plan_codes)` — the seam for a future multi-account polling iteration.
+  the registry. It scopes the **UI and one-shot operations** (catalog,
+  checkout, billing, `GET /api/alerts`) — NOT the poller, which watches
+  every account. Switching via `PUT /api/accounts/active` calls
+  `monitor.reload()`, a re-sync (re-read alerts + account metadata, prune
+  state for deleted accounts) that deliberately **preserves stock
+  baselines** so a switch never re-primes or drops an edge. If `reload()`
+  fails the active account is reverted, so the app never proceeds with a
+  half-applied switch.
+- **Monitor: polls EVERY account** (supersedes the old active-account-only
+  Decision 1A). `_poll_once` groups enabled alerts by `account_id`, adds
+  accounts whose region ticker is on, and polls each group **concurrently**
+  (`asyncio.gather`) via `_poll_one_account` → `_poll_account(account_id,
+  service, plan_codes, region_enabled)` under that account's own
+  credentials; each `OVHService` has its own client lock, so a cycle costs
+  the slowest account, not their sum. It early-returns before building any
+  service when nothing is watched, so idle polling still does no OVH
+  network I/O. This is what makes monitoring survive an account switch:
+  insight data keeps accruing and alerts keep firing for accounts the user
+  isn't looking at.
+- **Per-account state keys**: `_stock_cache`, `_last_stock` and `_primed`
+  are keyed by `(account_id, plan_code)` — two accounts may watch the same
+  plan code in different regions with completely different stock.
+  `_region_enabled` / `_last_region_avail` / `_region_primed` are keyed by
+  `account_id`. A `None` key is the pre-account bucket (fresh install or a
+  test), resolved through `get_active_ovh_service()`.
+- **Event tagging**: every `stock_update` diff and `region_restock` event
+  carries `account_id` + `account_label`, and notifications get an
+  `account_label` suffix (`_account_suffix()` in `notifier.py`) — with all
+  accounts polled at once, an alert has to say which one it came from. The
+  frontend applies stock dots only for the active account but shows every
+  account's restock, tagged.
+- **Deleted accounts**: `delete_account` drops only the `accounts` row (its
+  history rows stay queryable), so `_alerts_from_rows` skips alerts whose
+  `account_id` is not a live account — otherwise they'd inflate the alert
+  counts and sniper status with entries that have no credentials.
 - **Batch polling**: with 2+ watched plans (or the region ticker on),
   `_fetch_availability_map` makes ONE unfiltered
   `/dedicated/server/datacenter/availabilities` call (~28k entries /
@@ -208,25 +232,31 @@ were created under (`account_id` column on each table).
   every plan's baseline (it must not read as a region-wide sell-out).
   There is no server-side multi-planCode filter (comma lists return 0
   rows — verified live).
-- **Silent baseline priming**: the FIRST poll for a plan after startup,
-  `reload()`, or an account switch only records the baseline — no SSE
+- **Silent baseline priming**: the FIRST poll for an
+  `(account, plan)` after startup only records the baseline — no SSE
   broadcast, notifications, or stock events (an empty baseline would
   otherwise mark everything "newly available" on every restart). Armed
   snipers still fire on already-available stock during priming. The
-  region ticker primes the same way (`_region_primed`).
-- **Region restock ticker** (`region_ticker_enabled` setting, toggled
-  via `GET/PUT /api/monitor/region-watch`): each batch cycle diffs the
-  ENTIRE region; unwatched plans' transitions are logged to
-  stock_events (watched plans stay with the per-plan loop — no
-  duplicate rows) and a `region_restock` SSE event (capped 50 plans ×
-  5 FQNs) is broadcast alongside the classic `stock_update`. Feed API:
-  `GET /api/insights/region-activity`. `insights/summary` defaults to
-  `watched_only=true` so ticker volume doesn't drown the overview.
+  region ticker primes the same way (`_region_primed`). An account switch
+  does NOT re-prime any more — that account was being polled all along.
+- **Region restock ticker** — **per-account**
+  (`accounts.region_ticker_enabled` column, toggled for the ACTIVE account
+  via `GET/PUT /api/monitor/region-watch`; the old global
+  `settings.region_ticker_enabled` row is migrated onto the active account
+  by `Storage._migrate_region_ticker_setting` and deleted). Each ticking
+  account's batch cycle diffs ITS ENTIRE region; unwatched plans'
+  transitions are logged to stock_events (watched plans stay with the
+  per-plan loop — no duplicate rows) and a `region_restock` SSE event
+  (capped 50 plans × 5 FQNs) is broadcast alongside the classic
+  `stock_update`. Feed API: `GET /api/insights/region-activity`.
+  `insights/summary` defaults to `watched_only=true` so ticker volume
+  doesn't drown the overview.
 - **Stock-event retention**: the monitor prunes `stock_events` hourly —
   rows older than `OVH_STOCK_EVENT_RETENTION_DAYS` (90) deleted, table
   hard-capped at `OVH_STOCK_EVENT_MAX_ROWS` (500k, oldest dropped).
 - **Price watches + promo scan**: every `OVH_PRICE_CHECK_INTERVAL`
-  seconds (900; 0 disables) the monitor fetches the catalog once,
+  seconds (900; 0 disables) the monitor fetches the catalog once
+  **per account** (not just the active one, same reason as the poller),
   evaluates enabled `price_watches` (notify at/below threshold; re-fire
   only when the price moves; watched prices logged to price_history),
   and scans every `pricings[].promotions` entry — new promos
@@ -239,7 +269,14 @@ were created under (`account_id` column on each table).
   distinct (ON CONFLICT/OR IGNORE would silently duplicate).
 - **Sniper**: fires under the alert's own `account_id`
   (`get_ovh_service(alert.account_id)`), not the active one — so an
-  armed sniper keeps targeting the right region after a switch.
+  armed sniper keeps targeting the right region after a switch. Sniper
+  matching in `_poll_account` is **level-triggered** (any matching config
+  *currently* orderable), unlike notifications, which stay edge-triggered
+  on `newly_available`: a sniper must also fire on stock that was already
+  there when it was armed. `SniperService.maybe_fire`'s per-arm
+  `fqns_seen` set is what stops duplicate orders. (This replaced the old
+  `_sweep_snipers()` safety net, which existed only because non-active
+  accounts weren't polled — it is now redundant and was removed.)
   Snipers are **disarmed automatically** when their account is deleted
   (`disarm_for_account`), their alert is deleted, or their alert is
   paused (a disabled alert is never polled, and a "paused" alert must
@@ -255,6 +292,18 @@ were created under (`account_id` column on each table).
   lazy-loaded on tab switch, so `switchAccount()` also reloads it in place
   (`loadOrdersTab()`) when it's the visible tab — otherwise it would keep
   showing the previous account's orders until the user re-opened the tab.
+  It **restarts the SSE stream in a `finally`** if it was running (guarded
+  by `_switchGen`): the stream is account-agnostic and the server never
+  stopped polling, so leaving it torn down made the monitor look "stopped"
+  after every switch. The Start/Stop button only controls THIS browser's
+  live view — the `#monitor-poller-state` hint (fed by
+  `refreshMonitorRunState()` ← `GET /api/monitor/status`'s
+  `running`/`accounts_polled`/`total_alerts_count`) says so.
+- **Rush-form autofill is active-account-only**: `showStockAlert()` takes
+  an `accountLabel`, and a tagged (background-account) alert never
+  prefills the rush form or offers "Use this config" — the form orders
+  under the ACTIVE account's credentials, so prefilling another account's
+  plan would place the order in the wrong region.
 - **Network error wrapping**: `OVHService._do_call` wraps non-`APIError`
   exceptions (`ConnectionError`, `TimeoutError`, `SSLError`) in
   `OVHServiceError` so they surface as proper error responses instead of

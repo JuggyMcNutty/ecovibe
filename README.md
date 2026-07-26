@@ -98,9 +98,10 @@ Generate the `.htpasswd` file with `htpasswd -c /etc/nginx/.htpasswd admin`.
 
 ### Flash Sale Monitor
 - **Real-time stock tracking** via SSE (Server-Sent Events) with a single shared background poller
-- **Batched polling** - watching 2+ plans uses ONE region-wide availabilities call per cycle instead of one per plan (poll interval clamps to ≥3s in batch mode; single-plan polling keeps 1s fidelity)
-- **Region restock ticker** (optional) - live feed of restocks across the ENTIRE region, streamed over SSE and logged for insights
-- **Silent start** - the first poll after a restart or account switch primes the stock baseline without re-notifying everything already in stock (armed snipers still fire)
+- **All accounts monitored at once** - the poller watches every stored account's alerts, not just the active one, so switching accounts never pauses monitoring: history keeps building and restock alerts keep firing for the accounts you aren't looking at (each alert is tagged with its account)
+- **Batched polling** - watching 2+ plans uses ONE region-wide availabilities call per cycle instead of one per plan (poll interval clamps to ≥3s in batch mode; single-plan polling keeps 1s fidelity). Accounts are polled concurrently, so a cycle costs the slowest account rather than their sum
+- **Region restock ticker** (optional, per account) - live feed of restocks across an account's ENTIRE region, streamed over SSE and logged for insights
+- **Silent start** - the first poll after a restart primes the stock baseline without re-notifying everything already in stock (armed snipers still fire)
 - **Browser notifications** when desired configs become available
 - **Multi-channel notifications** (Telegram, Discord, Slack, email) - never miss a flash sale when away from the browser
 - **Sound alerts** - audio notification (requires a user gesture first, e.g. clicking "Start Monitor")
@@ -150,7 +151,7 @@ Generate the `.htpasswd` file with `htpasswd -c /etc/nginx/.htpasswd admin`.
 - **Filter** by status (all / pending / delivered / cancelled)
 
 ### Price Watches & Promotions
-- **Price-drop alerts** - set a per-plan price cap; the monitor re-checks the catalog every 15 minutes and notifies (all channels) when the price falls to/below it. Re-fires only when the price moves again
+- **Price-drop alerts** - set a per-plan price cap; the monitor re-checks the catalog every 15 minutes (for every account, not just the active one) and notifies (all channels) when the price falls to/below it. Re-fires only when the price moves again
 - **Promo detector** - OVH's catalog `promotions` field is scanned on the same cadence; newly published promotions notify and appear in the Insights "Recent promotions" panel
 
 ### Owned Servers & Invoices
@@ -282,11 +283,11 @@ GET  /api/catalog/stock?plan_code=XX       - Live stock levels per RAM+storage c
 # Monitor
 GET  /api/monitor/stream                    - SSE real-time stock updates (+ region_restock events)
 GET  /api/monitor/availability?plans=XX,YY  - Current stock for plans
-GET  /api/monitor/status                    - Monitor status (interval, alert count)
+GET  /api/monitor/status                    - Monitor status (interval, active-account alert count, totals across all accounts)
 PUT  /api/monitor/poll-interval             - Set poll interval (body: {poll_interval: 1-60})
 POST /api/monitor/poll-interval             - Alias for PUT
-GET  /api/monitor/region-watch              - Region restock ticker state
-PUT  /api/monitor/region-watch              - Enable/disable the ticker (body: {enabled})
+GET  /api/monitor/region-watch              - Region restock ticker state (active account)
+PUT  /api/monitor/region-watch              - Enable/disable the active account's ticker (body: {enabled})
 
 # Alerts
 POST   /api/alerts                          - Create stock alert
@@ -384,10 +385,17 @@ multiple accounts in the same region) and switch between them instantly.
 - **Add an account** via the setup wizard (first start) or the Settings
   button → "Add New Account". Each account has a label, region, and the
   three OVH API keys.
-- **Switch the active account** with the dropdown in the header. All
-  catalog, monitor, checkout, and billing operations run against the
-  active account. Switching reloads the monitor so it watches only the
-  active account's alerts and drops the previous account's stock cache.
+- **Switch the active account** with the dropdown in the header. Catalog,
+  checkout and billing operations run against the active account, and the
+  UI shows its data.
+- **Monitoring is never interrupted by a switch**: the background poller
+  watches *every* account's alerts at once. The account you switch away
+  from keeps logging stock events, keeps firing notifications, and keeps
+  its armed snipers live. Restocks on a background account appear in the
+  browser tagged with the account's label (they never prefill the rush
+  order form, which orders under the active account). The Start/Stop
+  Monitor button only controls the live view in your browser — the server
+  polls regardless of whether any browser is connected.
 - **Data is account-scoped**: alerts, checkout profiles, and orders belong
   to the account they were created under. Switching accounts shows only
   that account's data. The sniper orders under the alert's own account
