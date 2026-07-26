@@ -411,6 +411,10 @@ async function switchAccount(accountId) {
     if (accountId === state.activeAccountId) return;
     // Tear down all background activity from the previous account so it
     // doesn't race with the new account's data load or leak stale state.
+    // The SSE stream itself is account-agnostic (the server polls every
+    // account), so it is restored at the end of the switch - dropping it
+    // permanently is what made the monitor look "stopped" after a switch.
+    const wasMonitoring = state.monitoring;
     if (state.monitoring) stopMonitoring();
     stopCatalogAutoRefresh();
     // Reset stale account-scoped state so the new account starts clean.
@@ -504,6 +508,14 @@ async function switchAccount(accountId) {
         if (gen === state._switchGen) {
             showError(`Failed to switch account: ${e.message}`);
         }
+    } finally {
+        // Reconnect the live view even if the switch errored out - the
+        // server-side poller never stopped, so the UI must not pretend it
+        // did. A newer switch (gen bump) will do its own restart.
+        if (wasMonitoring && gen === state._switchGen && !state.monitoring) {
+            startMonitoring();
+        }
+        if (gen === state._switchGen) refreshMonitorRunState();
     }
 }
 
@@ -2257,16 +2269,40 @@ const APP_SETTING_FIELDS = [
 ];
 
 // Show whether the poller is actually alive, which can differ from the
-// monitor_enabled setting if start() failed or the task died.
+// monitor_enabled setting if start() failed or the task died. Also drives
+// the monitor tab's hint line: the Start/Stop button only controls THIS
+// browser's live view, while the server keeps polling every account.
 async function refreshMonitorRunState() {
     const label = document.getElementById('app-monitor-state');
-    if (!label) return;
+    const hint = document.getElementById('monitor-poller-state');
+    if (!label && !hint) return;
+    let status = null;
     try {
-        const status = await apiRequest('GET', '/monitor/status');
+        status = await apiRequest('GET', '/monitor/status');
+    } catch {
+        if (label) label.textContent = '';
+        if (hint) hint.textContent = '';
+        return;
+    }
+    if (label) {
         label.textContent = status?.running ? '(running)' : '(stopped)';
         label.className = `text-xs ${status?.running ? 'text-green-400' : 'text-gray-500'}`;
-    } catch {
-        label.textContent = '';
+    }
+    if (hint) {
+        if (!status?.running) {
+            hint.textContent = 'Background poller stopped (Settings → App).';
+            hint.className = 'text-xs text-yellow-500 mb-3';
+            return;
+        }
+        const accounts = status.accounts_polled || 0;
+        const total = status.total_alerts_count || 0;
+        const others = total - (status.alerts_count || 0);
+        let text = `Background poller running · ${total} alert(s) across ${accounts} account(s)`;
+        if (others > 0) {
+            text += ` · ${others} on other account(s), still monitored`;
+        }
+        hint.textContent = text;
+        hint.className = 'text-xs text-gray-500 mb-3';
     }
 }
 
@@ -2594,10 +2630,11 @@ function renderMonitoredList() {
     });
 }
 
-function addToRecentAlerts(planCode, fqns) {
+function addToRecentAlerts(planCode, fqns, accountLabel = null) {
     const alert = {
         planCode,
         fqns,
+        accountLabel,
         timestamp: new Date().toISOString()
     };
     state.recentAlerts.unshift(alert);
@@ -2618,8 +2655,17 @@ function renderRecentAlerts() {
         const time = new Date(alert.timestamp).toLocaleTimeString();
         const code = el('span', { class: 'text-red-400 font-bold', text: alert.planCode });
         const t = el('span', { class: 'text-gray-400 ml-2 text-xs', text: time });
+        const head = [code, t];
+        // Only background accounts are tagged — an untagged row is the
+        // account you're looking at.
+        if (alert.accountLabel) {
+            head.push(el('span', {
+                class: 'ml-2 text-xs bg-gray-700 text-gray-300 rounded px-1.5 py-0.5',
+                text: alert.accountLabel,
+            }));
+        }
         const fqns = el('p', { class: 'text-sm', text: (alert.fqns || []).join(', ') });
-        const row = el('div', { class: 'bg-red-900/30 border border-red-700 rounded p-2' }, [code, t, fqns]);
+        const row = el('div', { class: 'bg-red-900/30 border border-red-700 rounded p-2' }, [...head, fqns]);
         container.appendChild(row);
     });
 }
@@ -2668,12 +2714,16 @@ async function setRegionTicker(enabled) {
 }
 
 function addRegionRestocks(event) {
-    // One SSE region_restock event carries up to 50 plans.
+    // One SSE region_restock event carries up to 50 plans. The ticker is
+    // per-account and every account is polled, so an event may come from an
+    // account that isn't active - it's kept, but tagged with its label.
+    const foreign = event.account_id && event.account_id !== state.activeAccountId;
     for (const r of (event.restocks || [])) {
         state.regionFeed.unshift({
             time: event.timestamp,
             planCode: r.plan_code,
             fqns: r.fqns || [],
+            accountLabel: foreign ? (event.account_label || 'another account') : null,
         });
     }
     if (state.regionFeed.length > state.uiPrefs.regionFeedCap) {
@@ -2686,8 +2736,10 @@ function renderRegionFeed() {
     const container = document.getElementById('region-restocks');
     if (!container) return;
     container.innerHTML = '';
-    if (!state.regionTicker) {
-        container.appendChild(el('p', { class: 'text-gray-500', text: 'Ticker disabled' }));
+    // The feed can still fill from another account whose ticker is on, so
+    // "disabled" only applies when there is genuinely nothing to show.
+    if (!state.regionTicker && state.regionFeed.length === 0) {
+        container.appendChild(el('p', { class: 'text-gray-500', text: 'Ticker disabled for this account' }));
         return;
     }
     if (state.regionFeed.length === 0) {
@@ -2696,9 +2748,16 @@ function renderRegionFeed() {
     }
     state.regionFeed.forEach(item => {
         const time = new Date(item.time).toLocaleTimeString();
+        const head = [el('span', { class: 'text-green-400 font-bold', text: item.planCode })];
+        if (item.accountLabel) {
+            head.push(el('span', {
+                class: 'ml-2 text-xs bg-gray-700 text-gray-300 rounded px-1.5 py-0.5',
+                text: item.accountLabel,
+            }));
+        }
         const row = el('div', { class: 'bg-gray-700/50 rounded p-2 flex justify-between items-center gap-2' }, [
             el('div', {}, [
-                el('span', { class: 'text-green-400 font-bold', text: item.planCode }),
+                ...head,
                 el('p', { class: 'text-gray-400 text-xs truncate', text: (item.fqns || []).join(', ') }),
             ]),
             el('span', { class: 'text-gray-500 text-xs whitespace-nowrap', text: time }),
@@ -2789,21 +2848,31 @@ function startMonitoring() {
 
             if (data.type === 'stock_update') {
                 data.changes.forEach(change => {
-                    // Always sync the monitored-list dot to the latest snapshot,
-                    // even when nothing newly became available - otherwise a
-                    // plan that sells out never reverts from green to red.
-                    state.currentStock[change.plan_code] = change.currently_available.map(fqn => ({ fqn }));
+                    // The server polls EVERY account, so a change may belong to
+                    // an account that isn't active. Its stock must not drive the
+                    // monitored-list dots (different region, different alerts),
+                    // but the user still wants to hear about the restock.
+                    const isActive = !change.account_id
+                        || change.account_id === state.activeAccountId;
+                    if (isActive) {
+                        // Always sync the monitored-list dot to the latest
+                        // snapshot, even when nothing newly became available -
+                        // otherwise a plan that sells out never reverts from
+                        // green to red.
+                        state.currentStock[change.plan_code] = change.currently_available.map(fqn => ({ fqn }));
+                    }
 
                     if (change.newly_available.length > 0) {
-                        showStockAlert(change.plan_code, change.newly_available);
-                        addToRecentAlerts(change.plan_code, change.newly_available);
+                        const label = isActive ? null : (change.account_label || 'another account');
+                        showStockAlert(change.plan_code, change.newly_available, label);
+                        addToRecentAlerts(change.plan_code, change.newly_available, label);
 
                         const soundEnabled = document.getElementById('sound-toggle').checked;
                         if (soundEnabled) {
                             playAlertSound();
                         }
 
-                        showBrowserNotification(change.plan_code, change.newly_available);
+                        showBrowserNotification(change.plan_code, change.newly_available, label);
                     }
                 });
 
@@ -2854,25 +2923,35 @@ function stopMonitoring() {
     updateConnectionStatus(false);
 }
 
-function showStockAlert(planCode, fqns) {
+function showStockAlert(planCode, fqns, accountLabel = null) {
     const panel = document.getElementById('stock-alerts-panel');
+    const on = accountLabel ? ` on ${accountLabel}` : '';
     document.getElementById('alert-details').textContent =
-        `${fqns.length} config(s) now available for ${planCode}: ${fqns.join(', ')}`;
+        `${fqns.length} config(s) now available for ${planCode}${on}: ${fqns.join(', ')}`;
     panel.classList.remove('hidden');
 
-    // Remember the alert so "Use this config" can apply it explicitly.
-    state.lastStockAlert = { planCode, fqn: fqns[0] };
-    // Only autofill the rush form when the user hasn't typed into it —
-    // values we set are tagged autofilled (the tag is cleared by the
-    // fields' input listeners), so consecutive alerts may overwrite each
-    // other but never the user's own edits mid-typing.
-    const planEl = document.getElementById('rush-plan-code');
-    const fqnEl = document.getElementById('rush-fqn');
-    const untouched = (el) => !el.value || el.dataset.autofilled === '1';
-    if (untouched(planEl) && untouched(fqnEl)) {
-        applyAlertConfigToRushForm();
+    // A restock on a NON-active account is reported but never wired into the
+    // rush form: the form orders under the active account's credentials, so
+    // prefilling another account's plan would place the order in the wrong
+    // region. Clear any stale "Use this config" offer too.
+    if (accountLabel) {
+        state.lastStockAlert = null;
+        document.getElementById('use-alert-config-btn')?.classList.add('hidden');
     } else {
-        document.getElementById('use-alert-config-btn')?.classList.remove('hidden');
+        // Remember the alert so "Use this config" can apply it explicitly.
+        state.lastStockAlert = { planCode, fqn: fqns[0] };
+        // Only autofill the rush form when the user hasn't typed into it —
+        // values we set are tagged autofilled (the tag is cleared by the
+        // fields' input listeners), so consecutive alerts may overwrite each
+        // other but never the user's own edits mid-typing.
+        const planEl = document.getElementById('rush-plan-code');
+        const fqnEl = document.getElementById('rush-fqn');
+        const untouched = (el) => !el.value || el.dataset.autofilled === '1';
+        if (untouched(planEl) && untouched(fqnEl)) {
+            applyAlertConfigToRushForm();
+        } else {
+            document.getElementById('use-alert-config-btn')?.classList.remove('hidden');
+        }
     }
 
     if (alertPanelTimer) {
@@ -2910,12 +2989,15 @@ async function requestNotificationPermission() {
     }
 }
 
-function showBrowserNotification(planCode, fqns) {
+function showBrowserNotification(planCode, fqns, accountLabel = null) {
     if ('Notification' in window && Notification.permission === 'granted') {
         try {
-            new Notification('OVH Stock Alert!', {
+            const on = accountLabel ? ` (${accountLabel})` : '';
+            new Notification(`OVH Stock Alert!${on}`, {
                 body: `${planCode} now available: ${fqns[0]}`,
-                tag: planCode
+                // Tag per account so a background account's restock doesn't
+                // replace the active account's notification for the same plan.
+                tag: `${accountLabel || ''}:${planCode}`
             });
         } catch (e) {
             console.warn('Notification failed:', e);

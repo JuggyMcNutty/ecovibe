@@ -539,6 +539,8 @@
                             </div>
                         </div>
 
+                        <p id="monitor-poller-state" class="text-xs text-gray-500 mb-3"></p>
+
                         <div id="alerts-list" class="space-y-2 mb-4" aria-live="polite">
                             <p class="text-gray-500 text-sm">No servers being monitored. Add servers below.</p>
                         </div>
@@ -720,7 +722,7 @@
                                 <span>Ticker</span>
                             </label>
                         </div>
-                        <p class="text-gray-500 text-xs mb-2">Live restocks across the whole region (clamps polling to &ge;3s while on).</p>
+                        <p class="text-gray-500 text-xs mb-2">Live restocks across the whole region, for <strong>this account</strong> (clamps polling to &ge;3s while on). Enable it per account.</p>
                         <div id="region-restocks" class="space-y-1 text-sm max-h-64 overflow-y-auto">
                             <p class="text-gray-500">Ticker disabled</p>
                         </div>
