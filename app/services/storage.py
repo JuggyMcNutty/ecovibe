@@ -206,10 +206,21 @@ class Storage:
                     application_key TEXT NOT NULL,
                     application_secret TEXT NOT NULL,
                     consumer_key TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    region_ticker_enabled INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
+            # Best-effort column add: the region restock ticker used to be a
+            # single global setting; it is per-account now (see
+            # _migrate_region_ticker_setting).
+            try:
+                cur.execute(
+                    "ALTER TABLE accounts ADD COLUMN "
+                    "region_ticker_enabled INTEGER NOT NULL DEFAULT 0"
+                )
+            except sqlite3.OperationalError:
+                pass
             # Best-effort column adds: account_id on data tables (multi-account).
             for tbl in (
                 "alerts",
@@ -242,6 +253,9 @@ class Storage:
             # Must run after the migration above so account_id is backfilled
             # before the new constraint takes effect.
             self._migrate_alerts_unique_constraint(cur)
+            # Must run after the accounts table exists (and after the legacy
+            # migration, which may have created the first account).
+            self._migrate_region_ticker_setting(cur)
             self._conn.commit()
 
     def _migrate_legacy_credentials(self, cur: sqlite3.Cursor) -> None:
@@ -297,6 +311,38 @@ class Storage:
                 (acct_id,),
             )
         logger.info("Migrated legacy credentials to account %s (%s)", acct_id, label)
+
+    def _migrate_region_ticker_setting(self, cur: sqlite3.Cursor) -> None:
+        """One-time migration: move the global `region_ticker_enabled`
+        setting onto the account(s) it was actually watching.
+
+        The ticker was a single app-wide flag while the poller only ever
+        polled the active account. Now that every account is polled, the
+        flag belongs to the account whose region is being diffed. The old
+        row is deleted, which also makes this a no-op on every later
+        init(). Idempotent.
+        """
+        cur.execute("SELECT value FROM settings WHERE key = 'region_ticker_enabled'")
+        row = cur.fetchone()
+        if row is None:
+            return
+        enabled = 1 if row["value"] == "1" else 0
+        cur.execute("DELETE FROM settings WHERE key = 'region_ticker_enabled'")
+        if not enabled:
+            return
+        # The flag only ever applied to the active account; with no active
+        # id (unusual, but possible) fall back to every account so the
+        # setting isn't silently lost.
+        cur.execute("SELECT value FROM settings WHERE key = 'active_account_id'")
+        active = cur.fetchone()
+        if active is not None:
+            cur.execute(
+                "UPDATE accounts SET region_ticker_enabled = 1 WHERE id = ?",
+                (active["value"],),
+            )
+        else:
+            cur.execute("UPDATE accounts SET region_ticker_enabled = 1")
+        logger.info("Migrated the global region ticker setting to the account level")
 
     def _migrate_alerts_unique_constraint(self, cur: sqlite3.Cursor) -> None:
         """One-time migration: rebuild `alerts` so its UNIQUE constraint
@@ -464,21 +510,40 @@ class Storage:
             cur = self._conn.cursor()
             cur.execute(
                 "SELECT id, label, endpoint, application_key, application_secret, "
-                "consumer_key, created_at FROM accounts ORDER BY created_at"
+                "consumer_key, created_at, region_ticker_enabled "
+                "FROM accounts ORDER BY created_at"
             )
             rows = cur.fetchall()
-        return [dict(r) for r in rows]
+        return [self._account_row(r) for r in rows]
 
     def get_account(self, account_id: str) -> dict[str, Any] | None:
         with self._lock:
             cur = self._conn.cursor()
             cur.execute(
                 "SELECT id, label, endpoint, application_key, application_secret, "
-                "consumer_key, created_at FROM accounts WHERE id = ?",
+                "consumer_key, created_at, region_ticker_enabled "
+                "FROM accounts WHERE id = ?",
                 (account_id,),
             )
             row = cur.fetchone()
-        return dict(row) if row else None
+        return self._account_row(row) if row else None
+
+    @staticmethod
+    def _account_row(row: sqlite3.Row) -> dict[str, Any]:
+        """Normalise an accounts row: the ticker flag as a real bool."""
+        acct = dict(row)
+        acct["region_ticker_enabled"] = bool(acct.get("region_ticker_enabled"))
+        return acct
+
+    def set_account_region_ticker(self, account_id: str, enabled: bool) -> None:
+        """Enable/disable the region restock ticker for one account."""
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                "UPDATE accounts SET region_ticker_enabled = ? WHERE id = ?",
+                (1 if enabled else 0, account_id),
+            )
+            self._conn.commit()
 
     def save_account(
         self,
