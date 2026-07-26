@@ -131,8 +131,17 @@ async def lifespan(app):
     setup_logging()
     get_log_bus().set_loop(asyncio.get_running_loop())
 
+    from app.services.app_settings import app_setting_bool
+
+    # The poller is opt-out: skipping it leaves the rest of the app (catalog,
+    # orders, billing) fully usable. Toggling the setting later starts/stops
+    # it live via the PUT /api/settings/app hook, so this is only the boot
+    # state — not the only chance to change it.
     monitor = get_monitor_service()
-    await monitor.start()
+    if app_setting_bool("monitor_enabled"):
+        await monitor.start()
+    else:
+        logger.info("stock monitor disabled at startup (Settings → App)")
     try:
         yield
     finally:

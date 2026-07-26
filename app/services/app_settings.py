@@ -40,6 +40,10 @@ class AppSetting:
 
 APP_SETTINGS: dict[str, AppSetting] = {s.key: s for s in (
     # Monitoring & data — read live each monitor cycle.
+    # monitor_enabled is read once at startup (app/main.py lifespan) and
+    # applied immediately via the PUT hook when toggled, so the stored value
+    # is both the boot state and the live state.
+    AppSetting("monitor_enabled", "bool", "monitoring"),
     AppSetting("price_check_interval", "int", "monitoring",
                min=60, max=86_400, allow_zero=True),
     AppSetting("stock_event_retention_days", "int", "monitoring",

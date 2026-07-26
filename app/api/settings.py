@@ -172,6 +172,7 @@ def _configured_channels(settings: dict) -> list[str]:
 
 class AppSettingsUpdate(BaseModel):
     """Body for PUT /api/settings/app — full replace of every option."""
+    monitor_enabled: bool
     price_check_interval: int
     stock_event_retention_days: int
     stock_event_max_rows: int
@@ -239,6 +240,17 @@ async def update_app_settings(request: AppSettingsUpdate) -> dict:
 
     # 5. Rebuild hooks for values frozen into long-lived objects.
     applied: list[str] = []
+    # Start/stop the poller immediately, so turning monitoring off is not a
+    # dead end that needs a restart to undo.
+    if old["monitor_enabled"] != validated["monitor_enabled"]:
+        from app.services.monitor import get_monitor_service
+        monitor = get_monitor_service()
+        if validated["monitor_enabled"]:
+            await monitor.start()
+            applied.append("stock monitor started")
+        else:
+            await monitor.stop()
+            applied.append("stock monitor stopped")
     if (old["use_cache"] != validated["use_cache"]
             or old["cache_ttl"] != validated["cache_ttl"]):
         from app.services.cache import get_cache

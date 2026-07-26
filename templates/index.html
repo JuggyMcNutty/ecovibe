@@ -370,6 +370,18 @@
                     <p class="text-gray-300 mb-6">Runtime configuration — stored in the database and applied live (environment variables remain the defaults).</p>
 
                     <h3 class="font-bold text-lg mb-3">Monitoring &amp; data</h3>
+                    <div class="bg-gray-700/40 rounded p-3 mb-4">
+                        <label class="flex items-center gap-2">
+                            <input type="checkbox" id="app-monitor-enabled" class="w-5 h-5">
+                            <span>Run the stock monitor</span>
+                            <span id="app-monitor-state" class="text-xs text-gray-500"></span>
+                        </label>
+                        <p class="text-gray-500 text-xs mt-1">
+                            Applies immediately and on every startup. Turning this off stops all
+                            stock polling, sniper auto-orders, and price/promo checks — the rest of
+                            the app (catalog, orders, billing) keeps working.
+                        </p>
+                    </div>
                     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
                         <div>
                             <label class="block text-sm text-gray-400 mb-1" for="app-price-check-interval">Price/promo check (s)</label>

@@ -2256,6 +2256,20 @@ const APP_SETTING_FIELDS = [
     ['app-ui-recent-alerts', 'ui_recent_alerts_shown'],
 ];
 
+// Show whether the poller is actually alive, which can differ from the
+// monitor_enabled setting if start() failed or the task died.
+async function refreshMonitorRunState() {
+    const label = document.getElementById('app-monitor-state');
+    if (!label) return;
+    try {
+        const status = await apiRequest('GET', '/monitor/status');
+        label.textContent = status?.running ? '(running)' : '(stopped)';
+        label.className = `text-xs ${status?.running ? 'text-green-400' : 'text-gray-500'}`;
+    } catch {
+        label.textContent = '';
+    }
+}
+
 async function loadAppSettings() {
     try {
         const data = await apiRequest('GET', '/settings/app');
@@ -2265,7 +2279,9 @@ async function loadAppSettings() {
             if (input && s[key] != null) input.value = s[key];
         }
         document.getElementById('app-use-cache').checked = !!s.use_cache;
+        document.getElementById('app-monitor-enabled').checked = !!s.monitor_enabled;
         document.getElementById('app-log-level').value = s.log_level || 'INFO';
+        await refreshMonitorRunState();
         const env = data.env || {};
         document.getElementById('app-env-bind').value = `${env.host || ''}:${env.port || ''}`;
         document.getElementById('app-env-cors').value = (env.cors_origins || []).join(', ') || '(none)';
@@ -2299,6 +2315,7 @@ async function loadUiPrefs() {
 async function saveAppSettings() {
     const body = {
         use_cache: document.getElementById('app-use-cache').checked,
+        monitor_enabled: document.getElementById('app-monitor-enabled').checked,
         log_level: document.getElementById('app-log-level').value,
     };
     for (const [id, key] of APP_SETTING_FIELDS) {

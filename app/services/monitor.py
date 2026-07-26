@@ -340,6 +340,14 @@ class MonitorService:
                 return None  # don't cache the failure — retry next call
         return self._storage
 
+    def is_running(self) -> bool:
+        """True while the background poller task is alive.
+
+        Reflects the poller itself, not the monitor_enabled setting — they
+        diverge if start() failed or the task died.
+        """
+        return self._task is not None and not self._task.done()
+
     async def start(self) -> None:
         """Load persisted alerts + settings, then spawn the background poller."""
         await self._load_from_storage()

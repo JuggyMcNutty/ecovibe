@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8000
 
+    # Whether the background stock poller runs. False leaves the app fully
+    # usable (catalog, orders, billing) with no polling until it is switched
+    # on in Settings → App. Env var is the boot default; the DB value wins.
+    monitor_enabled: bool = True
+
     # Catalog cache
     use_cache: bool = False
     cache_ttl: int = 300

@@ -98,6 +98,7 @@ async def get_status() -> dict[str, Any]:
         "poll_interval": monitor.get_poll_interval(),
         "alerts_count": len(monitor.get_alerts()),
         "monitored_plans": sorted({a.plan_code for a in monitor.get_alerts()}),
+        "running": monitor.is_running(),
     }
 
 
