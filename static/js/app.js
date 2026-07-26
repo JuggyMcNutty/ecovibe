@@ -42,7 +42,14 @@ let state = {
     accounts: [],
     activeAccountId: null,
     editingAccountId: null,
+    // `monitoring` = is the SSE stream open RIGHT NOW; `monitorIntent` =
+    // does the user want it open. Internal teardowns (account switch, a
+    // completed order) flip `monitoring` to false without touching intent —
+    // deriving intent from `monitoring` meant a second account switch,
+    // started while the first was still loading, snapshotted "wasn't
+    // monitoring" and left the stream closed for good.
     monitoring: false,
+    monitorIntent: false,
     eventSource: null,
     reconnectTimer: null,
     reconnectDelay: 1000,      // RECONNECT_BASE_MS (declared above state)
@@ -417,9 +424,9 @@ async function switchAccount(accountId) {
     // Tear down all background activity from the previous account so it
     // doesn't race with the new account's data load or leak stale state.
     // The SSE stream itself is account-agnostic (the server polls every
-    // account), so it is restored at the end of the switch - dropping it
-    // permanently is what made the monitor look "stopped" after a switch.
-    const wasMonitoring = state.monitoring;
+    // account), so it is reopened as soon as the active account has flipped -
+    // see below. Intent is read from state.monitorIntent, never from
+    // state.monitoring, which this teardown is about to clear.
     if (state.monitoring) stopMonitoring();
     stopCatalogAutoRefresh();
     // Reset stale account-scoped state so the new account starts clean.
@@ -461,6 +468,11 @@ async function switchAccount(accountId) {
         state.activeAccountId = accountId;
         const acct = state.accounts.find(a => a.id === accountId);
         if (acct) state.endpoint = acct.endpoint;
+        // Reopen the live view NOW, before the data reload: the stream is
+        // account-agnostic and the reload below can take several seconds
+        // against a live OVH endpoint (loadCatalog alone), which is how long
+        // the header used to sit on "Disconnected" after every switch.
+        if (state.monitorIntent && !state.monitoring) startMonitoring();
         // Reload all scoped data for the new account.
         state._currencyUserSet = false;  // allow /me to re-default the currency
         await loadFxRates();
@@ -514,10 +526,11 @@ async function switchAccount(accountId) {
             showError(`Failed to switch account: ${e.message}`);
         }
     } finally {
-        // Reconnect the live view even if the switch errored out - the
-        // server-side poller never stopped, so the UI must not pretend it
-        // did. A newer switch (gen bump) will do its own restart.
-        if (wasMonitoring && gen === state._switchGen && !state.monitoring) {
+        // Safety net for the paths that never reached the reopen above (the
+        // PUT itself failed): the server-side poller never stopped, so the UI
+        // must not pretend it did. A newer switch does its own reopen, so
+        // only the current generation may act.
+        if (state.monitorIntent && !state.monitoring && gen === state._switchGen) {
             startMonitoring();
         }
         if (gen === state._switchGen) refreshMonitorRunState();
@@ -2830,14 +2843,22 @@ async function setPollInterval(seconds) {
 // and must not clear it, or the live view would silently stop
 // auto-connecting after an ordinary order.
 function loadMonitorPreference() {
+    // Defaults to ON when the user has never chosen: the server polls
+    // regardless, so a fresh browser showing "Disconnected" next to
+    // "Background poller running" only ever read as broken. Stopping the
+    // monitor is remembered, so an explicit opt-out still sticks.
     try {
-        return localStorage.getItem(MONITOR_PREF_KEY) === '1';
+        const raw = localStorage.getItem(MONITOR_PREF_KEY);
+        state.monitorIntent = raw === null ? true : raw === '1';
     } catch {
-        return false;  // storage blocked (private mode) - just don't persist
+        state.monitorIntent = true;  // storage blocked (private mode)
     }
+    return state.monitorIntent;
 }
 
 function saveMonitorPreference(on) {
+    // Mirrored in memory so intent survives even when storage is blocked.
+    state.monitorIntent = on;
     try {
         localStorage.setItem(MONITOR_PREF_KEY, on ? '1' : '0');
     } catch {
@@ -5033,12 +5054,12 @@ async function init() {
 
     document.getElementById('back-to-monitor-btn').addEventListener('click', () => {
         showView('monitor');
-        // Reads the stored preference, not state.monitoring: placing an order
-        // stops the stream transiently, which would otherwise leave the view
-        // dead for the rest of the session. A user who never enabled it has
-        // no preference, so the catalog's inline "Order Now" flow still
-        // doesn't force monitoring on.
-        if (!state.monitoring && loadMonitorPreference()) startMonitoring();
+        // Reads intent, not state.monitoring: placing an order stops the
+        // stream transiently, which would otherwise leave the view dead for
+        // the rest of the session. A user who never enabled it has no intent,
+        // so the catalog's inline "Order Now" flow still doesn't force
+        // monitoring on.
+        if (state.monitorIntent && !state.monitoring) startMonitoring();
     });
 
     document.getElementById('sound-toggle').addEventListener('change', (e) => {
