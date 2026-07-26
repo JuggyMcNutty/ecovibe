@@ -11,6 +11,7 @@ from app.api.errors import raise_ovh_http_error
 from app.models.schemas import PollIntervalRequest, RegionWatchRequest
 from app.services.monitor import get_monitor_service
 from app.services.ovh_service import OVHServiceError, get_active_ovh_service
+from app.services.storage import get_storage
 
 logger = logging.getLogger(__name__)
 
@@ -92,12 +93,25 @@ async def get_availability(plans: str = Query(default="")) -> dict[str, Any]:
 
 @router.get("/status")
 async def get_status() -> dict[str, Any]:
-    """Return the current poll interval, alert count, and monitored plans."""
+    """Return the poll interval plus what the poller is currently watching.
+
+    ``alerts_count``/``monitored_plans`` are the ACTIVE account's (what the
+    UI renders); ``total_alerts_count``/``accounts_polled`` cover every
+    account, since the poller watches them all regardless of which one is
+    active.
+    """
     monitor = get_monitor_service()
+    active_id = get_storage().get_active_account_id()
+    scoped = monitor.get_alerts_for_account(active_id)
+    all_alerts = monitor.get_alerts()
     return {
         "poll_interval": monitor.get_poll_interval(),
-        "alerts_count": len(monitor.get_alerts()),
-        "monitored_plans": sorted({a.plan_code for a in monitor.get_alerts()}),
+        "alerts_count": len(scoped),
+        "monitored_plans": sorted({a.plan_code for a in scoped}),
+        "total_alerts_count": len(all_alerts),
+        "accounts_polled": len(
+            {a.account_id for a in all_alerts if a.enabled}
+        ),
         "running": monitor.is_running(),
     }
 
@@ -120,15 +134,20 @@ async def set_poll_interval_post(request: PollIntervalRequest) -> dict[str, Any]
 
 @router.get("/region-watch")
 async def get_region_watch() -> dict[str, Any]:
-    """Whether the region-wide restock ticker is enabled."""
+    """Whether the region-wide restock ticker is on for the ACTIVE account.
+
+    The ticker is per-account: every account is polled, and each one diffs
+    its own region only if its own flag is set.
+    """
     return {"enabled": get_monitor_service().is_region_enabled()}
 
 
 @router.put("/region-watch")
 async def set_region_watch(request: RegionWatchRequest) -> dict[str, Any]:
-    """Enable/disable the region restock ticker (persists across restarts).
+    """Enable/disable the active account's region restock ticker (persists
+    across restarts).
 
-    While enabled, every poll cycle fetches the whole region's stock, so
+    While enabled, every poll cycle fetches that account's whole region, so
     the poll interval is clamped to 3s (see BATCH_MIN_POLL_INTERVAL)."""
     monitor = get_monitor_service()
     await monitor.set_region_enabled(request.enabled)

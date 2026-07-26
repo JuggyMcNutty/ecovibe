@@ -35,9 +35,19 @@ def _get_notifier_setting(key: str) -> str | None:
     return getattr(get_settings(), key, None)
 
 
+def _account_suffix(account_label: str | None) -> str:
+    """`" [label]"` for a named account, else empty.
+
+    Every account is polled at once, so an alert has to say which one it
+    came from — otherwise a restock on a background account is
+    indistinguishable from one on the account you're looking at.
+    """
+    return f" [{account_label}]" if account_label else ""
+
+
 def _format_message(
     plan_code: str, fqns: list[str], price: float | None = None,
-    currency_code: str = "EUR",
+    currency_code: str = "EUR", account_label: str | None = None,
 ) -> tuple[str, str]:
     """Build the alert text in both plain-text and HTML forms.
 
@@ -50,13 +60,17 @@ def _format_message(
     fqn_list = ", ".join(fqns[:5])
     extra = f" (+{len(fqns) - 5} more)" if len(fqns) > 5 else ""
     price_str = f" at {price:.2f} {currency_code}" if price is not None else ""
-    plain = f"OVH stock alert: {plan_code} now available{price_str}\nConfigs: {fqn_list}{extra}"
+    acct = _account_suffix(account_label)
+    plain = (
+        f"OVH stock alert{acct}: {plan_code} now available{price_str}\n"
+        f"Configs: {fqn_list}{extra}"
+    )
     # Escape dynamic content so a config code or currency string containing
     # HTML-special chars (&, <, >) can't break the HTML markup (email) or be
     # rejected by Telegram's HTML parser with a 400.
     html = (
-        f"<b>OVH stock alert</b>: <code>{escape(plan_code)}</code> now available"
-        f"{escape(price_str)}<br>"
+        f"<b>OVH stock alert</b>{escape(acct)}: <code>{escape(plan_code)}</code>"
+        f" now available{escape(price_str)}<br>"
         f"<b>Configs</b>: <code>{escape(fqn_list)}</code>{escape(extra)}"
     )
     return plain, html
@@ -287,55 +301,66 @@ async def broadcast(
 
 async def notify_stock_alert(
     plan_code: str, fqns: list[str], price: float | None = None,
-    currency_code: str = "EUR",
+    currency_code: str = "EUR", account_label: str | None = None,
 ) -> None:
     """Fan out a stock alert to every configured channel concurrently.
 
     `price` must already be in whole currency units (not microcents) and
     `currency_code` should reflect the account the alert came from - callers
-    must convert before calling this.
+    must convert before calling this. `account_label` names the account the
+    alert fired under (the poller watches them all).
     """
     channels = configured_channels()
+    acct = _account_suffix(account_label)
     logger.info(
-        "notifying stock alert for %s (%d config%s) via %s",
-        plan_code, len(fqns), "" if len(fqns) == 1 else "s",
+        "notifying stock alert for %s%s (%d config%s) via %s",
+        plan_code, acct, len(fqns), "" if len(fqns) == 1 else "s",
         ", ".join(channels) if channels else "no channels",
     )
-    plain, html = _format_message(plan_code, fqns, price, currency_code)
+    plain, html = _format_message(
+        plan_code, fqns, price, currency_code, account_label
+    )
     fields = [
         {"name": "Plan", "value": f"`{plan_code}`", "inline": True},
         {"name": "Configs", "value": f"`{', '.join(fqns[:3])}`", "inline": True},
     ]
+    if account_label:
+        fields.append({"name": "Account", "value": account_label, "inline": True})
     await broadcast(
-        f"OVH stock alert: {plan_code} available", plain, html, fields
+        f"OVH stock alert{acct}: {plan_code} available", plain, html, fields
     )
 
 
 async def notify_price_drop(
     plan_code: str, price: float, threshold: float, currency_code: str = "EUR",
+    account_label: str | None = None,
 ) -> None:
     """Notify that a plan's price dropped to/below the user's watch threshold.
 
     Both prices are in whole currency units (already divided out of
-    microcents by the caller).
+    microcents by the caller). `account_label` names the account whose
+    catalog the price came from.
     """
+    acct = _account_suffix(account_label)
     logger.info(
-        "notifying price drop for %s: %.2f %s (threshold %.2f)",
-        plan_code, price, currency_code, threshold,
+        "notifying price drop for %s%s: %.2f %s (threshold %.2f)",
+        plan_code, acct, price, currency_code, threshold,
     )
     plain = (
-        f"OVH price drop: {plan_code} is now {price:.2f} {currency_code} "
+        f"OVH price drop{acct}: {plan_code} is now {price:.2f} {currency_code} "
         f"(at or below your {threshold:.2f} {currency_code} watch)"
     )
     html = (
-        f"<b>OVH price drop</b>: <code>{escape(plan_code)}</code> is now "
-        f"<b>{price:.2f} {escape(currency_code)}</b> "
+        f"<b>OVH price drop</b>{escape(acct)}: <code>{escape(plan_code)}</code>"
+        f" is now <b>{price:.2f} {escape(currency_code)}</b> "
         f"(at or below your {threshold:.2f} {escape(currency_code)} watch)"
     )
-    await broadcast(f"OVH price drop: {plan_code}", plain, html)
+    await broadcast(f"OVH price drop{acct}: {plan_code}", plain, html)
 
 
-async def notify_promo(description: str, plan_codes: list[str]) -> None:
+async def notify_promo(
+    description: str, plan_codes: list[str], account_label: str | None = None,
+) -> None:
     """Notify that OVH published a promotion, once per campaign.
 
     OVH attaches a campaign to every plan it covers, so one sale spans many
@@ -347,13 +372,15 @@ async def notify_promo(description: str, plan_codes: list[str]) -> None:
     count = f"{len(codes)} plan{'' if len(codes) == 1 else 's'}"
     shown = ", ".join(codes[:5])
     extra = f" (+{len(codes) - 5} more)" if len(codes) > 5 else ""
-    logger.info("notifying promo on %s: %s", count, description[:120])
-    plain = f"OVH promotion on {count}: {description}\nPlans: {shown}{extra}"
+    acct = _account_suffix(account_label)
+    logger.info("notifying promo%s on %s: %s", acct, count, description[:120])
+    plain = f"OVH promotion{acct} on {count}: {description}\nPlans: {shown}{extra}"
     html = (
-        f"<b>OVH promotion</b> on {escape(count)}: {escape(description)}<br>"
+        f"<b>OVH promotion</b>{escape(acct)} on {escape(count)}: "
+        f"{escape(description)}<br>"
         f"<b>Plans</b>: <code>{escape(shown)}</code>{escape(extra)}"
     )
-    await broadcast(f"OVH promotion on {count}", plain, html)
+    await broadcast(f"OVH promotion{acct} on {count}", plain, html)
 
 
 def configured_channels() -> list[str]:

@@ -4,6 +4,14 @@ MonitorService runs a single background poller that checks OVH for stock
 changes and broadcasts to SSE subscribers. SniperService fires rush orders
 automatically when an armed alert matches. State is in-memory, mirrored
 to SQLite.
+
+The poller watches EVERY stored account, not just the active one: each
+cycle groups the enabled alerts by ``account_id`` and polls each group
+under its own credentials. Switching the active account therefore only
+changes what the UI shows — insight data keeps accruing and alerts keep
+firing for every account. All per-plan state is consequently keyed by
+``(account_id, plan_code)``: two accounts can watch the same plan code in
+different regions with completely different stock.
 """
 import asyncio
 import logging
@@ -288,33 +296,38 @@ class MonitorService:
     """
 
     def __init__(self) -> None:
+        # Every account's alerts, keyed by alert id. The API scopes reads to
+        # the active account (get_alerts_for_account); the poller uses them all.
         self._alerts: dict[str, StockAlert] = {}
-        self._stock_cache: dict[str, list[StockStatus]] = {}
-        self._last_stock: dict[str, dict[str, bool]] = {}
+        # Per-plan state, keyed by (account_id, plan_code).
+        self._stock_cache: dict[tuple[str | None, str], list[StockStatus]] = {}
+        self._last_stock: dict[tuple[str | None, str], dict[str, bool]] = {}
         # Plans whose stock baseline has been recorded at least once. A
-        # plan's FIRST poll after startup/reload only primes the baseline:
-        # without this, an empty _last_stock makes every in-stock config
-        # look "newly available", re-firing notifications on each restart
-        # or account switch. Armed snipers still fire on the first cycle
-        # (they exist to order ASAP); only notifications/SSE/stock events
-        # are suppressed.
-        self._primed: set[str] = set()
-        # True when the last cycle used the batched region-wide fetch;
-        # _run() then clamps the sleep to BATCH_MIN_POLL_INTERVAL.
+        # plan's FIRST poll after startup only primes the baseline: without
+        # this, an empty _last_stock makes every in-stock config look
+        # "newly available", re-firing notifications on each restart.
+        # Armed snipers still fire on the first cycle (they exist to order
+        # ASAP); only notifications/SSE/stock events are suppressed. An
+        # account switch no longer clears this — the account was being
+        # polled all along, so its baseline is still valid.
+        self._primed: set[tuple[str | None, str]] = set()
+        # True when the last cycle used the batched region-wide fetch for at
+        # least one account; _run() then clamps the sleep to
+        # BATCH_MIN_POLL_INTERVAL.
         self._last_cycle_batched = False
         self._batch_clamp_logged = False
-        # Region restock ticker: when enabled, every batch cycle diffs the
-        # ENTIRE region's stock (not just watched plans), logs all
-        # transitions, and broadcasts a compact region_restock SSE event.
+        # Region restock ticker, per account: when enabled, every batch cycle
+        # diffs that account's ENTIRE region (not just watched plans), logs
+        # all transitions, and broadcasts a compact region_restock SSE event.
         # Observational only — alerts/snipers still fire on watched plans.
-        self._region_enabled = False
-        self._last_region_avail: dict[str, set[str]] = {}
-        self._region_primed = False
-        # Snapshot handed from _fetch_availability_map (batch path) to
-        # _process_region_snapshot; None when the cycle wasn't batched.
-        self._region_snapshot: dict[str, set[str]] | None = None
-        # One-shot region_restock event picked up by _run's broadcast.
-        self._region_event: dict[str, Any] | None = None
+        self._region_enabled: dict[str | None, bool] = {}
+        self._last_region_avail: dict[str | None, dict[str, set[str]]] = {}
+        self._region_primed: set[str | None] = set()
+        # region_restock events (one per ticking account) queued for _run's
+        # next broadcast.
+        self._region_events: list[dict[str, Any]] = []
+        # account_id -> label, for tagging SSE events and notifications.
+        self._account_labels: dict[str | None, str] = {}
         # Monotonic timestamp of the last stock-event prune (hourly).
         self._last_prune = 0.0
         # Monotonic timestamp of the last price/promo catalog check.
@@ -354,37 +367,97 @@ class MonitorService:
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._run())
 
-    async def _load_from_storage(self) -> None:
-        """Reload alerts and poll_interval from SQLite on startup.
+    @staticmethod
+    def _alerts_from_rows(
+        rows: list[dict[str, Any]],
+        active_id: str | None,
+        known_accounts: set[str],
+    ) -> dict[str, StockAlert]:
+        """Build the in-memory alert map from storage rows.
 
-        Alerts are scoped to the active account (multi-account model):
-        only the active account's alerts are watched, so switching
-        accounts only sees that account's monitors.
+        A legacy row with no account_id is attributed to the active
+        account. Rows belonging to a DELETED account are skipped: deleting
+        an account doesn't delete its data rows (its history stays
+        queryable), but nothing can ever poll them again — keeping them
+        would inflate the alert counts and the sniper status with entries
+        that have no credentials.
+        """
+        out: dict[str, StockAlert] = {}
+        for row in rows:
+            account_id = row.get("account_id") or active_id
+            if account_id is not None and account_id not in known_accounts:
+                continue
+            out[row["id"]] = StockAlert(
+                id=row["id"],
+                plan_code=row["plan_code"],
+                fqn_pattern=row["fqn_pattern"],
+                enabled=row["enabled"],
+                notified_at=row["notified_at"],
+                auto_order_profile_id=row.get("auto_order_profile_id"),
+                account_id=account_id,
+            )
+        return out
+
+    def _refresh_accounts(self, accounts: list[dict[str, Any]]) -> None:
+        """Refresh the cached account labels + region-ticker flags.
+
+        The ``None`` key (no account row yet — a fresh install or a test)
+        has nothing to read from, so whatever is in memory is preserved.
+        """
+        labels = {a["id"]: a["label"] for a in accounts}
+        region = {a["id"]: bool(a.get("region_ticker_enabled")) for a in accounts}
+        if None in self._region_enabled:
+            region[None] = self._region_enabled[None]
+        self._account_labels = labels
+        self._region_enabled = region
+
+    def _account_label(self, account_id: str | None) -> str | None:
+        """Human label for an account, memoised. Falls back to a storage
+        lookup so an account created after startup is still named."""
+        if account_id is None:
+            return None
+        label = self._account_labels.get(account_id)
+        if label is None:
+            storage = self._storage_get()
+            if storage:
+                try:
+                    acct = storage.get_account(account_id)
+                except Exception:
+                    return None
+                if acct:
+                    label = acct["label"]
+                    self._account_labels[account_id] = label
+        return label
+
+    async def _load_from_storage(self) -> None:
+        """Load every account's alerts + settings from SQLite on startup.
+
+        Alerts from ALL accounts are watched (each carries its own
+        ``account_id``), so the poller keeps building history and firing
+        alerts for accounts that are not currently active.
         """
         storage = self._storage_get()
         if not storage:
             return
         try:
             active_id = storage.get_active_account_id()
-            loaded = storage.load_alerts(account_id=active_id)
-            for a in loaded:
-                self._alerts[a["id"]] = StockAlert(
-                    id=a["id"],
-                    plan_code=a["plan_code"],
-                    fqn_pattern=a["fqn_pattern"],
-                    enabled=a["enabled"],
-                    notified_at=a["notified_at"],
-                    auto_order_profile_id=a.get("auto_order_profile_id"),
-                    account_id=a.get("account_id") or active_id,
+            accounts = storage.list_accounts()
+            loaded = storage.load_alerts()
+            self._alerts.update(
+                self._alerts_from_rows(
+                    loaded, active_id, {a["id"] for a in accounts}
                 )
+            )
             interval_str = storage.get_setting("poll_interval")
             if interval_str:
                 self.set_poll_interval(int(interval_str))
-            self._region_enabled = (
-                storage.get_setting("region_ticker_enabled") == "1"
-            )
+            self._refresh_accounts(accounts)
             if loaded:
-                logger.info("loaded %d alerts from storage", len(loaded))
+                logger.info(
+                    "loaded %d alerts from storage across %d account(s)",
+                    len(loaded),
+                    len({a.account_id for a in self._alerts.values()}),
+                )
         except Exception:
             logger.warning("failed to load alerts from storage", exc_info=True)
 
@@ -404,22 +477,42 @@ class MonitorService:
         self._task = None
 
     async def reload(self) -> None:
-        """Reload alerts + clear stock caches after an account switch.
+        """Re-sync alerts and account metadata from storage.
 
-        Drops all in-memory alerts and the stock cache, then re-reads
-        the active account's alerts from storage. Called by the accounts
-        API when the active account changes so stale cross-region stock
-        data doesn't bleed into the new account's view.
+        Called by the accounts API whenever an account is switched, added,
+        updated or deleted. Stock baselines are deliberately PRESERVED for
+        accounts that still exist: the poller watches every account
+        regardless of which one is active, so a switch must not re-prime —
+        that would drop a cycle of edges and re-log everything already in
+        stock. Only state belonging to a deleted account, or to a plan
+        nobody watches any more, is pruned.
         """
+        storage = self._storage_get()
+        if not storage:
+            return
+        try:
+            alerts = await asyncio.to_thread(storage.load_alerts)
+            accounts = await asyncio.to_thread(storage.list_accounts)
+            active_id = await asyncio.to_thread(storage.get_active_account_id)
+        except Exception:
+            logger.warning("failed to reload alerts from storage", exc_info=True)
+            return
+        known = {a["id"] for a in accounts}
         async with self._lock:
-            self._alerts.clear()
-            self._stock_cache.clear()
-            self._last_stock.clear()
-            self._primed.clear()
-            self._last_region_avail = {}
-            self._region_primed = False
-            self._region_event = None
-        await self._load_from_storage()
+            self._alerts = self._alerts_from_rows(alerts, active_id, known)
+            self._refresh_accounts(accounts)
+            watched = {
+                (a.account_id, a.plan_code) for a in self._alerts.values()
+            }
+            for store in (self._stock_cache, self._last_stock):
+                for key in [k for k in store if k not in watched]:
+                    store.pop(key, None)
+            self._primed &= watched
+            # The None key is the pre-account bucket, never a deleted account.
+            live = known | {None}
+            for aid in [k for k in self._last_region_avail if k not in live]:
+                self._last_region_avail.pop(aid, None)
+            self._region_primed &= live
 
     async def _run(self) -> None:
         """Main poll loop: poll, broadcast, sleep, repeat.
@@ -437,9 +530,9 @@ class MonitorService:
                 items: list[Any] = []
                 if changes:
                     items.append(changes)
-                if self._region_event is not None:
-                    items.append(self._region_event)
-                    self._region_event = None
+                if self._region_events:
+                    items.extend(self._region_events)
+                    self._region_events = []
                 for item in items:
                     # Fan out to every connected SSE client. Slow subscribers
                     # (full queue) are dropped with a warning rather than
@@ -453,14 +546,6 @@ class MonitorService:
                 raise
             except Exception:
                 logger.exception("monitor poll cycle failed")
-            # Keep snipers armed under non-active accounts firing too. Isolated
-            # from the main poll so a sweep failure never stops SSE monitoring.
-            try:
-                await self._sweep_snipers()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("sniper sweep failed")
             # Hourly best-effort retention prune; never stops the loop.
             try:
                 await self._maybe_prune_events()
@@ -500,7 +585,14 @@ class MonitorService:
         account_id = storage.get_active_account_id() if storage else None
         async with self._lock:
             for existing in self._alerts.values():
-                if existing.plan_code == plan_code and existing.fqn_pattern == fqn_pattern:
+                # Scoped to the account, mirroring the DB's
+                # UNIQUE(plan_code, fqn_pattern, account_id) — two accounts
+                # may legitimately watch the same plan/pattern.
+                if (
+                    existing.account_id == account_id
+                    and existing.plan_code == plan_code
+                    and existing.fqn_pattern == fqn_pattern
+                ):
                     raise DuplicateAlertError(
                         f"Alert already exists for {plan_code}:{fqn_pattern}"
                     )
@@ -526,16 +618,16 @@ class MonitorService:
             alert = self._alerts.pop(alert_id, None)
             if alert is None:
                 return False
+            key = (alert.account_id, alert.plan_code)
             still_monitored = any(
-                a.plan_code == alert.plan_code for a in self._alerts.values()
+                (a.account_id, a.plan_code) == key for a in self._alerts.values()
             )
             if not still_monitored:
-                self._last_stock.pop(alert.plan_code, None)
-                self._stock_cache.pop(alert.plan_code, None)
-                self._primed.discard(alert.plan_code)
-        # A deleted alert can never fire again — neither the poller (alert
-        # gone from _alerts) nor the sweep (skips the active account) would
-        # ever trigger its sniper, so drop the armed entry too.
+                self._last_stock.pop(key, None)
+                self._stock_cache.pop(key, None)
+                self._primed.discard(key)
+        # A deleted alert can never fire again — the poller no longer sees it
+        # in _alerts — so drop the armed entry too.
         sniper = get_sniper_service()
         if sniper.is_armed(alert_id):
             sniper.disarm(alert_id)
@@ -549,8 +641,16 @@ class MonitorService:
         return True
 
     def get_alerts(self) -> list[StockAlert]:
-        """Return all alerts (enabled and disabled)."""
+        """Return every account's alerts (enabled and disabled).
+
+        Callers rendering the UI want ``get_alerts_for_account`` instead —
+        this is the poller's / sniper status' view.
+        """
         return list(self._alerts.values())
+
+    def get_alerts_for_account(self, account_id: str | None) -> list[StockAlert]:
+        """Return one account's alerts (enabled and disabled)."""
+        return [a for a in self._alerts.values() if a.account_id == account_id]
 
     def get_alert(self, alert_id: str) -> StockAlert | None:
         return self._alerts.get(alert_id)
@@ -562,11 +662,11 @@ class MonitorService:
             if alert is not None:
                 alert.enabled = enabled
         if alert is not None and not enabled:
-            # A disabled alert is not polled, and the sweep skips the active
-            # account — an armed sniper on it would sit "armed" but dead.
-            # Pausing an alert therefore disarms its sniper; the API surfaces
-            # this so the UI can tell the user. (Deliberate semantic: a
-            # "paused" alert must never silently auto-order.)
+            # A disabled alert is never polled, so an armed sniper on it would
+            # sit "armed" but dead. Pausing an alert therefore disarms its
+            # sniper; the API surfaces this so the UI can tell the user.
+            # (Deliberate semantic: a "paused" alert must never silently
+            # auto-order.)
             sniper = get_sniper_service()
             if sniper.is_armed(alert_id):
                 sniper.disarm(alert_id)
@@ -593,28 +693,48 @@ class MonitorService:
     def get_poll_interval(self) -> int:
         return self._poll_interval
 
-    def is_region_enabled(self) -> bool:
-        return self._region_enabled
+    def is_region_enabled(self, account_id: str | None = None) -> bool:
+        """Whether the region ticker is on for an account (default: active)."""
+        if account_id is None:
+            account_id = self._active_account_id()
+        return self._region_enabled.get(account_id, False)
 
-    async def set_region_enabled(self, enabled: bool) -> None:
-        """Toggle the region restock ticker. Persists across restarts and
-        re-primes the region baseline so re-enabling starts silent."""
-        async with self._lock:
-            self._region_enabled = enabled
-            self._last_region_avail = {}
-            self._region_primed = False
-            self._region_event = None
+    def _active_account_id(self) -> str | None:
         storage = self._storage_get()
-        if storage:
+        return storage.get_active_account_id() if storage else None
+
+    async def set_region_enabled(
+        self, enabled: bool, account_id: str | None = None
+    ) -> None:
+        """Toggle one account's region restock ticker (default: the active
+        account). Persists across restarts and re-primes that account's
+        region baseline so re-enabling starts silent."""
+        if account_id is None:
+            account_id = self._active_account_id()
+        async with self._lock:
+            self._region_enabled[account_id] = enabled
+            self._last_region_avail.pop(account_id, None)
+            self._region_primed.discard(account_id)
+        storage = self._storage_get()
+        # account_id is None only before any account exists (fresh install
+        # or a test); there is no row to persist the flag on.
+        if storage and account_id is not None:
             try:
-                storage.set_setting("region_ticker_enabled", "1" if enabled else "0")
+                storage.set_account_region_ticker(account_id, enabled)
             except Exception:
-                logger.warning("failed to persist region_ticker_enabled", exc_info=True)
+                logger.warning(
+                    "failed to persist region ticker for account %s",
+                    account_id, exc_info=True,
+                )
 
     async def _process_region_snapshot(
-        self, service, storage, watched: set[str]
+        self,
+        account_id: str | None,
+        storage,
+        watched: set[str],
+        snapshot: dict[str, set[str]],
     ) -> None:
-        """Diff the region-wide stock snapshot and emit the ticker event.
+        """Diff one account's region-wide stock snapshot and emit its event.
 
         First cycle primes silently (same rule as watched plans). After
         that: every transition is logged to stock_events (watched plans
@@ -623,22 +743,19 @@ class MonitorService:
         broadcast, capped at 50 plans / 5 FQNs each so a sale-opening
         stampede doesn't produce a megabyte event.
         """
-        snapshot = self._region_snapshot
-        self._region_snapshot = None
-        if snapshot is None:
-            return
         now = datetime.now(timezone.utc)
         async with self._lock:
-            if not self._region_primed:
-                self._last_region_avail = snapshot
-                self._region_primed = True
+            if account_id not in self._region_primed:
+                self._last_region_avail[account_id] = snapshot
+                self._region_primed.add(account_id)
                 logger.info(
-                    "primed region-wide stock baseline (%d plans orderable)",
-                    len(snapshot),
+                    "primed region-wide stock baseline for account %s "
+                    "(%d plans orderable)",
+                    account_id, len(snapshot),
                 )
                 return
-            prev = self._last_region_avail
-            self._last_region_avail = snapshot
+            prev = self._last_region_avail.get(account_id, {})
+            self._last_region_avail[account_id] = snapshot
 
         pending: list[tuple[str, str, str, datetime, str | None]] = []
         restocks: list[dict[str, Any]] = []
@@ -647,9 +764,9 @@ class MonitorService:
             gone_fqns = prev.get(plan, set()) - snapshot.get(plan, set())
             if plan not in watched:
                 for fqn in sorted(new_fqns):
-                    pending.append((plan, fqn, "available", now, service.account_id))
+                    pending.append((plan, fqn, "available", now, account_id))
                 for fqn in sorted(gone_fqns):
-                    pending.append((plan, fqn, "unavailable", now, service.account_id))
+                    pending.append((plan, fqn, "unavailable", now, account_id))
             if new_fqns:
                 restocks.append({"plan_code": plan, "fqns": sorted(new_fqns)[:5]})
 
@@ -660,20 +777,29 @@ class MonitorService:
                 logger.debug("failed to log region stock events", exc_info=True)
 
         if restocks:
-            self._region_event = {
-                "type": "region_restock",
-                "timestamp": now.isoformat(),
-                "restocks": restocks[:50],
-                "total_plans": len(restocks),
-            }
+            async with self._lock:
+                self._region_events.append({
+                    "type": "region_restock",
+                    "timestamp": now.isoformat(),
+                    "account_id": account_id,
+                    "account_label": self._account_label(account_id),
+                    "restocks": restocks[:50],
+                    "total_plans": len(restocks),
+                })
             logger.info(
-                "region restock: %d plan(s) gained stock", len(restocks)
+                "region restock (account %s): %d plan(s) gained stock",
+                account_id, len(restocks),
             )
 
     async def _maybe_check_prices_and_promos(self) -> None:
-        """Every ``price_check_interval`` seconds: fetch the catalog once,
-        evaluate all enabled price watches against it, and scan every
-        plan's pricings for new promotions. Best-effort; never raises.
+        """Every ``price_check_interval`` seconds, for EVERY account: fetch
+        that account's catalog once, evaluate its enabled price watches
+        against it, and scan every plan's pricings for new promotions.
+        Best-effort; never raises.
+
+        Runs per-account (not just the active one) for the same reason the
+        poller does — price history and promo detection must keep building
+        for accounts the user isn't currently looking at.
 
         The interval is read DB-first (Settings → App) each cycle, so a
         change takes effect immediately without a restart."""
@@ -686,10 +812,19 @@ class MonitorService:
         storage = self._storage_get()
         if not storage:
             return
-        service = get_active_ovh_service()
-        if not service.is_configured():
-            return
-        await self._check_prices_and_promos(service, storage)
+        accounts = await asyncio.to_thread(storage.list_accounts)
+        for acct in accounts:
+            service = get_ovh_service(acct["id"])
+            if not service.is_configured():
+                continue
+            try:
+                await self._check_prices_and_promos(service, storage)
+            except Exception:
+                # One account's catalog failing must not skip the others.
+                logger.warning(
+                    "price/promo check failed for account %s",
+                    acct["id"], exc_info=True,
+                )
 
     async def _check_prices_and_promos(self, service, storage) -> None:
         import hashlib
@@ -705,6 +840,7 @@ class MonitorService:
             return
         now = datetime.now(timezone.utc)
         currency = service.default_currency_code()
+        label = self._account_label(service.account_id)
 
         watches = await asyncio.to_thread(
             storage.load_price_watches, service.account_id, True
@@ -732,6 +868,7 @@ class MonitorService:
                     await notify_price_drop(
                         w["plan_code"], price / 100_000_000,
                         w["threshold_ucents"] / 100_000_000, currency,
+                        account_label=label,
                     )
                 except Exception:
                     logger.warning("price-drop notify failed", exc_info=True)
@@ -783,7 +920,10 @@ class MonitorService:
 
         for entry in new_campaigns.values():
             try:
-                await notify_promo(entry["description"], entry["plan_codes"])
+                await notify_promo(
+                    entry["description"], entry["plan_codes"],
+                    account_label=label,
+                )
             except Exception:
                 logger.warning("promo notify failed", exc_info=True)
 
@@ -821,25 +961,31 @@ class MonitorService:
         return sleep_for
 
     def get_stock_diff(
-        self, plan_code: str, new_statuses: list[StockStatus]
+        self,
+        plan_code: str,
+        new_statuses: list[StockStatus],
+        account_id: str | None = None,
     ) -> dict[str, Any]:
-        """Compute what changed since the last poll for one plan.
+        """Compute what changed since the last poll for one account's plan.
 
         Returns a dict with `newly_available`, `now_unavailable`, and
         `currently_available` FQN lists, plus a UTC timestamp. Also
         updates `_last_stock` to the new state - callers must hold `_lock`.
         """
-        old_statuses = self._last_stock.get(plan_code, {})
+        key = (account_id, plan_code)
+        old_statuses = self._last_stock.get(key, {})
         new_available_fqns = {s.fqn for s in new_statuses if s.available}
         old_available_fqns = set(old_statuses.keys())
 
         newly_available = new_available_fqns - old_available_fqns
         now_unavailable = old_available_fqns - new_available_fqns
 
-        self._last_stock[plan_code] = {s.fqn: s.available for s in new_statuses}
+        self._last_stock[key] = {s.fqn: s.available for s in new_statuses}
 
         return {
             "plan_code": plan_code,
+            "account_id": account_id,
+            "account_label": self._account_label(account_id),
             "newly_available": sorted(newly_available),
             "now_unavailable": sorted(now_unavailable),
             "currently_available": sorted(new_available_fqns),
@@ -847,31 +993,87 @@ class MonitorService:
         }
 
     async def _poll_once(self) -> list[dict[str, Any]]:
-        """One poll cycle. Returns diffs to broadcast to SSE clients."""
-        changes: list[dict[str, Any]] = []
+        """One poll cycle across EVERY account. Returns the diffs to
+        broadcast to SSE clients.
 
-        # Snapshot the distinct plan_codes we need to poll this cycle.
-        # Bail out before building the OVH service when there's nothing to
-        # poll — service construction does network I/O (endpoint/time fetch)
-        # so we avoid it entirely when idle.
+        Alerts are grouped by account and each group is polled under its
+        own credentials, concurrently — every OVHService has its own client
+        lock, so the cycle costs the slowest account, not their sum.
+        """
+        # Snapshot what each account needs polled this cycle. Bail out before
+        # building any OVH service when there's nothing to poll — service
+        # construction does network I/O (endpoint/time fetch), so we avoid it
+        # entirely when idle.
         async with self._lock:
-            plan_codes = sorted(
-                {a.plan_code for a in self._alerts.values() if a.enabled}
-            )
-        # The region ticker polls even with no alerts (it watches everything).
-        if not plan_codes and not self._region_enabled:
-            return changes
+            plans_by_account: dict[str | None, set[str]] = {}
+            for alert in self._alerts.values():
+                if alert.enabled:
+                    plans_by_account.setdefault(alert.account_id, set()).add(
+                        alert.plan_code
+                    )
+            # A ticking account polls even with no alerts (it watches
+            # everything in its region).
+            for account_id, on in self._region_enabled.items():
+                if on:
+                    plans_by_account.setdefault(account_id, set())
+        if not plans_by_account:
+            return []
 
-        service = get_active_ovh_service()
+        account_ids = sorted(plans_by_account, key=lambda a: (a is not None, a or ""))
+        results = await asyncio.gather(
+            *(
+                self._poll_one_account(aid, sorted(plans_by_account[aid]))
+                for aid in account_ids
+            ),
+            return_exceptions=True,
+        )
+
+        changes: list[dict[str, Any]] = []
+        batched = False
+        for account_id, result in zip(account_ids, results, strict=True):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, BaseException):
+                # One account's failure must never stop the others.
+                logger.error(
+                    "poll failed for account %s: %s", account_id, result,
+                    exc_info=result,
+                )
+                continue
+            account_changes, account_batched = result
+            changes.extend(account_changes)
+            batched = batched or account_batched
+        self._last_cycle_batched = batched
+        return changes
+
+    async def _poll_one_account(
+        self, account_id: str | None, plan_codes: list[str]
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Resolve one account's service and poll it. Returns
+        (changes, used_batch_fetch)."""
+        # account_id is None only when no account row exists yet (fresh
+        # install or a test) — that is exactly what the active-account
+        # resolver returns for.
+        service = (
+            get_active_ovh_service() if account_id is None
+            else get_ovh_service(account_id)
+        )
         if not service.is_configured():
-            return changes
-
-        return await self._poll_account(service, plan_codes)
+            return [], False
+        return await self._poll_account(
+            account_id, service, plan_codes,
+            self._region_enabled.get(account_id, False),
+        )
 
     async def _fetch_availability_map(
-        self, service, plan_codes: list[str]
-    ) -> dict[str, list[dict[str, Any]]]:
+        self, service, plan_codes: list[str], region_enabled: bool
+    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, set[str]] | None, bool]:
         """Fetch orderable configs for each plan, keyed by plan_code.
+
+        Returns ``(availability_map, region_snapshot, used_batch_fetch)``.
+        The region snapshot is None unless the ticker is on for this
+        account. Nothing is stashed on ``self`` — accounts are polled
+        concurrently, so per-cycle state must stay local to the call.
 
         Two strategies:
         - **Per-plan** (single watched plan): one filtered availabilities
@@ -885,9 +1087,7 @@ class MonitorService:
           the batch call fails, an empty map is returned (all baselines
           kept).
         """
-        self._region_snapshot = None
-        if len(plan_codes) <= 1 and not self._region_enabled:
-            self._last_cycle_batched = False
+        if len(plan_codes) <= 1 and not region_enabled:
             out: dict[str, list[dict[str, Any]]] = {}
             for plan_code in plan_codes:
                 try:
@@ -899,41 +1099,50 @@ class MonitorService:
                         "availability fetch failed for %s", plan_code,
                         exc_info=True,
                     )
-            return out
+            return out, None, False
 
-        self._last_cycle_batched = True
         try:
             entries = await asyncio.to_thread(service.get_stock, None)
         except OVHServiceError:
             logger.debug("batch availability fetch failed", exc_info=True)
-            return {}
+            return {}, None, True
         grouped: dict[str, list[dict[str, Any]]] = {}
         for entry in entries:
             if orderable_entry(entry):
                 grouped.setdefault(entry.get("planCode", ""), []).append(
                     {"fqn": entry.get("fqn", "")}
                 )
-        if self._region_enabled:
-            # Hand the full region snapshot to _process_region_snapshot.
-            self._region_snapshot = {
+        snapshot = None
+        if region_enabled:
+            # Handed to _process_region_snapshot.
+            snapshot = {
                 pc: {c["fqn"] for c in configs}
                 for pc, configs in grouped.items()
                 if pc
             }
-        return {pc: grouped.get(pc, []) for pc in plan_codes}
+        return {pc: grouped.get(pc, []) for pc in plan_codes}, snapshot, True
 
     async def _poll_account(
-        self, service, plan_codes: list[str]
-    ) -> list[dict[str, Any]]:
-        """Poll one account's watched plans and process diffs/alerts/snipers."""
+        self,
+        account_id: str | None,
+        service,
+        plan_codes: list[str],
+        region_enabled: bool,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Poll one account's watched plans and process diffs/alerts/snipers.
+
+        Returns (changes, used_batch_fetch).
+        """
         changes: list[dict[str, Any]] = []
         storage = self._storage_get()
-        avail_map = await self._fetch_availability_map(service, plan_codes)
+        avail_map, region_snapshot, batched = await self._fetch_availability_map(
+            service, plan_codes, region_enabled
+        )
 
-        if self._region_enabled and self._region_snapshot is not None:
+        if region_snapshot is not None:
             try:
                 await self._process_region_snapshot(
-                    service, storage, set(plan_codes)
+                    account_id, storage, set(plan_codes), region_snapshot
                 )
             except Exception:
                 logger.exception("region ticker processing failed")
@@ -957,61 +1166,72 @@ class MonitorService:
                     for c in avail_configs
                 ]
                 pending_events: list[tuple[str, str, str, datetime, str | None]] = []
-                # (alert, fqns, notify): notify=False on the priming cycle —
-                # armed snipers still fire, but no notification is sent.
-                triggered_alerts: list[tuple[StockAlert, list[str], bool]] = []
+                # Notifications are EDGE-triggered (a config that just became
+                # available) and suppressed on the priming cycle; snipers are
+                # LEVEL-triggered (any matching config currently orderable),
+                # because a sniper's job is to order the moment stock exists —
+                # including stock that was already there when it was armed.
+                # SniperService's per-arm `fqns_seen` set stops repeat orders.
+                notify_targets: list[tuple[StockAlert, list[str]]] = []
+                snipe_targets: list[tuple[StockAlert, list[str]]] = []
+                sniper = get_sniper_service()
+                key = (account_id, plan_code)
                 async with self._lock:
-                    first_cycle = plan_code not in self._primed
-                    diff = self.get_stock_diff(plan_code, new_statuses)
-                    self._stock_cache[plan_code] = new_statuses
-                    self._primed.add(plan_code)
-                    if first_cycle:
+                    first_cycle = key not in self._primed
+                    diff = self.get_stock_diff(plan_code, new_statuses, account_id)
+                    self._stock_cache[key] = new_statuses
+                    self._primed.add(key)
+                    if first_cycle and diff["currently_available"]:
                         # Prime silently: record the baseline without SSE
                         # broadcasts, notifications, or stock events — an
                         # empty baseline would otherwise report everything
                         # already in stock as "newly available" on every
-                        # restart/account switch. Armed snipers DO still
-                        # fire below on already-available stock: a sniper's
-                        # job is to order the moment stock is orderable.
-                        if diff["currently_available"]:
-                            logger.info(
-                                "primed stock baseline for %s (%d configs "
-                                "available); notifications suppressed",
-                                plan_code, len(diff["currently_available"]),
-                            )
-                        for alert in self._alerts.values():
-                            if alert.plan_code == plan_code and alert.enabled:
-                                matched = [
-                                    fqn
-                                    for fqn in diff["currently_available"]
-                                    if self._matches_pattern(fqn, alert.fqn_pattern)
-                                ]
-                                if matched:
-                                    triggered_alerts.append((alert, matched, False))
-                    else:
+                        # restart.
+                        logger.info(
+                            "primed stock baseline for %s (account %s, %d "
+                            "configs available); notifications suppressed",
+                            plan_code, account_id,
+                            len(diff["currently_available"]),
+                        )
+                    for alert in self._alerts.values():
+                        if (
+                            alert.account_id != account_id
+                            or alert.plan_code != plan_code
+                            or not alert.enabled
+                        ):
+                            continue
+                        if sniper.is_armed(alert.id):
+                            matched_now = [
+                                fqn
+                                for fqn in diff["currently_available"]
+                                if self._matches_pattern(fqn, alert.fqn_pattern)
+                            ]
+                            if matched_now:
+                                snipe_targets.append((alert, matched_now))
+                        if first_cycle or not diff["newly_available"]:
+                            continue
+                        matched_new = [
+                            fqn
+                            for fqn in diff["newly_available"]
+                            if self._matches_pattern(fqn, alert.fqn_pattern)
+                        ]
+                        if matched_new:
+                            alert.notified_at = now
+                            notify_targets.append((alert, matched_new))
+
+                    if not first_cycle:
                         # Broadcast on any change (restock or sell-out) so SSE
                         # clients can keep their stock indicators accurate -
                         # not just when something newly became available.
                         if diff["newly_available"] or diff["now_unavailable"]:
                             changes.append(diff)
                             logger.info(
-                                "stock change %s: +%d available, -%d unavailable",
-                                plan_code,
+                                "stock change %s (account %s): +%d available, "
+                                "-%d unavailable",
+                                plan_code, account_id,
                                 len(diff["newly_available"]),
                                 len(diff["now_unavailable"]),
                             )
-                        if diff["newly_available"]:
-                            # Find every alert that matches at least one new FQN.
-                            for alert in self._alerts.values():
-                                if alert.plan_code == plan_code and alert.enabled:
-                                    matched = [
-                                        fqn
-                                        for fqn in diff["newly_available"]
-                                        if self._matches_pattern(fqn, alert.fqn_pattern)
-                                    ]
-                                    if matched:
-                                        alert.notified_at = now
-                                        triggered_alerts.append((alert, matched, True))
 
                         # Collect stock events for the historical-patterns view.
                         # Persisted below, after the lock is released — SQLite
@@ -1019,11 +1239,11 @@ class MonitorService:
                         # mutations (or the event loop) from inside the lock.
                         for fqn in diff["newly_available"]:
                             pending_events.append(
-                                (plan_code, fqn, "available", now, service.account_id)
+                                (plan_code, fqn, "available", now, account_id)
                             )
                         for fqn in diff["now_unavailable"]:
                             pending_events.append(
-                                (plan_code, fqn, "unavailable", now, service.account_id)
+                                (plan_code, fqn, "unavailable", now, account_id)
                             )
 
                 if storage and pending_events:
@@ -1037,9 +1257,7 @@ class MonitorService:
                 # Persist notified_at so it survives restarts (the in-memory
                 # update above is lost otherwise). Off-loop, outside the lock.
                 if storage:
-                    for alert_obj, _, notify in triggered_alerts:
-                        if not notify:
-                            continue
+                    for alert_obj, _ in notify_targets:
                         try:
                             await asyncio.to_thread(
                                 storage.set_notified_at, alert_obj.id, now
@@ -1052,98 +1270,39 @@ class MonitorService:
 
                 # Fan out notifications + sniper *outside* the lock so we
                 # don't block other alert mutations during a slow webhook.
-                if triggered_alerts:
+                if notify_targets:
                     from app.services.notifier import notify_stock_alert
-                    sniper = get_sniper_service()
-                    for alert_obj, matched_fqns, notify in triggered_alerts:
-                        if notify:
-                            price = None
-                            if storage:
-                                price_ucents = await asyncio.to_thread(
-                                    storage.latest_price,
-                                    plan_code, service.account_id,
-                                )
-                                if price_ucents is not None:
-                                    price = price_ucents / 100_000_000
-                            try:
-                                await notify_stock_alert(
-                                    plan_code, matched_fqns, price,
-                                    currency_code=service.default_currency_code(),
-                                )
-                            except Exception:
-                                logger.warning("notifier failed for %s", plan_code, exc_info=True)
+                    price = None
+                    if storage:
+                        price_ucents = await asyncio.to_thread(
+                            storage.latest_price, plan_code, account_id,
+                        )
+                        if price_ucents is not None:
+                            price = price_ucents / 100_000_000
+                    for _alert_obj, matched_fqns in notify_targets:
                         try:
-                            await sniper.maybe_fire(
-                                alert_obj.id, plan_code, matched_fqns,
-                                account_id=alert_obj.account_id,
+                            await notify_stock_alert(
+                                plan_code, matched_fqns, price,
+                                currency_code=service.default_currency_code(),
+                                account_label=self._account_label(account_id),
                             )
                         except Exception:
-                            logger.warning("sniper fire failed for %s", alert_obj.id, exc_info=True)
+                            logger.warning("notifier failed for %s", plan_code, exc_info=True)
+
+                for alert_obj, matched_fqns in snipe_targets:
+                    try:
+                        await sniper.maybe_fire(
+                            alert_obj.id, plan_code, matched_fqns,
+                            account_id=alert_obj.account_id,
+                        )
+                    except Exception:
+                        logger.warning("sniper fire failed for %s", alert_obj.id, exc_info=True)
 
             except Exception:
                 # One plan failing should not stop the others.
                 logger.exception("poll processing failed for %s", plan_code)
 
-        return changes
-
-    async def _sweep_snipers(self) -> None:
-        """Fire armed snipers whose account is NOT the currently active one.
-
-        `_poll_once` only watches the active account's alerts, so a sniper armed
-        under account A stops being polled the moment the user switches to
-        account B — it would sit "armed" forever without firing. This sweep
-        keeps every armed sniper live regardless of the active account: it polls
-        each armed alert's plan under its OWN credentials and fires on a match.
-
-        Active-account snipers are already handled (edge-triggered, with SSE and
-        notifications) by `_poll_once`, so they're skipped here to avoid double
-        work. This path is level-triggered: it fires whenever a matching config
-        is currently available, which is the desired safety-net behaviour for a
-        sniper. `SniperService.maybe_fire`'s per-arm `fqns_seen` set still
-        prevents duplicate orders across cycles.
-        """
-        sniper = get_sniper_service()
-        watches = sniper.armed_watches()
-        if not watches:
-            return
-        storage = self._storage_get()
-        active_id = storage.get_active_account_id() if storage else None
-        pending = [
-            (aid, plan_code, pattern, account_id)
-            for (aid, plan_code, pattern, account_id) in watches
-            if plan_code and account_id and account_id != active_id
-        ]
-        if not pending:
-            return
-        for alert_id, plan_code, pattern, account_id in pending:
-            service = get_ovh_service(account_id)
-            if not service.is_configured():
-                continue
-            try:
-                avail_configs = await asyncio.to_thread(
-                    service.get_availability, plan_code
-                )
-            except OVHServiceError:
-                logger.debug(
-                    "sniper sweep availability fetch failed for %s", plan_code,
-                    exc_info=True,
-                )
-                continue
-            matched = [
-                c.get("fqn", "")
-                for c in avail_configs
-                if self._matches_pattern(c.get("fqn", ""), pattern or "*")
-            ]
-            if not matched:
-                continue
-            try:
-                await sniper.maybe_fire(
-                    alert_id, plan_code, matched, account_id=account_id
-                )
-            except Exception:
-                logger.warning(
-                    "sniper sweep fire failed for %s", alert_id, exc_info=True
-                )
+        return changes, batched
 
     @staticmethod
     def _matches_pattern(fqn: str, pattern: str) -> bool:

@@ -176,10 +176,14 @@ class ActiveRequest(BaseModel):
 
 @router.put("/active")
 async def set_active(request: ActiveRequest) -> dict:
-    """Switch the active account and reload the monitor for it.
+    """Switch the active account and re-sync the monitor.
 
-    If the monitor reload fails, the active account is reverted so the
-    monitor doesn't poll the new account with the old account's alerts.
+    The poller watches EVERY account, so this does not re-point it — the
+    reload just re-reads alerts and account metadata so anything changed
+    out from under the monitor is picked up. Stock baselines are preserved,
+    which is what keeps monitoring unbroken across a switch. The active
+    account is still reverted if the reload fails, so the app never
+    proceeds with a half-applied switch.
     """
     storage = get_storage()
     if storage.get_account(request.account_id) is None:
@@ -194,7 +198,7 @@ async def set_active(request: ActiveRequest) -> dict:
         storage.set_active_account_id(previous_active)
         raise HTTPException(
             status_code=500,
-            detail="Failed to reload monitor for the new account. Active account reverted.",
+            detail="Failed to re-sync the monitor for the new account. Active account reverted.",
         ) from None
     logger.info("Active account switched to: %s", request.account_id)
     return {"status": "ok", "active_account_id": request.account_id}
@@ -274,15 +278,15 @@ async def delete_account(account_id: str) -> dict:
         remaining = storage.list_accounts()
         storage.set_active_account_id(remaining[0]["id"] if remaining else None)
         reset_ovh_service(None)
-        # The active account changed, so the monitor must drop the deleted
-        # account's alerts + stock cache and re-read the new active account's
-        # (mirrors PUT /accounts/active). Without this the poller keeps
-        # watching the deleted account's plans under the fallback account.
-        try:
-            from app.services.monitor import get_monitor_service
-            await get_monitor_service().reload()
-        except Exception:
-            logger.warning("monitor reload after account deletion failed", exc_info=True)
+    # The monitor polls every account, so a deleted one must be dropped from
+    # its alert set and its stock baselines pruned — otherwise the poller
+    # keeps trying to watch plans whose credentials are gone. Runs whether or
+    # not the deleted account was the active one.
+    try:
+        from app.services.monitor import get_monitor_service
+        await get_monitor_service().reload()
+    except Exception:
+        logger.warning("monitor reload after account deletion failed", exc_info=True)
     logger.info("Account deleted: %s (was_active=%s)", account_id, was_active)
     return {"status": "deleted"}
 

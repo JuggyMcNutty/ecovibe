@@ -35,9 +35,16 @@ async def create_alert(request: AlertCreate) -> AlertResponse:
 
 @router.get("")
 async def list_alerts() -> list[AlertResponse]:
-    """List all alerts (enabled and disabled)."""
+    """List the active account's alerts (enabled and disabled).
+
+    The monitor holds every account's alerts (it polls them all), so this
+    is scoped explicitly — the UI only ever shows the active account's.
+    """
     monitor = get_monitor_service()
-    return [_to_response(a) for a in monitor.get_alerts()]
+    active_id = get_storage().get_active_account_id()
+    return [
+        _to_response(a) for a in monitor.get_alerts_for_account(active_id)
+    ]
 
 
 @router.delete("/{alert_id}")
