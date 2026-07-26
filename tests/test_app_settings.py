@@ -1,4 +1,6 @@
 """Tests for the app_settings registry: DB-first reads, validation, API."""
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -199,7 +201,11 @@ async def test_prune_uses_db_retention_settings(client, monkeypatch):
     storage.set_setting("app_stock_event_max_rows", "2000")
 
     monitor = MonitorService()
-    monitor._last_prune = 0.0
+    # Must be relative to time.monotonic(), which is time since BOOT: a
+    # literal 0.0 only clears the hourly guard on a host that happens to
+    # have been up for over an hour, so this failed on a freshly booted
+    # machine.
+    monitor._last_prune = time.monotonic() - 3601
     spy = MagicMock(return_value=0)
     monkeypatch.setattr(storage, "prune_stock_events", spy)
 
