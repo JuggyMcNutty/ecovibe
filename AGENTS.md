@@ -105,10 +105,14 @@ not on PATH; use the absolute path above.
    - Cache busters are **automatic** — no manual `?v=N` bumping.
      `templates/index.html` is a Jinja2 template rendered with
      `{{ css_hash }}` / `{{ js_hash }}` (SHA256[:12] of file contents,
-     computed at runtime by `app/utils/cache_buster.py`, memoised
-     with `lru_cache`). Editing `app.css`/`app.js` invalidates the
-     cache on the next request. `CachedStaticFiles` in `main.py`
-     serves any `/static/...?v=` request with
+     computed at runtime by `app/utils/cache_buster.py`). The hash is
+     cached on `(path, mtime_ns, size)`, so editing `app.css`/`app.js`
+     invalidates it on the next request — **including under a running
+     server**. It was previously keyed on the path alone, which meant
+     `python run.py` (no `--reload`) kept emitting the pre-deploy `?v=`
+     until someone restarted the process, so rsync'ing new assets into a
+     live test environment silently served the OLD JS. `CachedStaticFiles`
+     in `main.py` serves any `/static/...?v=` request with
      `Cache-Control: public, max-age=31536000, immutable`.
    - **Commit after changes**: use git to commit logical units with a
      short descriptive message matching the existing style (see
@@ -299,18 +303,27 @@ were created under (`account_id` column on each table).
   live view — the `#monitor-poller-state` hint (fed by
   `refreshMonitorRunState()` ← `GET /api/monitor/status`'s
   `running`/`accounts_polled`/`total_alerts_count`) says so.
-- **Monitor view preference**: whether the live view is connected is
-  remembered in `localStorage` under `ecovibe.monitorEnabled`
-  (`load/saveMonitorPreference()` in `app.js`), and `init()` reconnects on
-  load when it's set. Browser-local on purpose — the server-side poller
-  runs regardless, so this is a view preference, not app state. It is
-  written ONLY on explicit user intent (the toggle button, and arming a
-  sniper from the rush form); transient stops (account switch, the
-  post-order `stopMonitoring()`) must not clear it. `back-to-monitor-btn`
-  therefore reconnects off the *preference*, not `state.monitoring`, which
-  a completed order has already set false. `init()` does NOT request
-  notification permission or unlock audio on the auto-connect path — both
-  need a user gesture (`unlockAudio()` swallows the autoplay rejection).
+- **`state.monitoring` vs `state.monitorIntent`**: `monitoring` is "is the
+  SSE stream open right now"; `monitorIntent` is "does the user want it
+  open". Every reconnect decision must read **intent** — reading
+  `monitoring` is a bug, because the internal teardowns (account switch,
+  the post-order `stopMonitoring()`) have already set it false. That bug
+  shipped once: `switchAccount()` snapshotted `state.monitoring` on entry,
+  so a second switch started while the first was still loading captured
+  "wasn't monitoring" and left the stream closed permanently.
+- **Monitor view preference**: intent is persisted in `localStorage` under
+  `ecovibe.monitorEnabled` (`load/saveMonitorPreference()` in `app.js`,
+  mirrored into `state.monitorIntent` so it survives blocked storage), and
+  `init()` connects on load. **Unset defaults to ON** — the server polls
+  regardless, so a fresh browser showing "Disconnected" beside "Background
+  poller running" only read as broken; an explicit Stop is remembered.
+  Only explicit actions write it (the toggle button, arming a sniper).
+  `switchAccount()` reopens the stream **immediately after the
+  active-account PUT**, not after the data reload — that reload does live
+  OVH calls (`loadCatalog`) and used to leave the header on "Disconnected"
+  for seconds. `init()` does NOT request notification permission or unlock
+  audio on the auto-connect path — both need a user gesture
+  (`unlockAudio()` swallows the autoplay rejection).
 - **Rush-form autofill is active-account-only**: `showStockAlert()` takes
   an `accountLabel`, and a tagged (background-account) alert never
   prefills the rush form or offers "Use this config" — the form orders

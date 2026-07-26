@@ -105,7 +105,7 @@ Generate the `.htpasswd` file with `htpasswd -c /etc/nginx/.htpasswd admin`.
 - **Browser notifications** when desired configs become available
 - **Multi-channel notifications** (Telegram, Discord, Slack, email) - never miss a flash sale when away from the browser
 - **Sound alerts** - audio notification (requires a user gesture first, e.g. clicking "Start Monitor")
-- **Live view auto-connects** - the Start/Stop Monitor state is remembered per browser and reconnects on page load, so a reopened tab doesn't look idle while the server is polling
+- **Live view auto-connects** - the browser connects to the event stream on page load (and stays connected across account switches), so a reopened tab never looks idle while the server is polling. Stopping the monitor is remembered per browser
 - **1-60 second polling** configurable interval (persisted across restarts)
 - **One-click Rush Order** when stock is detected (incoming alerts never overwrite the form while you're editing it - a "Use this config" button applies them explicitly)
 - **Alert pause/resume** - disable alerts without deleting them (pausing disarms any sniper on the alert)
