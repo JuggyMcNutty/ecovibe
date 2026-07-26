@@ -32,7 +32,19 @@ def main() -> None:
         "propagate": False,
     }
 
-    uvicorn.run(app, host=settings.host, port=settings.port, log_config=LOGGING_CONFIG)
+    # The SPA holds SSE streams open (/api/monitor/stream, /api/logs/stream).
+    # Uvicorn's graceful shutdown waits for open connections to finish, and a
+    # stream only ends when the browser closes it — so without a cap the
+    # process ignores SIGTERM indefinitely and a service manager eventually
+    # SIGKILLs it (systemd waits 90s by default). Bound the wait instead so
+    # shutdown is prompt and clean.
+    uvicorn.run(
+        app,
+        host=settings.host,
+        port=settings.port,
+        log_config=LOGGING_CONFIG,
+        timeout_graceful_shutdown=10,
+    )
 
 
 if __name__ == "__main__":
