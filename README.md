@@ -105,6 +105,7 @@ Generate the `.htpasswd` file with `htpasswd -c /etc/nginx/.htpasswd admin`.
 - **Browser notifications** when desired configs become available
 - **Multi-channel notifications** (Telegram, Discord, Slack, email) - never miss a flash sale when away from the browser
 - **Sound alerts** - audio notification (requires a user gesture first, e.g. clicking "Start Monitor")
+- **Live view auto-connects** - the Start/Stop Monitor state is remembered per browser and reconnects on page load, so a reopened tab doesn't look idle while the server is polling
 - **1-60 second polling** configurable interval (persisted across restarts)
 - **One-click Rush Order** when stock is detected (incoming alerts never overwrite the form while you're editing it - a "Use this config" button applies them explicitly)
 - **Alert pause/resume** - disable alerts without deleting them (pausing disarms any sniper on the alert)
@@ -482,7 +483,9 @@ ovh-gui/
 
 2. **Enable notifications** when prompted (click "Start Monitor" to grant permission)
 
-3. **Keep the tab open** and monitoring active
+3. **Keep the tab open** for banners and sound - though you don't have to:
+   the server polls every account and fires your notification channels even
+   with no browser connected, and the tab reconnects itself on load
 
 4. **Use 1-second polling** for fastest detection
 

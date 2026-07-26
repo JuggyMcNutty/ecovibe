@@ -28,6 +28,11 @@ const OVH_REGIONS = {
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
+// Whether the user wants the live view connected, remembered across page
+// loads. Browser-local on purpose: the server-side poller runs regardless,
+// so this is a per-browser view preference, not app state.
+const MONITOR_PREF_KEY = 'ecovibe.monitorEnabled';
+
 const ALERT_SOUND_DATA = 'data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdH2Onp6dn5yXl5aXmJmam5ydn56dn5+goaKjpKWlp6eorK2tr7GxsrKys7S0tbW2tra3t7e4uLm5uru7u7y8vL29vr6/v8DAwMHBwsLCwsPDw8TExMXFxcbGxsfHx8jIyMnJysrKy8vLzMzMzc3Ozs/Pz9DQ0NHR0tLS09PT1NTU1dXW1tbX19fY2NjZ2dra29vb3Nzc3d3e3t/f3+Dg4OHh4uLi4+Pj5OTk5eXm5ubn5+fo6Ojp6erq6+vr7Ozs7e3u7u/v7/Dw8PHx8vLy8/Pz9PT09fX29vb39/f4+Pj5+fr6+vv7+/z8/P39/v7///8=';
 
 let state = {
@@ -2819,6 +2824,27 @@ async function setPollInterval(seconds) {
 
 // SSE monitoring
 
+// The monitor preference is only written on an EXPLICIT user action (the
+// toggle button, or arming a sniper from the rush form). Internal stops -
+// an account switch, or returning from a completed order - are transient
+// and must not clear it, or the live view would silently stop
+// auto-connecting after an ordinary order.
+function loadMonitorPreference() {
+    try {
+        return localStorage.getItem(MONITOR_PREF_KEY) === '1';
+    } catch {
+        return false;  // storage blocked (private mode) - just don't persist
+    }
+}
+
+function saveMonitorPreference(on) {
+    try {
+        localStorage.setItem(MONITOR_PREF_KEY, on ? '1' : '0');
+    } catch {
+        // Non-fatal: the session still works, it just won't be remembered.
+    }
+}
+
 function startMonitoring() {
     if (state.eventSource) {
         state.eventSource.close();
@@ -3062,6 +3088,9 @@ async function rushOrder(e) {
             await loadSniperStatus();
             if (!state.monitoring) {
                 startMonitoring();
+                // Deliberate: arming a sniper is a "keep watching this"
+                // action, so the live view should come back on next load.
+                saveMonitorPreference(true);
             }
             return;
         }
@@ -4797,6 +4826,13 @@ async function init() {
         await loadSniperStatus();
         await loadRegionWatch();
         showView('monitor');
+        // Reconnect the live view if it was on when the tab was last closed.
+        // The server-side poller has been running all along, so a fresh tab
+        // showing "Start Monitor" only ever made monitoring look stopped.
+        // Notification permission is NOT requested here - that needs a user
+        // gesture; the same goes for audio, which unlocks on the first click.
+        if (loadMonitorPreference()) startMonitoring();
+        refreshMonitorRunState();
     }
 
     // Setup wizard
@@ -4827,9 +4863,11 @@ async function init() {
     document.getElementById('toggle-monitor-btn').addEventListener('click', () => {
         if (state.monitoring) {
             stopMonitoring();
+            saveMonitorPreference(false);
         } else {
             requestNotificationPermission();
             startMonitoring();
+            saveMonitorPreference(true);
         }
     });
 
@@ -4995,10 +5033,12 @@ async function init() {
 
     document.getElementById('back-to-monitor-btn').addEventListener('click', () => {
         showView('monitor');
-        // Only (re)start monitoring if it was already active - don't force
-        // it on for a user who placed an order via the catalog's inline
-        // "Order Now" flow without ever enabling it.
-        if (state.monitoring) startMonitoring();
+        // Reads the stored preference, not state.monitoring: placing an order
+        // stops the stream transiently, which would otherwise leave the view
+        // dead for the rest of the session. A user who never enabled it has
+        // no preference, so the catalog's inline "Order Now" flow still
+        // doesn't force monitoring on.
+        if (!state.monitoring && loadMonitorPreference()) startMonitoring();
     });
 
     document.getElementById('sound-toggle').addEventListener('change', (e) => {

@@ -299,6 +299,18 @@ were created under (`account_id` column on each table).
   live view — the `#monitor-poller-state` hint (fed by
   `refreshMonitorRunState()` ← `GET /api/monitor/status`'s
   `running`/`accounts_polled`/`total_alerts_count`) says so.
+- **Monitor view preference**: whether the live view is connected is
+  remembered in `localStorage` under `ecovibe.monitorEnabled`
+  (`load/saveMonitorPreference()` in `app.js`), and `init()` reconnects on
+  load when it's set. Browser-local on purpose — the server-side poller
+  runs regardless, so this is a view preference, not app state. It is
+  written ONLY on explicit user intent (the toggle button, and arming a
+  sniper from the rush form); transient stops (account switch, the
+  post-order `stopMonitoring()`) must not clear it. `back-to-monitor-btn`
+  therefore reconnects off the *preference*, not `state.monitoring`, which
+  a completed order has already set false. `init()` does NOT request
+  notification permission or unlock audio on the auto-connect path — both
+  need a user gesture (`unlockAudio()` swallows the autoplay rejection).
 - **Rush-form autofill is active-account-only**: `showStockAlert()` takes
   an `accountLabel`, and a tagged (background-account) alert never
   prefills the rush form or offers "Use this config" — the form orders
