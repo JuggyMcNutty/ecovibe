@@ -200,7 +200,7 @@ async def test_campaign_notifies_once_not_once_per_plan(monitor, monkeypatch):
 
     sent = []
 
-    async def _promo(description, plan_codes):
+    async def _promo(description, plan_codes, account_label=None):
         sent.append((description, list(plan_codes)))
 
     monkeypatch.setattr("app.services.notifier.notify_promo", _promo)
@@ -241,7 +241,7 @@ async def test_two_campaigns_notify_once_each(monitor, monkeypatch):
 
     sent = []
 
-    async def _promo(description, plan_codes):
+    async def _promo(description, plan_codes, account_label=None):
         sent.append((description, sorted(plan_codes)))
 
     monkeypatch.setattr("app.services.notifier.notify_promo", _promo)

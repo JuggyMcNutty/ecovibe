@@ -235,8 +235,13 @@ def test_catalog_currency_uses_pricing_currency_code_when_present(client):
 
 
 def test_region_watch_toggle_and_persistence(client):
-    """PUT /api/monitor/region-watch flips the ticker and persists it."""
+    """PUT /api/monitor/region-watch flips the ACTIVE account's ticker and
+    persists it on that account's row (the ticker is per-account: every
+    account is polled, each diffs its own region only if its flag is set)."""
     from app.services.storage import get_storage
+
+    acct_id = _create_account(client)["id"]
+    storage = get_storage()
 
     r = client.get("/api/monitor/region-watch")
     assert r.status_code == 200
@@ -245,11 +250,11 @@ def test_region_watch_toggle_and_persistence(client):
     r = client.put("/api/monitor/region-watch", json={"enabled": True}, headers=XHR)
     assert r.status_code == 200
     assert r.json() == {"enabled": True}
-    assert get_storage().get_setting("region_ticker_enabled") == "1"
+    assert storage.get_account(acct_id)["region_ticker_enabled"] is True
 
     r = client.put("/api/monitor/region-watch", json={"enabled": False}, headers=XHR)
     assert r.json() == {"enabled": False}
-    assert get_storage().get_setting("region_ticker_enabled") == "0"
+    assert storage.get_account(acct_id)["region_ticker_enabled"] is False
 
 
 def test_region_activity_feed(client):

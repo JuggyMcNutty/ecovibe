@@ -80,23 +80,23 @@ async def test_add_alert_allows_same_plan_different_pattern(monitor):
 @pytest.mark.asyncio
 async def test_remove_alert_cleans_stock_cache(monitor):
     await monitor.add_alert("24sk10", "*")
-    monitor._stock_cache["24sk10"] = [_status("24sk10", "a")]
-    monitor._last_stock["24sk10"] = {"a": True}
+    monitor._stock_cache[(None, "24sk10")] = [_status("24sk10", "a")]
+    monitor._last_stock[(None, "24sk10")] = {"a": True}
     alerts = monitor.get_alerts()
     ok = await monitor.remove_alert(alerts[0].id)
     assert ok
-    assert "24sk10" not in monitor._stock_cache
-    assert "24sk10" not in monitor._last_stock
+    assert (None, "24sk10") not in monitor._stock_cache
+    assert (None, "24sk10") not in monitor._last_stock
 
 
 @pytest.mark.asyncio
 async def test_remove_alert_keeps_cache_if_other_alerts(monitor):
     await monitor.add_alert("24sk10", "*")
     await monitor.add_alert("24sk10", "*ssd*")
-    monitor._stock_cache["24sk10"] = [_status("24sk10", "a")]
+    monitor._stock_cache[(None, "24sk10")] = [_status("24sk10", "a")]
     alerts = monitor.get_alerts()
     await monitor.remove_alert(alerts[0].id)
-    assert "24sk10" in monitor._stock_cache
+    assert (None, "24sk10") in monitor._stock_cache
 
 
 @pytest.mark.asyncio
@@ -267,9 +267,14 @@ async def test_first_poll_primes_silently_but_fires_armed_sniper(monitor, monkey
 
 
 @pytest.mark.asyncio
-async def test_reload_reprimes_baseline(monitor, monkeypatch):
-    """reload() clears the primed set, so the next poll after an account
-    switch is silent again instead of re-notifying everything in stock."""
+async def test_reload_keeps_baseline_and_alerts(monitor, monkeypatch):
+    """reload() preserves the primed baseline for accounts that still exist.
+
+    It used to wipe everything (the poller only watched the active account),
+    which meant an account switch re-primed and dropped a cycle of edges.
+    The poller now watches every account, so a reload is a re-sync, not a
+    reset — and a genuine restock right after it must still be reported.
+    """
     import app.services.monitor as monitor_mod
 
     await monitor.add_alert("24sk10", "*")
@@ -289,11 +294,23 @@ async def test_reload_reprimes_baseline(monitor, monkeypatch):
     monkeypatch.setattr("app.services.notifier.notify_stock_alert", _notify)
 
     await monitor._poll_once()   # prime
-    await monitor.reload()       # simulates account switch
-    changes = await monitor._poll_once()
+    await monitor.reload()       # simulates an account switch
+    assert monitor._primed == {(None, "24sk10")}
+    assert len(monitor.get_alerts()) == 1
 
-    assert changes == []
+    changes = await monitor._poll_once()
+    assert changes == []         # unchanged stock is still quiet
     assert notified == []
+
+    # A real restock after the reload is reported — the baseline survived, so
+    # this is an edge and not a re-prime.
+    fake.get_availability.return_value = [
+        {"fqn": "24sk10.ram-32g.a"},
+        {"fqn": "24sk10.ram-64g.b"},
+    ]
+    changes = await monitor._poll_once()
+    assert [c["newly_available"] for c in changes] == [["24sk10.ram-64g.b"]]
+    assert len(notified) == 1
 
 
 @pytest.mark.asyncio
@@ -433,7 +450,7 @@ async def test_batch_fetch_failure_keeps_baselines(monitor, monkeypatch):
     fake.get_stock.side_effect = OVHServiceError("boom", status_code=500)
     changes = await monitor._poll_once()
     assert changes == []  # not a sell-out — the fetch just failed
-    assert monitor._last_stock.get("plan-a") == {"plan-a.x": True}
+    assert monitor._last_stock.get((None, "plan-a")) == {"plan-a.x": True}
 
 
 @pytest.mark.asyncio
@@ -465,14 +482,15 @@ async def test_region_ticker_diffs_all_plans(monitor, monkeypatch):
     monkeypatch.setattr(monitor_mod, "get_active_ovh_service", lambda: fake)
 
     await monitor._poll_once()  # primes both watched + region baselines
-    assert monitor._region_event is None
-    assert monitor._region_primed
+    assert monitor._region_events == []
+    assert None in monitor._region_primed
 
     # An unwatched plan gains stock → region event + logged stock event.
     entries.append(entry("plan-new", "plan-new.y"))
     await monitor._poll_once()
-    event = monitor._region_event
-    assert event is not None and event["type"] == "region_restock"
+    assert len(monitor._region_events) == 1
+    event = monitor._region_events[0]
+    assert event["type"] == "region_restock"
     assert event["restocks"] == [{"plan_code": "plan-new", "fqns": ["plan-new.y"]}]
 
     storage = monitor._storage_get()
@@ -546,7 +564,8 @@ async def test_price_watch_fires_below_threshold_once(monitor, monkeypatch):
 
     drops = []
 
-    async def _drop(plan_code, price, threshold, currency_code="EUR"):
+    async def _drop(plan_code, price, threshold, currency_code="EUR",
+                    account_label=None):
         drops.append((plan_code, price, threshold))
 
     monkeypatch.setattr("app.services.notifier.notify_price_drop", _drop)
@@ -584,7 +603,7 @@ async def test_promo_scan_notifies_once_per_promo(monitor, monkeypatch):
 
     promos = []
 
-    async def _promo(description, plan_codes):
+    async def _promo(description, plan_codes, account_label=None):
         promos.append((description, list(plan_codes)))
 
     monkeypatch.setattr("app.services.notifier.notify_promo", _promo)
@@ -595,26 +614,203 @@ async def test_promo_scan_notifies_once_per_promo(monitor, monkeypatch):
     assert len(storage.load_recent_promos()) == 1
 
 
+# ---- multi-account polling -------------------------------------------------
+#
+# The poller watches EVERY stored account, not just the active one, so
+# switching accounts never stops monitoring. These tests use two accounts
+# with their own fake services.
+
+
+def _account(storage, label, endpoint="ovh-eu"):
+    return storage.save_account(
+        account_id=None, label=label, endpoint=endpoint,
+        application_key="ak", application_secret="as", consumer_key="ck",
+    )
+
+
+def _fake_service(account_id, fqns_by_plan):
+    fake = MagicMock()
+    fake.is_configured.return_value = True
+    fake.account_id = account_id
+    fake.default_currency_code.return_value = "EUR"
+    fake.get_availability.side_effect = lambda pc: [
+        {"fqn": f} for f in fqns_by_plan.get(pc, [])
+    ]
+    return fake
+
+
+def _patch_services(monkeypatch, monitor_mod, services, active_id):
+    """Route get_ovh_service/get_active_ovh_service to per-account fakes."""
+    monkeypatch.setattr(
+        monitor_mod, "get_ovh_service",
+        lambda account_id=None: services[account_id or active_id],
+    )
+    monkeypatch.setattr(
+        monitor_mod, "get_active_ovh_service", lambda: services[active_id]
+    )
+
+
 @pytest.mark.asyncio
-async def test_sweep_fires_snipers_for_non_active_account(monitor, monkeypatch):
-    """A sniper armed under account A must keep firing after the user switches
-    away: _sweep_snipers polls A's plan under A's own credentials and fires,
-    even though A's alert is no longer in the active poller's alert set."""
+async def test_polls_every_account_not_just_the_active_one(monitor, monkeypatch):
+    """Both accounts' alerts are polled in one cycle, each under its own
+    service — the whole point of persistent multi-account monitoring."""
+    import app.services.monitor as monitor_mod
+
+    storage = monitor._storage_get()
+    a_id = _account(storage, "Account A")
+    b_id = _account(storage, "Account B", "ovh-us")
+    storage.set_active_account_id(a_id)
+    storage.upsert_alert("al-a", "plan-a", "*", True, None, account_id=a_id)
+    storage.upsert_alert("al-b", "plan-b", "*", True, None, account_id=b_id)
+
+    stock = {
+        a_id: {"plan-a": ["plan-a.x"]},
+        b_id: {"plan-b": []},
+    }
+    services = {aid: _fake_service(aid, stock[aid]) for aid in (a_id, b_id)}
+    _patch_services(monkeypatch, monitor_mod, services, a_id)
+
+    await monitor._load_from_storage()
+    await monitor._poll_once()  # primes both accounts
+
+    services[a_id].get_availability.assert_called_once_with("plan-a")
+    services[b_id].get_availability.assert_called_once_with("plan-b")
+
+    # B is NOT active, yet its restock still diffs and is broadcast/logged.
+    stock[b_id]["plan-b"] = ["plan-b.y"]
+    changes = await monitor._poll_once()
+    assert [(c["plan_code"], c["account_id"], c["account_label"]) for c in changes] == [
+        ("plan-b", b_id, "Account B")
+    ]
+    assert changes[0]["newly_available"] == ["plan-b.y"]
+    events = storage.load_stock_events("plan-b", account_id=b_id)
+    assert [e["event_type"] for e in events] == ["available"]
+
+
+@pytest.mark.asyncio
+async def test_same_plan_on_two_accounts_keeps_separate_baselines(monitor, monkeypatch):
+    """Two accounts watching the same plan code (different regions) must not
+    share a stock baseline, or one region's stock would mask the other's."""
+    import app.services.monitor as monitor_mod
+
+    storage = monitor._storage_get()
+    a_id = _account(storage, "Account A")
+    b_id = _account(storage, "Account B", "ovh-us")
+    storage.set_active_account_id(a_id)
+    storage.upsert_alert("al-a", "24sk10", "*", True, None, account_id=a_id)
+    storage.upsert_alert("al-b", "24sk10", "*", True, None, account_id=b_id)
+
+    stock = {a_id: {"24sk10": ["24sk10.x"]}, b_id: {"24sk10": []}}
+    services = {aid: _fake_service(aid, stock[aid]) for aid in (a_id, b_id)}
+    _patch_services(monkeypatch, monitor_mod, services, a_id)
+
+    await monitor._load_from_storage()
+    await monitor._poll_once()
+
+    assert monitor._last_stock[(a_id, "24sk10")] == {"24sk10.x": True}
+    assert monitor._last_stock[(b_id, "24sk10")] == {}
+
+    # Only B restocks: A must not report a change.
+    stock[b_id]["24sk10"] = ["24sk10.x"]
+    changes = await monitor._poll_once()
+    assert [c["account_id"] for c in changes] == [b_id]
+
+
+@pytest.mark.asyncio
+async def test_account_switch_preserves_baselines_and_keeps_polling(monitor, monkeypatch):
+    """Switching the active account must not re-prime or drop anyone: the
+    regression this whole change fixes. reload() is what the accounts API
+    calls on PUT /api/accounts/active."""
+    import app.services.monitor as monitor_mod
+
+    storage = monitor._storage_get()
+    a_id = _account(storage, "Account A")
+    b_id = _account(storage, "Account B", "ovh-us")
+    storage.set_active_account_id(a_id)
+    storage.upsert_alert("al-a", "plan-a", "*", True, None, account_id=a_id)
+    storage.upsert_alert("al-b", "plan-b", "*", True, None, account_id=b_id)
+
+    stock = {a_id: {"plan-a": ["plan-a.x"]}, b_id: {"plan-b": ["plan-b.y"]}}
+    services = {aid: _fake_service(aid, stock[aid]) for aid in (a_id, b_id)}
+    _patch_services(monkeypatch, monitor_mod, services, a_id)
+
+    await monitor._load_from_storage()
+    await monitor._poll_once()  # prime both
+
+    storage.set_active_account_id(b_id)
+    await monitor.reload()
+
+    # Both accounts are still watched and still primed — no re-prime burst.
+    assert monitor._primed == {(a_id, "plan-a"), (b_id, "plan-b")}
+    assert monitor._last_stock[(a_id, "plan-a")] == {"plan-a.x": True}
+    assert {a.account_id for a in monitor.get_alerts()} == {a_id, b_id}
+
+    # A is now the background account; its sell-out still diffs and logs.
+    stock[a_id]["plan-a"] = []
+    changes = await monitor._poll_once()
+    assert [(c["plan_code"], c["now_unavailable"]) for c in changes] == [
+        ("plan-a", ["plan-a.x"])
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reload_drops_deleted_accounts_state(monitor, monkeypatch):
+    """A deleted account's alerts and baselines are pruned — nothing can poll
+    them again (its history rows stay queryable in SQLite)."""
+    import app.services.monitor as monitor_mod
+
+    storage = monitor._storage_get()
+    a_id = _account(storage, "Account A")
+    b_id = _account(storage, "Account B", "ovh-us")
+    storage.set_active_account_id(a_id)
+    storage.upsert_alert("al-a", "plan-a", "*", True, None, account_id=a_id)
+    storage.upsert_alert("al-b", "plan-b", "*", True, None, account_id=b_id)
+
+    stock = {a_id: {"plan-a": ["plan-a.x"]}, b_id: {"plan-b": ["plan-b.y"]}}
+    services = {aid: _fake_service(aid, stock[aid]) for aid in (a_id, b_id)}
+    _patch_services(monkeypatch, monitor_mod, services, a_id)
+
+    await monitor._load_from_storage()
+    await monitor._poll_once()
+
+    storage.delete_account(b_id)
+    await monitor.reload()
+
+    assert {a.account_id for a in monitor.get_alerts()} == {a_id}
+    assert monitor._primed == {(a_id, "plan-a")}
+    assert (b_id, "plan-b") not in monitor._last_stock
+
+
+@pytest.mark.asyncio
+async def test_sniper_fires_for_a_non_active_account(monitor, monkeypatch):
+    """A sniper armed under account A keeps firing after the user switches to
+    B: A is still polled, and sniper matching is level-triggered (it fires on
+    stock that is currently orderable, not only on the rising edge)."""
     import app.services.monitor as monitor_mod
     monitor_mod._sniper_service = None
     sniper = monitor_mod.get_sniper_service()
-    # No active account in the isolated DB (get_active_account_id() -> None),
-    # so "acct-A" is non-active and the sweep should pick it up.
-    sniper.arm("alert-1", "prof-1", plan_code="24sk10",
-               fqn_pattern="24sk10*ssd*", account_id="acct-A")
 
-    fake = MagicMock()
-    fake.is_configured.return_value = True
-    fake.get_availability.return_value = [
-        {"fqn": "24sk10.ram-32g.softraid-2x480ssd"},
-        {"fqn": "24sk10.ram-64g.softraid-2x4tb"},  # doesn't match *ssd*
-    ]
-    monkeypatch.setattr(monitor_mod, "get_ovh_service", lambda account_id=None: fake)
+    storage = monitor._storage_get()
+    a_id = _account(storage, "Account A")
+    b_id = _account(storage, "Account B", "ovh-us")
+    storage.set_active_account_id(b_id)  # A is the background account
+    storage.upsert_alert(
+        "al-a", "24sk10", "24sk10*ssd*", True, None, account_id=a_id
+    )
+
+    stock = {
+        a_id: {"24sk10": [
+            "24sk10.ram-32g.softraid-2x480ssd",
+            "24sk10.ram-64g.softraid-2x4tb",  # doesn't match *ssd*
+        ]},
+        b_id: {},
+    }
+    services = {aid: _fake_service(aid, stock[aid]) for aid in (a_id, b_id)}
+    _patch_services(monkeypatch, monitor_mod, services, b_id)
+
+    await monitor._load_from_storage()
+    sniper.arm("al-a", "prof-1", plan_code="24sk10",
+               fqn_pattern="24sk10*ssd*", account_id=a_id)
 
     fired = []
 
@@ -623,38 +819,90 @@ async def test_sweep_fires_snipers_for_non_active_account(monitor, monkeypatch):
 
     monkeypatch.setattr(sniper, "maybe_fire", _record)
 
-    await monitor._sweep_snipers()
+    await monitor._poll_once()
 
-    fake.get_availability.assert_called_once_with("24sk10")
     assert fired == [
-        ("alert-1", "24sk10", ("24sk10.ram-32g.softraid-2x480ssd",), "acct-A")
+        ("al-a", "24sk10", ("24sk10.ram-32g.softraid-2x480ssd",), a_id)
     ]
+
+    # Still fires on a later cycle with unchanged stock (level-triggered);
+    # SniperService.fqns_seen is what stops a duplicate ORDER.
+    await monitor._poll_once()
+    assert len(fired) == 2
 
 
 @pytest.mark.asyncio
-async def test_sweep_skips_active_account_sniper(monitor, monkeypatch):
-    """The sweep must NOT double-fire snipers whose account is active — those
-    are handled edge-triggered by _poll_once. It skips them here."""
+async def test_region_ticker_is_per_account(monitor, monkeypatch):
+    """Enabling the ticker on one account must not enable it on another, and
+    it persists on the account row."""
+    storage = monitor._storage_get()
+    a_id = _account(storage, "Account A")
+    b_id = _account(storage, "Account B", "ovh-us")
+    storage.set_active_account_id(a_id)
+    await monitor._load_from_storage()
+
+    await monitor.set_region_enabled(True)  # defaults to the active account
+    assert monitor.is_region_enabled() is True
+    assert monitor.is_region_enabled(b_id) is False
+    assert storage.get_account(a_id)["region_ticker_enabled"] is True
+    assert storage.get_account(b_id)["region_ticker_enabled"] is False
+
+    storage.set_active_account_id(b_id)
+    assert monitor.is_region_enabled() is False
+    # Survives a reload (read back from the account rows).
+    await monitor.reload()
+    assert monitor.is_region_enabled(a_id) is True
+    assert monitor.is_region_enabled(b_id) is False
+
+
+def test_legacy_global_region_ticker_migrates_to_active_account(tmp_path):
+    """The old app-wide region_ticker_enabled setting moves onto the account
+    it was actually watching, and the settings row is dropped."""
+    from app.services.storage import Storage
+
+    db = str(tmp_path / "legacy.db")
+    s = Storage(db)
+    s.init()
+    acct = _account(s, "Account A")
+    _account(s, "Account B", "ovh-us")
+    s.set_active_account_id(acct)
+    s.set_setting("region_ticker_enabled", "1")
+
+    s2 = Storage(db)
+    s2.init()  # migration runs here
+    assert s2.get_setting("region_ticker_enabled") is None
+    accounts = {a["label"]: a["region_ticker_enabled"] for a in s2.list_accounts()}
+    assert accounts == {"Account A": True, "Account B": False}
+
+
+@pytest.mark.asyncio
+async def test_price_check_covers_every_account(monitor, monkeypatch):
+    """The price/promo scan runs once per configured account, not just the
+    active one, so price history keeps building for all of them."""
     import app.services.monitor as monitor_mod
-    monitor_mod._sniper_service = None
-    sniper = monitor_mod.get_sniper_service()
-    monitor._storage_get().set_active_account_id("acct-A")
-    sniper.arm("alert-1", "prof-1", plan_code="24sk10",
-               fqn_pattern="*", account_id="acct-A")
 
-    fake = MagicMock()
-    fake.is_configured.return_value = True
-    fake.get_availability.return_value = [{"fqn": "24sk10.ram-32g"}]
-    monkeypatch.setattr(monitor_mod, "get_ovh_service", lambda account_id=None: fake)
+    storage = monitor._storage_get()
+    a_id = _account(storage, "Account A")
+    b_id = _account(storage, "Account B", "ovh-us")
+    storage.set_active_account_id(a_id)
 
-    fired = []
+    services = {}
+    for aid in (a_id, b_id):
+        fake = MagicMock()
+        fake.is_configured.return_value = True
+        fake.account_id = aid
+        fake.default_currency_code.return_value = "EUR"
+        services[aid] = fake
+    monkeypatch.setattr(
+        monitor_mod, "get_ovh_service", lambda account_id=None: services[account_id]
+    )
 
-    async def _record(*args, **kwargs):
-        fired.append(args)
+    scanned = []
 
-    monkeypatch.setattr(sniper, "maybe_fire", _record)
+    async def _scan(service, storage_arg):
+        scanned.append(service.account_id)
 
-    await monitor._sweep_snipers()
+    monkeypatch.setattr(monitor, "_check_prices_and_promos", _scan)
 
-    fake.get_availability.assert_not_called()
-    assert fired == []
+    await monitor._maybe_check_prices_and_promos()
+    assert sorted(scanned) == sorted([a_id, b_id])

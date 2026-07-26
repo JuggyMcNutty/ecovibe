@@ -202,6 +202,32 @@ def test_alerts_scoped_to_active_account(client):
     assert alert_b not in ids_active_a
 
 
+def test_monitor_keeps_watching_both_accounts_after_switch(client):
+    """Switching accounts scopes the UI, NOT the poller: every account's
+    alerts stay in the monitor so history keeps building and alerts keep
+    firing for the account you switched away from."""
+    from app.services.monitor import get_monitor_service
+
+    a = _create_account(client, label="A")
+    b = _create_account(client, label="B", endpoint="ovh-us")
+    _switch(client, a["id"])
+    _create_alert(client, "24ska")
+    _switch(client, b["id"])
+    _create_alert(client, "24sk11")
+
+    monitor = get_monitor_service()
+    watched = {(al.account_id, al.plan_code) for al in monitor.get_alerts()}
+    assert watched == {(a["id"], "24ska"), (b["id"], "24sk11")}
+
+    # The status endpoint reports both scopes: the active account's for the
+    # UI, and the totals for what the poller is really doing.
+    status = client.get("/api/monitor/status").json()
+    assert status["monitored_plans"] == ["24sk11"]   # active account only
+    assert status["alerts_count"] == 1
+    assert status["total_alerts_count"] == 2
+    assert status["accounts_polled"] == 2
+
+
 def test_profiles_scoped_to_active_account(client):
     """Profiles are created under + listed per the active account."""
     a = _create_account(client, label="A")
@@ -324,8 +350,8 @@ def test_insights_summary_scoped_to_active_account(client):
 
 
 def test_delete_active_account_reloads_monitor(client):
-    """Deleting the active account must reload the monitor for the fallback
-    account, not keep polling the deleted account's alerts."""
+    """Deleting an account must drop its alerts from the monitor — with its
+    credentials gone nothing can poll them again."""
     from app.services.monitor import get_monitor_service
 
     a = _create_account(client, label="A")  # first account → active
@@ -342,7 +368,7 @@ def test_delete_active_account_reloads_monitor(client):
 
 
 def test_delete_account_disarms_its_snipers(client):
-    """Deleting an account must disarm snipers armed under it — the sweep
+    """Deleting an account must disarm snipers armed under it — the poller
     skips unconfigured services, so they'd otherwise sit armed forever."""
     import app.services.monitor as monitor_mod
     monitor_mod._sniper_service = None
