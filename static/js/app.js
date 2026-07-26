@@ -2178,25 +2178,62 @@ async function loadNotificationSettings() {
     }
 }
 
+function collectNotifierBody() {
+    return {
+        telegram_bot_token: document.getElementById('notif-telegram-token').value,
+        telegram_chat_id: document.getElementById('notif-telegram-chat-id').value,
+        discord_webhook_url: document.getElementById('notif-discord-webhook').value,
+        slack_webhook_url: document.getElementById('notif-slack-webhook').value,
+        smtp_host: document.getElementById('notif-smtp-host').value,
+        smtp_port: parseInt(document.getElementById('notif-smtp-port').value) || 587,
+        smtp_username: document.getElementById('notif-smtp-username').value,
+        smtp_password: document.getElementById('notif-smtp-password').value,
+        smtp_from: document.getElementById('notif-smtp-from').value,
+        notify_email_to: document.getElementById('notif-smtp-to').value,
+    };
+}
+
 async function saveNotificationSettings() {
     try {
-        const body = {
-            telegram_bot_token: document.getElementById('notif-telegram-token').value,
-            telegram_chat_id: document.getElementById('notif-telegram-chat-id').value,
-            discord_webhook_url: document.getElementById('notif-discord-webhook').value,
-            slack_webhook_url: document.getElementById('notif-slack-webhook').value,
-            smtp_host: document.getElementById('notif-smtp-host').value,
-            smtp_port: parseInt(document.getElementById('notif-smtp-port').value) || 587,
-            smtp_username: document.getElementById('notif-smtp-username').value,
-            smtp_password: document.getElementById('notif-smtp-password').value,
-            smtp_from: document.getElementById('notif-smtp-from').value,
-            notify_email_to: document.getElementById('notif-smtp-to').value,
-        };
-        await apiRequest('PUT', '/settings/notifications', body);
+        await apiRequest('PUT', '/settings/notifications', collectNotifierBody());
         showToast('Notification settings saved.');
         await loadNotificationSettings();
     } catch (e) {
         showError(e.message);
+    }
+}
+
+// Verify SMTP credentials by actually sending mail. Saves first so the
+// test exercises exactly what real alerts will use - and so a masked
+// password left untouched in the form resolves to the stored secret.
+async function sendTestEmail() {
+    const btn = document.getElementById('notif-test-email-btn');
+    const status = document.getElementById('notif-test-email-status');
+    const setStatus = (msg, tone) => {
+        if (status) {
+            status.textContent = msg;
+            status.className = `text-xs ${tone}`;
+        }
+    };
+    if (btn) {
+        btn.disabled = true;
+        btn.classList.add('opacity-50', 'cursor-not-allowed');
+    }
+    setStatus('Saving settings and sending…', 'text-gray-400');
+    try {
+        await apiRequest('PUT', '/settings/notifications', collectNotifierBody());
+        const res = await apiRequest('POST', '/settings/notifications/test-email');
+        const to = res?.recipient || 'the To address';
+        setStatus(`Sent to ${to} — check the inbox (and the spam folder).`, 'text-green-400');
+        showToast('Test email sent.');
+        await loadNotificationSettings();
+    } catch (e) {
+        setStatus(e.message, 'text-red-400');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.classList.remove('opacity-50', 'cursor-not-allowed');
+        }
     }
 }
 
@@ -4797,6 +4834,7 @@ async function init() {
     document.getElementById('checkout-defaults-form')?.addEventListener('submit', saveCheckoutDefaults);
 
     document.getElementById('notif-save-btn')?.addEventListener('click', saveNotificationSettings);
+    document.getElementById('notif-test-email-btn')?.addEventListener('click', sendTestEmail);
     document.getElementById('app-settings-save-btn')?.addEventListener('click', saveAppSettings);
 
     document.getElementById('rush-order-btn').addEventListener('click', () => {

@@ -1,4 +1,5 @@
 """Runtime settings APIs: notification channels + app-wide options."""
+import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException
@@ -123,6 +124,30 @@ async def update_notifications(request: NotifierSettings) -> dict:
     get_settings.cache_clear()
     logger.info("Notifier settings updated")
     return {"status": "saved"}
+
+
+@router.post("/notifications/test-email")
+async def test_email() -> dict:
+    """Send a test email using the saved SMTP settings.
+
+    Tests what is *stored*, not what is in the form - the UI saves before
+    calling this. That keeps the tested config identical to the one real
+    alerts will use, and means a masked password round-tripped from GET
+    resolves to the real stored secret instead of being sent as literal
+    asterisks.
+    """
+    from app.services import notifier
+    try:
+        recipient = await asyncio.to_thread(notifier.send_test_email)
+    except notifier.EmailNotConfiguredError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Email is not fully configured. Missing: {e}",
+        ) from e
+    except notifier.EmailSendError as e:
+        # 502: the app is fine, the upstream mail server rejected us.
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    return {"status": "sent", "recipient": recipient}
 
 
 def _configured_channels(settings: dict) -> list[str]:

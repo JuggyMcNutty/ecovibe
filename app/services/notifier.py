@@ -9,7 +9,7 @@ import logging
 import smtplib
 from email.mime.text import MIMEText
 from html import escape
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 
@@ -137,34 +137,131 @@ async def _send_slack(subject: str, plain: str) -> None:
         logger.warning("slack notification failed", exc_info=True)
 
 
+class EmailNotConfiguredError(RuntimeError):
+    """Raised when an email send is attempted with incomplete SMTP settings.
+
+    The message is a comma-separated list of the missing field labels, so
+    the Settings UI can tell the user exactly what to fill in.
+    """
+
+
+class EmailSendError(RuntimeError):
+    """Raised when an email fails to send, carrying a human-readable reason.
+
+    Only the test path raises this; `_send_email` still swallows failures
+    so a broken mail server can never take down a stock notification.
+    """
+
+
+class _EmailConfig(NamedTuple):
+    """Resolved SMTP settings for one send."""
+    host: str
+    port: int
+    sender: str
+    recipient: str
+    username: str | None
+    password: str | None
+
+
+def _email_config() -> _EmailConfig:
+    """Resolve SMTP settings (DB first, env fallback).
+
+    Raises EmailNotConfiguredError naming the missing required fields. An
+    unparseable port falls back to 587, matching GET /api/settings/notifications.
+    """
+    host = _get_notifier_setting("smtp_host")
+    sender = _get_notifier_setting("smtp_from")
+    recipient = _get_notifier_setting("notify_email_to")
+    missing = [
+        label for label, val in (
+            ("SMTP host", host),
+            ("From address", sender),
+            ("To address", recipient),
+        ) if not val
+    ]
+    if missing:
+        raise EmailNotConfiguredError(", ".join(missing))
+    raw_port = _get_notifier_setting("smtp_port")
+    try:
+        port = int(raw_port) if raw_port else 587
+    except (TypeError, ValueError):
+        port = 587
+    return _EmailConfig(
+        host=host, port=port, sender=sender, recipient=recipient,
+        username=_get_notifier_setting("smtp_username"),
+        password=_get_notifier_setting("smtp_password"),
+    )
+
+
+def _deliver_email(cfg: _EmailConfig, subject: str, html: str) -> None:
+    """Send one HTML email over SMTP. Raises on any failure.
+
+    Uses STARTTLS when credentials are provided. Shared by the background
+    notification path (which swallows errors) and the Settings test button
+    (which surfaces them).
+    """
+    msg = MIMEText(html, "html")
+    msg["Subject"] = subject
+    msg["From"] = cfg.sender
+    msg["To"] = cfg.recipient
+    with smtplib.SMTP(cfg.host, cfg.port, timeout=10) as server:
+        if cfg.username and cfg.password:
+            server.starttls()
+            server.login(cfg.username, cfg.password)
+        server.send_message(msg)
+
+
 def _send_email(subject: str, html: str) -> None:
     """Send an HTML email via SMTP. No-op if not configured.
 
     Synchronous (smtplib is blocking) - callers should run via
     `asyncio.to_thread(_send_email, ...)` to avoid blocking the event loop.
-    Uses STARTTLS when SMTP credentials are provided.
+    Never raises: a mail failure must not abort the other channels.
     """
-    smtp_host = _get_notifier_setting("smtp_host")
-    smtp_port = _get_notifier_setting("smtp_port")
-    smtp_from = _get_notifier_setting("smtp_from")
-    notify_to = _get_notifier_setting("notify_email_to")
-    if not (smtp_host and notify_to and smtp_from):
-        return
-    msg = MIMEText(html, "html")
-    msg["Subject"] = subject
-    msg["From"] = smtp_from
-    msg["To"] = notify_to
     try:
-        port = int(smtp_port) if smtp_port else 587
-        with smtplib.SMTP(smtp_host, port, timeout=10) as server:
-            smtp_username = _get_notifier_setting("smtp_username")
-            smtp_password = _get_notifier_setting("smtp_password")
-            if smtp_username and smtp_password:
-                server.starttls()
-                server.login(smtp_username, smtp_password)
-            server.send_message(msg)
+        cfg = _email_config()
+    except EmailNotConfiguredError:
+        return
+    try:
+        _deliver_email(cfg, subject, html)
     except Exception:
         logger.warning("email notification failed", exc_info=True)
+
+
+def send_test_email() -> str:
+    """Send a test email to verify the stored SMTP settings. Returns the
+    recipient on success.
+
+    Blocking (smtplib) - call via `asyncio.to_thread`. Unlike `_send_email`,
+    every failure raises with a reason the user can act on; a Test button
+    that silently logged its error would be worse than no button at all.
+    """
+    cfg = _email_config()
+    html = (
+        "<b>ECOVibe test email</b><br>"
+        "Your SMTP settings are working - stock alerts will arrive here."
+    )
+    try:
+        _deliver_email(cfg, "ECOVibe test email", html)
+    except smtplib.SMTPAuthenticationError as e:
+        raise EmailSendError(
+            f"Authentication failed ({e.smtp_code}). Check the SMTP username "
+            f"and password. Gmail and Outlook require an app password, not "
+            f"your normal account password."
+        ) from e
+    except smtplib.SMTPRecipientsRefused as e:
+        raise EmailSendError(f"The server refused the To address {cfg.recipient}.") from e
+    except smtplib.SMTPSenderRefused as e:
+        raise EmailSendError(f"The server refused the From address {cfg.sender}.") from e
+    except smtplib.SMTPNotSupportedError as e:
+        raise EmailSendError(f"The server does not support a required feature: {e}") from e
+    except smtplib.SMTPException as e:
+        raise EmailSendError(f"SMTP error from {cfg.host}:{cfg.port} - {e}") from e
+    except (TimeoutError, OSError) as e:
+        # Wrong host/port, firewall, or TLS-only port used without STARTTLS.
+        raise EmailSendError(f"Could not connect to {cfg.host}:{cfg.port} - {e}") from e
+    logger.info("test email sent to %s", cfg.recipient)
+    return cfg.recipient
 
 
 async def broadcast(
