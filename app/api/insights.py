@@ -1,5 +1,6 @@
 """Historical restock data, price tracking, and order history."""
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -183,12 +184,69 @@ async def refresh_price(
     return {"plan_code": plan_code, "price_in_ucents": price_ucents}
 
 
+# How many raw promo rows to scan before grouping. One campaign stores one
+# row per plan it covers, so the row count runs far ahead of the campaign
+# count; scan generously so a campaign's plan list is never half-collected.
+_PROMO_ROW_SCAN = 2000
+
+
+def _group_promos(rows: list[dict]) -> list[dict]:
+    """Collapse per-plan promo rows into one entry per campaign.
+
+    Grouping key is the promo's `name`, which stays constant across every
+    plan in a campaign. The stored `promo_key` is deliberately not used: it
+    hashes the whole payload including the per-plan discount amount, so a
+    single campaign can span several keys (one real sale produced 9 keys
+    across 17 plans). Falls back to the description when `name` is absent.
+    """
+    groups: dict[str, dict] = {}
+    for row in rows:
+        payload = row.get("payload") or ""
+        try:
+            data = json.loads(payload)
+        except (TypeError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        desc = data.get("description") or data.get("name") or payload[:160]
+        group = groups.setdefault(data.get("name") or desc, {
+            "name": data.get("name"),
+            "description": desc,
+            "plan_codes": [],
+            "first_seen": row.get("first_seen"),
+            "start_date": data.get("startDate"),
+            "end_date": data.get("endDate"),
+        })
+        code = row.get("plan_code")
+        if code and code not in group["plan_codes"]:
+            group["plan_codes"].append(code)
+        # Report when the campaign was first spotted, not its latest row.
+        seen = row.get("first_seen")
+        if seen and (not group["first_seen"] or seen < group["first_seen"]):
+            group["first_seen"] = seen
+    out = list(groups.values())
+    for group in out:
+        group["plan_codes"].sort()
+        group["plan_count"] = len(group["plan_codes"])
+    out.sort(key=lambda g: g["first_seen"] or "", reverse=True)
+    return out
+
+
 @router.get("/promos")
 async def recent_promos(limit: int = Query(default=50, ge=1, le=500)) -> dict:
-    """Recently seen OVH promotions (from the periodic catalog scan)."""
+    """Recently seen OVH promotions, grouped into campaigns.
+
+    OVH publishes a campaign against every plan it covers, so the raw table
+    holds one row per plan - 17 rows of identical text for one offer. The
+    rows stay as they are (they drive per-plan dedup); only the presentation
+    is grouped. `limit` caps campaigns, not rows.
+    """
     storage = get_storage()
     service = get_active_ovh_service()
-    return {"promos": storage.load_recent_promos(limit=limit, account_id=service.account_id)}
+    rows = storage.load_recent_promos(
+        limit=_PROMO_ROW_SCAN, account_id=service.account_id
+    )
+    return {"promos": _group_promos(rows)[:limit]}
 
 
 @router.get("/orders")

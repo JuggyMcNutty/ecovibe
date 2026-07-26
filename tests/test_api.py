@@ -326,4 +326,6 @@ def test_promos_endpoint(client):
     get_storage().record_promo("24sk10", "k1", '{"description": "sale"}')
     promos = client.get("/api/insights/promos").json()["promos"]
     assert len(promos) == 1
-    assert promos[0]["plan_code"] == "24sk10"
+    assert promos[0]["plan_codes"] == ["24sk10"]
+    assert promos[0]["plan_count"] == 1
+    assert promos[0]["description"] == "sale"

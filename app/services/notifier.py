@@ -335,15 +335,25 @@ async def notify_price_drop(
     await broadcast(f"OVH price drop: {plan_code}", plain, html)
 
 
-async def notify_promo(plan_code: str, description: str) -> None:
-    """Notify that OVH published a promotion on a plan's pricing."""
-    logger.info("notifying promo on %s: %s", plan_code, description[:120])
-    plain = f"OVH promotion on {plan_code}: {description}"
+async def notify_promo(description: str, plan_codes: list[str]) -> None:
+    """Notify that OVH published a promotion, once per campaign.
+
+    OVH attaches a campaign to every plan it covers, so one sale spans many
+    plan codes (a recent flash sale hit 17). Callers group by campaign and
+    pass the whole plan list here; notifying per plan sent 17 identical
+    messages for a single offer.
+    """
+    codes = list(plan_codes)
+    count = f"{len(codes)} plan{'' if len(codes) == 1 else 's'}"
+    shown = ", ".join(codes[:5])
+    extra = f" (+{len(codes) - 5} more)" if len(codes) > 5 else ""
+    logger.info("notifying promo on %s: %s", count, description[:120])
+    plain = f"OVH promotion on {count}: {description}\nPlans: {shown}{extra}"
     html = (
-        f"<b>OVH promotion</b> on <code>{escape(plan_code)}</code>: "
-        f"{escape(description)}"
+        f"<b>OVH promotion</b> on {escape(count)}: {escape(description)}<br>"
+        f"<b>Plans</b>: <code>{escape(shown)}</code>{escape(extra)}"
     )
-    await broadcast(f"OVH promotion: {plan_code}", plain, html)
+    await broadcast(f"OVH promotion on {count}", plain, html)
 
 
 def configured_channels() -> list[str]:

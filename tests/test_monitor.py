@@ -584,14 +584,14 @@ async def test_promo_scan_notifies_once_per_promo(monitor, monkeypatch):
 
     promos = []
 
-    async def _promo(plan_code, description):
-        promos.append((plan_code, description))
+    async def _promo(description, plan_codes):
+        promos.append((description, list(plan_codes)))
 
     monkeypatch.setattr("app.services.notifier.notify_promo", _promo)
 
     await monitor._check_prices_and_promos(fake, storage)
     await monitor._check_prices_and_promos(fake, storage)  # same promo again
-    assert promos == [("24sk10", "Flash sale -30%")]
+    assert promos == [("Flash sale -30%", ["24sk10"])]
     assert len(storage.load_recent_promos()) == 1
 
 

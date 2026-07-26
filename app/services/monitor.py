@@ -734,6 +734,14 @@ class MonitorService:
         # Promo scan over the same catalog. The promotions field is empty
         # outside sales and its populated shape is unverified — hash the
         # raw entry defensively and never let a weird shape raise.
+        #
+        # OVH attaches a campaign to every plan it covers, so one sale records
+        # a row per plan code. Collect the new ones and notify once per
+        # campaign; notifying inside the loop sent 17 identical messages for a
+        # single flash sale. Group on the promo's `name`, which is stable
+        # across a campaign — the payload hash is not, since it includes the
+        # per-plan discount amount.
+        new_campaigns: dict[str, dict[str, Any]] = {}
         for plan in catalog.get("plans", []):
             plan_code = plan.get("planCode") or ""
             for pricing in plan.get("pricings") or []:
@@ -751,14 +759,25 @@ class MonitorService:
                     except Exception:
                         logger.debug("failed to record promo", exc_info=True)
                         continue
-                    if is_new:
-                        desc = None
-                        if isinstance(promo, dict):
-                            desc = promo.get("description") or promo.get("name")
-                        try:
-                            await notify_promo(plan_code, desc or payload[:160])
-                        except Exception:
-                            logger.warning("promo notify failed", exc_info=True)
+                    if not is_new:
+                        continue
+                    desc = None
+                    name = None
+                    if isinstance(promo, dict):
+                        desc = promo.get("description") or promo.get("name")
+                        name = promo.get("name")
+                    desc = desc or payload[:160]
+                    entry = new_campaigns.setdefault(
+                        name or desc, {"description": desc, "plan_codes": []}
+                    )
+                    if plan_code and plan_code not in entry["plan_codes"]:
+                        entry["plan_codes"].append(plan_code)
+
+        for entry in new_campaigns.values():
+            try:
+                await notify_promo(entry["description"], entry["plan_codes"])
+            except Exception:
+                logger.warning("promo notify failed", exc_info=True)
 
     async def _maybe_prune_events(self) -> None:
         """Prune old stock events at most once an hour (best-effort)."""

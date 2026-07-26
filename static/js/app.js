@@ -4231,6 +4231,22 @@ async function savePriceWatch() {
     }
 }
 
+// Plan chips rendered per campaign before collapsing to "+N more".
+const PROMO_CHIPS_SHOWN = 8;
+
+// "ends in 5d" / "ends in 6h" from a promo's endDate, or '' if absent or
+// unparseable (OVH's date format is not guaranteed).
+function promoEndsLabel(iso) {
+    if (!iso) return '';
+    const end = new Date(iso);
+    if (isNaN(end.getTime())) return '';
+    const ms = end.getTime() - Date.now();
+    if (ms <= 0) return 'ended';
+    const days = Math.floor(ms / 86400000);
+    if (days >= 1) return `ends in ${days}d`;
+    return `ends in ${Math.max(1, Math.floor(ms / 3600000))}h`;
+}
+
 async function loadInsightsPromos() {
     const gen = state._switchGen;
     const container = document.getElementById('insights-promos');
@@ -4244,18 +4260,32 @@ async function loadInsightsPromos() {
             container.appendChild(el('p', { class: 'text-gray-500', text: 'No promotions seen' }));
             return;
         }
+        // One campaign covers many plans; the API groups them so a single
+        // sale is one row listing its plans, not one identical row per plan.
         promos.forEach(p => {
-            let desc = p.payload;
-            try {
-                const parsed = JSON.parse(p.payload);
-                desc = parsed.description || parsed.name || p.payload;
-            } catch { /* raw payload fallback */ }
-            container.appendChild(el('div', { class: 'bg-gray-700/50 rounded p-2 flex justify-between items-center gap-2' }, [
-                el('div', {}, [
-                    el('span', { class: 'text-yellow-400 font-bold font-mono', text: p.plan_code }),
-                    el('p', { class: 'text-gray-300 text-xs truncate', text: String(desc).slice(0, 160) }),
+            const codes = p.plan_codes || [];
+            const shown = codes.slice(0, PROMO_CHIPS_SHOWN);
+            const chips = el('div', { class: 'flex flex-wrap gap-1 mt-1.5' },
+                shown.map(c => el('span', {
+                    class: 'text-yellow-400 bg-gray-900/60 rounded px-1.5 py-0.5 text-xs font-mono',
+                    text: c,
+                })));
+            if (codes.length > shown.length) {
+                chips.appendChild(el('span', {
+                    class: 'text-gray-500 text-xs self-center',
+                    text: `+${codes.length - shown.length} more`,
+                }));
+            }
+            const meta = [`${codes.length} plan${codes.length === 1 ? '' : 's'}`];
+            const ends = promoEndsLabel(p.end_date);
+            if (ends) meta.push(ends);
+            container.appendChild(el('div', { class: 'bg-gray-700/50 rounded p-2' }, [
+                el('div', { class: 'flex justify-between items-start gap-2' }, [
+                    el('p', { class: 'text-gray-200 text-sm', text: p.description || '' }),
+                    el('span', { class: 'text-gray-500 text-xs whitespace-nowrap', text: relativeTime(p.first_seen) }),
                 ]),
-                el('span', { class: 'text-gray-500 text-xs whitespace-nowrap', text: relativeTime(p.first_seen) }),
+                el('p', { class: 'text-gray-500 text-xs mt-0.5', text: meta.join(' · ') }),
+                chips,
             ]));
         });
     } catch (e) {
