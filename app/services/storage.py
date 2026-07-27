@@ -207,20 +207,24 @@ class Storage:
                     application_secret TEXT NOT NULL,
                     consumer_key TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    region_ticker_enabled INTEGER NOT NULL DEFAULT 0
+                    region_ticker_enabled INTEGER NOT NULL DEFAULT 0,
+                    monitoring_enabled INTEGER NOT NULL DEFAULT 1
                 )
                 """
             )
-            # Best-effort column add: the region restock ticker used to be a
-            # single global setting; it is per-account now (see
-            # _migrate_region_ticker_setting).
-            try:
-                cur.execute(
-                    "ALTER TABLE accounts ADD COLUMN "
-                    "region_ticker_enabled INTEGER NOT NULL DEFAULT 0"
-                )
-            except sqlite3.OperationalError:
-                pass
+            # Best-effort column adds for the two per-account monitoring flags.
+            # The region ticker used to be a single global setting (see
+            # _migrate_region_ticker_setting); monitoring used to be implicit
+            # ("polled iff it has an enabled alert") and defaults to 1 so
+            # existing accounts keep being monitored after the upgrade.
+            for col_def in (
+                "region_ticker_enabled INTEGER NOT NULL DEFAULT 0",
+                "monitoring_enabled INTEGER NOT NULL DEFAULT 1",
+            ):
+                try:
+                    cur.execute(f"ALTER TABLE accounts ADD COLUMN {col_def}")
+                except sqlite3.OperationalError:
+                    pass
             # Best-effort column adds: account_id on data tables (multi-account).
             for tbl in (
                 "alerts",
@@ -510,7 +514,7 @@ class Storage:
             cur = self._conn.cursor()
             cur.execute(
                 "SELECT id, label, endpoint, application_key, application_secret, "
-                "consumer_key, created_at, region_ticker_enabled "
+                "consumer_key, created_at, region_ticker_enabled, monitoring_enabled "
                 "FROM accounts ORDER BY created_at"
             )
             rows = cur.fetchall()
@@ -521,7 +525,7 @@ class Storage:
             cur = self._conn.cursor()
             cur.execute(
                 "SELECT id, label, endpoint, application_key, application_secret, "
-                "consumer_key, created_at, region_ticker_enabled "
+                "consumer_key, created_at, region_ticker_enabled, monitoring_enabled "
                 "FROM accounts WHERE id = ?",
                 (account_id,),
             )
@@ -530,17 +534,30 @@ class Storage:
 
     @staticmethod
     def _account_row(row: sqlite3.Row) -> dict[str, Any]:
-        """Normalise an accounts row: the ticker flag as a real bool."""
+        """Normalise an accounts row: the monitoring flags as real bools."""
         acct = dict(row)
-        acct["region_ticker_enabled"] = bool(acct.get("region_ticker_enabled"))
+        for flag in ("region_ticker_enabled", "monitoring_enabled"):
+            acct[flag] = bool(acct.get(flag))
         return acct
 
     def set_account_region_ticker(self, account_id: str, enabled: bool) -> None:
         """Enable/disable the region restock ticker for one account."""
+        self._set_account_flag("region_ticker_enabled", account_id, enabled)
+
+    def set_account_monitoring(self, account_id: str, enabled: bool) -> None:
+        """Enable/disable ALL background work for one account.
+
+        Off means the poller does no OVH work for it at all: no stock
+        polling, no region ticker, no price/promo scan, no sniper fire.
+        """
+        self._set_account_flag("monitoring_enabled", account_id, enabled)
+
+    def _set_account_flag(self, column: str, account_id: str, enabled: bool) -> None:
+        # `column` is never caller-supplied - only the two literals above.
         with self._lock:
             cur = self._conn.cursor()
             cur.execute(
-                "UPDATE accounts SET region_ticker_enabled = ? WHERE id = ?",
+                f"UPDATE accounts SET {column} = ? WHERE id = ?",
                 (1 if enabled else 0, account_id),
             )
             self._conn.commit()
