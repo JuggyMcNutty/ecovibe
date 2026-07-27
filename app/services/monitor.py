@@ -146,15 +146,6 @@ class SniperService:
             "results": self._results,
         }
 
-    def armed_watches(self) -> list[tuple[str, str | None, str | None, str | None]]:
-        """Return (alert_id, plan_code, fqn_pattern, account_id) for each armed
-        sniper, for the poller's cross-account sweep. Entries armed before this
-        info was captured have plan_code None and are skipped by the sweep."""
-        return [
-            (aid, v.get("plan_code"), v.get("fqn_pattern"), v.get("account_id"))
-            for aid, v in self._armed.items()
-        ]
-
     async def maybe_fire(
         self,
         alert_id: str,
@@ -316,6 +307,10 @@ class MonitorService:
         # BATCH_MIN_POLL_INTERVAL.
         self._last_cycle_batched = False
         self._batch_clamp_logged = False
+        # Per-account master switch. False = this poller does NO OVH work for
+        # that account: no stock polling, no region ticker, no price/promo
+        # scan, no sniper fire. Defaults to True for accounts it hasn't seen.
+        self._monitoring_enabled: dict[str | None, bool] = {}
         # Region restock ticker, per account: when enabled, every batch cycle
         # diffs that account's ENTIRE region (not just watched plans), logs
         # all transitions, and broadcasts a compact region_restock SSE event.
@@ -399,17 +394,26 @@ class MonitorService:
         return out
 
     def _refresh_accounts(self, accounts: list[dict[str, Any]]) -> None:
-        """Refresh the cached account labels + region-ticker flags.
+        """Refresh the cached account labels + per-account monitoring flags.
 
         The ``None`` key (no account row yet — a fresh install or a test)
         has nothing to read from, so whatever is in memory is preserved.
         """
         labels = {a["id"]: a["label"] for a in accounts}
         region = {a["id"]: bool(a.get("region_ticker_enabled")) for a in accounts}
-        if None in self._region_enabled:
-            region[None] = self._region_enabled[None]
+        # Absent column (an old row read before the migration) reads as
+        # monitored — the flag defaults to on, matching the pre-flag
+        # behaviour where every account with alerts was polled.
+        monitoring = {
+            a["id"]: bool(a.get("monitoring_enabled", True)) for a in accounts
+        }
+        for cached, fresh in ((self._region_enabled, region),
+                              (self._monitoring_enabled, monitoring)):
+            if None in cached:
+                fresh[None] = cached[None]
         self._account_labels = labels
         self._region_enabled = region
+        self._monitoring_enabled = monitoring
 
     def _account_label(self, account_id: str | None) -> str | None:
         """Human label for an account, memoised. Falls back to a storage
@@ -699,6 +703,57 @@ class MonitorService:
             account_id = self._active_account_id()
         return self._region_enabled.get(account_id, False)
 
+    def is_monitoring_enabled(self, account_id: str | None = None) -> bool:
+        """Whether the poller does any work for an account (default: active).
+
+        Unknown accounts default to True: monitoring is opt-out, and an
+        account the cache hasn't seen yet (created since the last reload)
+        must not be silently ignored by the poller.
+        """
+        if account_id is None:
+            account_id = self._active_account_id()
+        return self._monitoring_enabled.get(account_id, True)
+
+    async def set_monitoring_enabled(
+        self, enabled: bool, account_id: str | None = None
+    ) -> None:
+        """Turn all background work for one account on/off (default: active).
+
+        Turning it back on drops that account's baselines so the next cycle
+        primes SILENTLY: while it was off, stock moved without being
+        observed, so diffing against the stale baseline would report a burst
+        of "newly available" configs that are simply what is in stock now.
+        """
+        if account_id is None:
+            account_id = self._active_account_id()
+        async with self._lock:
+            self._monitoring_enabled[account_id] = enabled
+            self._forget_account_state(account_id)
+        storage = self._storage_get()
+        # account_id is None only before any account exists (fresh install
+        # or a test); there is no row to persist the flag on.
+        if storage and account_id is not None:
+            try:
+                storage.set_account_monitoring(account_id, enabled)
+            except Exception:
+                logger.warning(
+                    "failed to persist monitoring flag for account %s",
+                    account_id, exc_info=True,
+                )
+        logger.info(
+            "monitoring %s for account %s",
+            "enabled" if enabled else "disabled", account_id,
+        )
+
+    def _forget_account_state(self, account_id: str | None) -> None:
+        """Drop one account's stock/region baselines. Caller holds _lock."""
+        for store in (self._stock_cache, self._last_stock):
+            for key in [k for k in store if k[0] == account_id]:
+                store.pop(key, None)
+        self._primed = {k for k in self._primed if k[0] != account_id}
+        self._last_region_avail.pop(account_id, None)
+        self._region_primed.discard(account_id)
+
     def _active_account_id(self) -> str | None:
         storage = self._storage_get()
         return storage.get_active_account_id() if storage else None
@@ -814,6 +869,10 @@ class MonitorService:
             return
         accounts = await asyncio.to_thread(storage.list_accounts)
         for acct in accounts:
+            # Same master switch as the stock poller: off means no OVH work
+            # of any kind for this account.
+            if not self._monitoring_enabled.get(acct["id"], True):
+                continue
             service = get_ovh_service(acct["id"])
             if not service.is_configured():
                 continue
@@ -1016,6 +1075,14 @@ class MonitorService:
             for account_id, on in self._region_enabled.items():
                 if on:
                     plans_by_account.setdefault(account_id, set())
+            # Single gate for the per-account master switch: dropping the
+            # account here covers stock polling, the region ticker AND
+            # sniper fire, since _poll_account drives all three.
+            for account_id in [
+                a for a in plans_by_account
+                if not self._monitoring_enabled.get(a, True)
+            ]:
+                plans_by_account.pop(account_id, None)
         if not plans_by_account:
             return []
 
