@@ -93,26 +93,55 @@ async def get_availability(plans: str = Query(default="")) -> dict[str, Any]:
 
 @router.get("/status")
 async def get_status() -> dict[str, Any]:
-    """Return the poll interval plus what the poller is currently watching.
+    """The whole monitoring picture in one call.
 
-    ``alerts_count``/``monitored_plans`` are the ACTIVE account's (what the
-    UI renders); ``total_alerts_count``/``accounts_polled`` cover every
-    account, since the poller watches them all regardless of which one is
-    active.
+    Three distinct things, deliberately reported separately because they
+    are what the UI kept conflating:
+
+    - ``running``      — the global background poller (Settings → App).
+    - ``accounts[]``   — per-account: is it monitored, is its ticker on,
+                         how many alerts it has, and whether it is actually
+                         being polled this cycle.
+    - ``alerts_count`` / ``monitored_plans`` — the ACTIVE account only,
+                         which is what the monitor tab renders.
     """
     monitor = get_monitor_service()
-    active_id = get_storage().get_active_account_id()
+    storage = get_storage()
+    active_id = storage.get_active_account_id()
     scoped = monitor.get_alerts_for_account(active_id)
     all_alerts = monitor.get_alerts()
+
+    accounts = []
+    for acct in storage.list_accounts():
+        aid = acct["id"]
+        enabled_alerts = [
+            a for a in all_alerts if a.account_id == aid and a.enabled
+        ]
+        monitoring = monitor.is_monitoring_enabled(aid)
+        ticker = monitor.is_region_enabled(aid)
+        accounts.append({
+            "id": aid,
+            "label": acct["label"],
+            "endpoint": acct["endpoint"],
+            "monitoring_enabled": monitoring,
+            "region_ticker_enabled": ticker,
+            "alerts_count": len(
+                [a for a in all_alerts if a.account_id == aid]
+            ),
+            # What the poller will actually do with it next cycle.
+            "polled": bool(monitoring and (enabled_alerts or ticker)),
+        })
+
     return {
+        "running": monitor.is_running(),
         "poll_interval": monitor.get_poll_interval(),
+        "active_account_id": active_id,
+        "monitoring_enabled": monitor.is_monitoring_enabled(active_id),
         "alerts_count": len(scoped),
         "monitored_plans": sorted({a.plan_code for a in scoped}),
         "total_alerts_count": len(all_alerts),
-        "accounts_polled": len(
-            {a.account_id for a in all_alerts if a.enabled}
-        ),
-        "running": monitor.is_running(),
+        "accounts": accounts,
+        "accounts_polled": len([a for a in accounts if a["polled"]]),
     }
 
 
@@ -136,17 +165,19 @@ async def set_poll_interval_post(request: PollIntervalRequest) -> dict[str, Any]
 async def get_region_watch() -> dict[str, Any]:
     """Whether the region-wide restock ticker is on for the ACTIVE account.
 
-    The ticker is per-account: every account is polled, and each one diffs
-    its own region only if its own flag is set.
+    Convenience alias for the active account — the flag itself lives on the
+    account (``PUT /api/accounts/{id}/monitoring``), alongside the
+    monitoring master switch.
     """
     return {"enabled": get_monitor_service().is_region_enabled()}
 
 
 @router.put("/region-watch")
 async def set_region_watch(request: RegionWatchRequest) -> dict[str, Any]:
-    """Enable/disable the active account's region restock ticker (persists
-    across restarts).
+    """Enable/disable the ACTIVE account's region restock ticker.
 
+    Active-account alias for ``PUT /api/accounts/{id}/monitoring``; both
+    land on the same setter, so the DB and the poller's cache stay in step.
     While enabled, every poll cycle fetches that account's whole region, so
     the poll interval is clamped to 3s (see BATCH_MIN_POLL_INTERVAL)."""
     monitor = get_monitor_service()

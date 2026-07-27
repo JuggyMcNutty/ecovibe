@@ -55,9 +55,20 @@ class AccountResponse(BaseModel):
     consumer_key_masked: str | None = None
     application_secret_configured: bool = False
     created_at: str
+    # Per-account background-work switches. monitoring_enabled is the master
+    # one: off means the poller does no OVH work at all for this account.
+    monitoring_enabled: bool = True
+    region_ticker_enabled: bool = False
     # Filled by create/update from the pre-save credential check so the
     # UI can show "Connected as X" without a second /test round-trip.
     nichandle: str | None = None
+
+
+class MonitoringRequest(BaseModel):
+    """Body for PUT /api/accounts/{id}/monitoring. Both fields optional —
+    omitted flags are left as they are."""
+    monitoring_enabled: bool | None = None
+    region_ticker_enabled: bool | None = None
 
 
 async def _verify_credentials(
@@ -92,6 +103,8 @@ def _to_response(acct: dict) -> AccountResponse:
         consumer_key_masked=_mask(acct.get("consumer_key")),
         application_secret_configured=bool(acct.get("application_secret")),
         created_at=acct["created_at"],
+        monitoring_enabled=bool(acct.get("monitoring_enabled", True)),
+        region_ticker_enabled=bool(acct.get("region_ticker_enabled")),
     )
 
 
@@ -202,6 +215,35 @@ async def set_active(request: ActiveRequest) -> dict:
         ) from None
     logger.info("Active account switched to: %s", request.account_id)
     return {"status": "ok", "active_account_id": request.account_id}
+
+
+@router.put("/{account_id}/monitoring", response_model=AccountResponse)
+async def set_monitoring(account_id: str, request: MonitoringRequest) -> AccountResponse:
+    """Turn an account's background work on/off.
+
+    ``monitoring_enabled`` is the master switch: off means the poller does
+    NO OVH work for this account — no stock polling, no region ticker, no
+    price/promo scan, no sniper fire. ``region_ticker_enabled`` is the
+    narrower region-wide restock feed. Both are optional; an omitted flag is
+    left alone.
+
+    Routed through the monitor service (not storage directly) so its
+    in-memory caches and the DB can never diverge.
+    """
+    storage = get_storage()
+    if storage.get_account(account_id) is None:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    from app.services.monitor import get_monitor_service
+    monitor = get_monitor_service()
+    if request.monitoring_enabled is not None:
+        await monitor.set_monitoring_enabled(
+            request.monitoring_enabled, account_id=account_id
+        )
+    if request.region_ticker_enabled is not None:
+        await monitor.set_region_enabled(
+            request.region_ticker_enabled, account_id=account_id
+        )
+    return _to_response(storage.get_account(account_id))
 
 
 @router.put("/{account_id}", response_model=AccountResponse)
