@@ -99,13 +99,14 @@ Generate the `.htpasswd` file with `htpasswd -c /etc/nginx/.htpasswd admin`.
 ### Flash Sale Monitor
 - **Real-time stock tracking** via SSE (Server-Sent Events) with a single shared background poller
 - **All accounts monitored at once** - the poller watches every stored account's alerts, not just the active one, so switching accounts never pauses monitoring: history keeps building and restock alerts keep firing for the accounts you aren't looking at (each alert is tagged with its account)
+- **Per-account monitoring switch** - "Monitoring: On/Off" on the Monitor tab is a server-side, persisted switch for the *active account only*. Off means the server does nothing at all for that account: no stock polling, no region ticker, no price/promo scan, no sniper fire. Other accounts are unaffected
 - **Batched polling** - watching 2+ plans uses ONE region-wide availabilities call per cycle instead of one per plan (poll interval clamps to ≥3s in batch mode; single-plan polling keeps 1s fidelity). Accounts are polled concurrently, so a cycle costs the slowest account rather than their sum
 - **Region restock ticker** (optional, per account) - live feed of restocks across an account's ENTIRE region, streamed over SSE and logged for insights
 - **Silent start** - the first poll after a restart primes the stock baseline without re-notifying everything already in stock (armed snipers still fire)
 - **Browser notifications** when desired configs become available
 - **Multi-channel notifications** (Telegram, Discord, Slack, email) - never miss a flash sale when away from the browser
-- **Sound alerts** - audio notification (requires a user gesture first, e.g. clicking "Start Monitor")
-- **Live view auto-connects** - the browser connects to the event stream on page load (and stays connected across account switches), so a reopened tab never looks idle while the server is polling. Stopping the monitor is remembered per browser
+- **Sound alerts** - audio notification (requires a user gesture first, e.g. clicking the Monitoring toggle)
+- **Live view is always on** - the browser connects to the event stream on page load and stays connected across account switches; the header dot (Live / Reconnecting… / Offline) reports *that connection only*. Whether monitoring is happening is server-side and shown on the Monitor tab, so closing the tab never stops anything
 - **1-60 second polling** configurable interval (persisted across restarts)
 - **One-click Rush Order** when stock is detected (incoming alerts never overwrite the form while you're editing it - a "Use this config" button applies them explicitly)
 - **Alert pause/resume** - disable alerts without deleting them (pausing disarms any sniper on the alert)
@@ -284,7 +285,7 @@ GET  /api/catalog/stock?plan_code=XX       - Live stock levels per RAM+storage c
 # Monitor
 GET  /api/monitor/stream                    - SSE real-time stock updates (+ region_restock events)
 GET  /api/monitor/availability?plans=XX,YY  - Current stock for plans
-GET  /api/monitor/status                    - Monitor status (interval, active-account alert count, totals across all accounts)
+GET  /api/monitor/status                    - Poller state + per-account monitoring rows + the active account's alert count
 PUT  /api/monitor/poll-interval             - Set poll interval (body: {poll_interval: 1-60})
 POST /api/monitor/poll-interval             - Alias for PUT
 GET  /api/monitor/region-watch              - Region restock ticker state (active account)
@@ -359,6 +360,7 @@ DELETE /api/accounts/{id}                        - Delete account (falls back ac
 POST   /api/accounts/{id}/test                   - Test account via GET /me
 GET    /api/accounts/active                      - Read active account id + masked preview
 PUT    /api/accounts/active                      - Switch active account (reloads monitor)
+PUT    /api/accounts/{id}/monitoring             - Per-account switches (body: {monitoring_enabled?, region_ticker_enabled?})
 
 # Logs
 GET  /api/logs?limit=&level=&source=&search=     - Recent runtime logs + known sources
@@ -390,13 +392,22 @@ multiple accounts in the same region) and switch between them instantly.
   checkout and billing operations run against the active account, and the
   UI shows its data.
 - **Monitoring is never interrupted by a switch**: the background poller
-  watches *every* account's alerts at once. The account you switch away
-  from keeps logging stock events, keeps firing notifications, and keeps
+  watches *every* monitored account's alerts at once. The account you switch
+  away from keeps logging stock events, keeps firing notifications, and keeps
   its armed snipers live. Restocks on a background account appear in the
   browser tagged with the account's label (they never prefill the rush
-  order form, which orders under the active account). The Start/Stop
-  Monitor button only controls the live view in your browser — the server
-  polls regardless of whether any browser is connected.
+  order form, which orders under the active account).
+- **Monitoring is per account**, controlled by the "Monitoring: On/Off"
+  button on the Monitor tab and shown as a badge on each account in
+  Settings → Accounts. It is stored server-side, so it survives restarts and
+  applies whether or not a browser is open. Three separate things, three
+  separate controls:
+
+  | What | Where | Scope |
+  |------|-------|-------|
+  | Background poller | Settings → App | all accounts (master switch) |
+  | Monitoring | Monitor tab toggle | the active account only |
+  | Live updates | header dot | this browser tab only |
 - **Data is account-scoped**: alerts, checkout profiles, and orders belong
   to the account they were created under. Switching accounts shows only
   that account's data. The sniper orders under the alert's own account
@@ -481,7 +492,7 @@ ovh-gui/
    - Rush Order form pre-filled
    - Auto-pay enabled if you want instant checkout
 
-2. **Enable notifications** when prompted (click "Start Monitor" to grant permission)
+2. **Enable notifications** when prompted (toggle Monitoring on to grant permission)
 
 3. **Keep the tab open** for banners and sound - though you don't have to:
    the server polls every account and fires your notification channels even

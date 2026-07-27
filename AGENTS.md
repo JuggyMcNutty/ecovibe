@@ -199,9 +199,10 @@ were created under (`account_id` column on each table).
   baselines** so a switch never re-primes or drops an edge. If `reload()`
   fails the active account is reverted, so the app never proceeds with a
   half-applied switch.
-- **Monitor: polls EVERY account** (supersedes the old active-account-only
-  Decision 1A). `_poll_once` groups enabled alerts by `account_id`, adds
-  accounts whose region ticker is on, and polls each group **concurrently**
+- **Monitor: polls EVERY account** whose `monitoring_enabled` is set
+  (supersedes the old active-account-only Decision 1A). `_poll_once` groups
+  enabled alerts by `account_id`, adds accounts whose region ticker is on,
+  drops the ones with monitoring off, and polls each group **concurrently**
   (`asyncio.gather`) via `_poll_one_account` → `_poll_account(account_id,
   service, plan_codes, region_enabled)` under that account's own
   credentials; each `OVHService` has its own client lock, so a cycle costs
@@ -244,8 +245,10 @@ were created under (`account_id` column on each table).
   region ticker primes the same way (`_region_primed`). An account switch
   does NOT re-prime any more — that account was being polled all along.
 - **Region restock ticker** — **per-account**
-  (`accounts.region_ticker_enabled` column, toggled for the ACTIVE account
-  via `GET/PUT /api/monitor/region-watch`; the old global
+  (`accounts.region_ticker_enabled` column, set via
+  `PUT /api/accounts/{id}/monitoring` alongside the monitoring master
+  switch; `GET/PUT /api/monitor/region-watch` remains as an active-account
+  alias onto the same setter; the old global
   `settings.region_ticker_enabled` row is migrated onto the active account
   by `Storage._migrate_region_ticker_setting` and deleted). Each ticking
   account's batch cycle diffs ITS ENTIRE region; unwatched plans'
@@ -303,27 +306,34 @@ were created under (`account_id` column on each table).
   live view — the `#monitor-poller-state` hint (fed by
   `refreshMonitorRunState()` ← `GET /api/monitor/status`'s
   `running`/`accounts_polled`/`total_alerts_count`) says so.
-- **`state.monitoring` vs `state.monitorIntent`**: `monitoring` is "is the
-  SSE stream open right now"; `monitorIntent` is "does the user want it
-  open". Every reconnect decision must read **intent** — reading
-  `monitoring` is a bug, because the internal teardowns (account switch,
-  the post-order `stopMonitoring()`) have already set it false. That bug
-  shipped once: `switchAccount()` snapshotted `state.monitoring` on entry,
-  so a second switch started while the first was still loading captured
-  "wasn't monitoring" and left the stream closed permanently.
-- **Monitor view preference**: intent is persisted in `localStorage` under
-  `ecovibe.monitorEnabled` (`load/saveMonitorPreference()` in `app.js`,
-  mirrored into `state.monitorIntent` so it survives blocked storage), and
-  `init()` connects on load. **Unset defaults to ON** — the server polls
-  regardless, so a fresh browser showing "Disconnected" beside "Background
-  poller running" only read as broken; an explicit Stop is remembered.
-  Only explicit actions write it (the toggle button, arming a sniper).
-  `switchAccount()` reopens the stream **immediately after the
-  active-account PUT**, not after the data reload — that reload does live
-  OVH calls (`loadCatalog`) and used to leave the header on "Disconnected"
-  for seconds. `init()` does NOT request notification permission or unlock
-  audio on the auto-connect path — both need a user gesture
-  (`unlockAudio()` swallows the autoplay rejection).
+- **THE THREE MONITORING CONCEPTS.** These are separate things and must
+  never be conflated again — doing so is what produced a UI showing
+  "Start Monitor" + "Disconnected" + "Background poller running" all at
+  once, and a start/stop button that appeared to act on every account:
+
+  | Concept | Source of truth | Control | Indicator |
+  |---|---|---|---|
+  | Global poller | `app_monitor_enabled` (DB, Settings → App) | Settings → App checkbox | `status.running` |
+  | Per-account monitoring | `accounts.monitoring_enabled` | `#toggle-monitor-btn` → `PUT /api/accounts/{id}/monitoring` | button label + `#monitor-poller-state` |
+  | Browser event stream | `state.streamOpen` (transport only) | none — it just connects | header dot: Live / Reconnecting… / Offline |
+
+  Per-account monitoring is the **master switch for one account**: off means
+  the poller does zero OVH work for it (no stock poll, no region ticker, no
+  price/promo scan, no sniper fire), enforced by a single gate in
+  `_poll_once` plus one in `_maybe_check_prices_and_promos`.
+  `set_monitoring_enabled()` drops that account's baselines via
+  `_forget_account_state()` so re-enabling **primes silently** — stock moved
+  unobserved while it was off, so diffing against the stale baseline would
+  report a burst of fake restocks.
+- **The stream is a transport, not a setting.** `openStream()` is called
+  once by `init()` and never torn down by an account switch (the server
+  streams every account, tagged with `account_id`). There is no
+  user-facing start/stop for it and no localStorage preference — an earlier
+  design had both, and every internal teardown risked leaving a working
+  poller looking stopped. `closeStream()` exists but nothing in the normal
+  flow calls it. `init()` does NOT request notification permission or
+  unlock audio (both need a user gesture; `unlockAudio()` swallows the
+  autoplay rejection and is called from the monitoring toggle instead).
 - **Rush-form autofill is active-account-only**: `showStockAlert()` takes
   an `accountLabel`, and a tagged (background-account) alert never
   prefills the rush form or offers "Use this config" — the form orders
