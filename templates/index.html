@@ -17,9 +17,9 @@
                 <p class="text-gray-400 text-sm">Real-time stock alerts &amp; fast checkout</p>
             </div>
             <div class="flex items-center gap-4">
-                <div id="connection-status" class="flex items-center gap-2">
+                <div id="connection-status" class="flex items-center gap-2" title="Live updates from the server. Monitoring itself runs server-side.">
                     <span id="connection-dot" class="w-3 h-3 rounded-full bg-gray-500" aria-hidden="true"></span>
-                    <span id="connection-text" class="text-sm text-gray-400">Disconnected</span>
+                    <span id="connection-text" class="text-sm text-gray-400">Offline</span>
                 </div>
                 <label class="flex items-center gap-2 cursor-pointer">
                     <input type="checkbox" id="sound-toggle" class="w-5 h-5" checked>
@@ -533,8 +533,9 @@
                                     </select>
                                 </label>
                                 <button id="toggle-monitor-btn"
-                                        class="bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg">
-                                    Start Monitor
+                                        class="bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg"
+                                        title="Server-side monitoring for the active account.">
+                                    Monitoring: On
                                 </button>
                             </div>
                         </div>

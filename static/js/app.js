@@ -28,10 +28,12 @@ const OVH_REGIONS = {
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
-// Whether the user wants the live view connected, remembered across page
-// loads. Browser-local on purpose: the server-side poller runs regardless,
-// so this is a per-browser view preference, not app state.
-const MONITOR_PREF_KEY = 'ecovibe.monitorEnabled';
+// Three distinct things, one control each - do not conflate them:
+//   1. The SSE stream    -> state.streamOpen, header dot. Always connected;
+//                           it is a transport, not a user setting.
+//   2. Per-account work   -> account.monitoring_enabled (server-side).
+//                           The monitor tab's toggle. This is "monitoring".
+//   3. The global poller  -> app_monitor_enabled (Settings -> App).
 
 const ALERT_SOUND_DATA = 'data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdH2Onp6dn5yXl5aXmJmam5ydn56dn5+goaKjpKWlp6eorK2tr7GxsrKys7S0tbW2tra3t7e4uLm5uru7u7y8vL29vr6/v8DAwMHBwsLCwsPDw8TExMXFxcbGxsfHx8jIyMnJysrKy8vLzMzMzc3Ozs/Pz9DQ0NHR0tLS09PT1NTU1dXW1tbX19fY2NjZ2dra29vb3Nzc3d3e3t/f3+Dg4OHh4uLi4+Pj5OTk5eXm5ubn5+fo6Ojp6erq6+vr7Ozs7e3u7u/v7/Dw8PHx8vLy8/Pz9PT09fX29vb39/f4+Pj5+fr6+vv7+/z8/P39/v7///8=';
 
@@ -42,14 +44,11 @@ let state = {
     accounts: [],
     activeAccountId: null,
     editingAccountId: null,
-    // `monitoring` = is the SSE stream open RIGHT NOW; `monitorIntent` =
-    // does the user want it open. Internal teardowns (account switch, a
-    // completed order) flip `monitoring` to false without touching intent —
-    // deriving intent from `monitoring` meant a second account switch,
-    // started while the first was still loading, snapshotted "wasn't
-    // monitoring" and left the stream closed for good.
-    monitoring: false,
-    monitorIntent: false,
+    // Is the SSE stream open right now (transport state, not a preference).
+    streamOpen: false,
+    // Server-side monitoring flag for the ACTIVE account, from
+    // /api/monitor/status. The monitor tab's toggle writes it.
+    monitoringEnabled: true,
     eventSource: null,
     reconnectTimer: null,
     reconnectDelay: 1000,      // RECONNECT_BASE_MS (declared above state)
@@ -333,16 +332,24 @@ function showToast(message, duration = 2500) {
     }, duration);
 }
 
-function updateConnectionStatus(connected) {
+// Header indicator: the health of THIS browser's event stream, nothing
+// else. It says nothing about whether monitoring is running - that is
+// server-side and shown on the monitor tab. Conflating the two is what
+// made a working poller read as "Disconnected".
+const CONNECTION_STATES = {
+    live: ['bg-green-500', 'Live'],
+    connecting: ['bg-yellow-500', 'Reconnecting…'],
+    offline: ['bg-gray-500', 'Offline'],
+};
+
+function updateConnectionStatus(status) {
     const dot = document.getElementById('connection-dot');
     const text = document.getElementById('connection-text');
-    if (connected) {
-        dot.className = 'w-3 h-3 rounded-full bg-green-500';
-        text.textContent = 'Connected';
-    } else {
-        dot.className = 'w-3 h-3 rounded-full bg-gray-500';
-        text.textContent = 'Disconnected';
-    }
+    if (!dot || !text) return;
+    const [colour, label] = CONNECTION_STATES[status] || CONNECTION_STATES.offline;
+    dot.className = `w-3 h-3 rounded-full ${colour}`;
+    text.textContent = label;
+    text.title = 'Live updates from the server. Monitoring itself runs server-side.';
 }
 
 // API client
@@ -421,13 +428,10 @@ function renderAccountSelect() {
 
 async function switchAccount(accountId) {
     if (accountId === state.activeAccountId) return;
-    // Tear down all background activity from the previous account so it
-    // doesn't race with the new account's data load or leak stale state.
-    // The SSE stream itself is account-agnostic (the server polls every
-    // account), so it is reopened as soon as the active account has flipped -
-    // see below. Intent is read from state.monitorIntent, never from
-    // state.monitoring, which this teardown is about to clear.
-    if (state.monitoring) stopMonitoring();
+    // Tear down the previous account's polling loops so they don't race with
+    // the new account's data load. The event stream is NOT torn down: it is
+    // account-agnostic (the server streams every account, tagged), so
+    // closing it would only make a working connection look broken.
     stopCatalogAutoRefresh();
     // Reset stale account-scoped state so the new account starts clean.
     state.currentStock = {};
@@ -453,9 +457,8 @@ async function switchAccount(accountId) {
     const ordDetail = document.getElementById('order-detail');
     if (ordDetail) ordDetail.innerHTML = '<p class="text-gray-500 text-sm">Select an order to see details.</p>';
     // Repaint the recent-alerts list from the (now-empty) state and dismiss any
-    // live stock-alert banner — these are only otherwise refreshed by incoming
-    // SSE events, which stop the moment we tore down monitoring above, so
-    // without this they'd keep showing the previous account's restocks.
+    // live stock-alert banner — otherwise they'd keep showing the previous
+    // account's restocks until the next event happens to arrive.
     renderRecentAlerts();
     document.getElementById('stock-alerts-panel')?.classList.add('hidden');
 
@@ -468,11 +471,10 @@ async function switchAccount(accountId) {
         state.activeAccountId = accountId;
         const acct = state.accounts.find(a => a.id === accountId);
         if (acct) state.endpoint = acct.endpoint;
-        // Reopen the live view NOW, before the data reload: the stream is
-        // account-agnostic and the reload below can take several seconds
-        // against a live OVH endpoint (loadCatalog alone), which is how long
-        // the header used to sit on "Disconnected" after every switch.
-        if (state.monitorIntent && !state.monitoring) startMonitoring();
+        // The stream stays open across the switch; just make sure a dropped
+        // connection is picked back up rather than waiting on the reload below
+        // (which does live OVH calls and can take seconds).
+        if (!state.streamOpen) openStream();
         // Reload all scoped data for the new account.
         state._currencyUserSet = false;  // allow /me to re-default the currency
         await loadFxRates();
@@ -514,8 +516,8 @@ async function switchAccount(accountId) {
         }
         await loadSniperStatus();
         if (gen !== state._switchGen) return;
-        // The ticker setting is global, but the feed's events are
-        // account-scoped — refill it for the new account (self-guarded).
+        // Both the ticker flag and its feed are per-account — reload them
+        // for the newly active account (self-guarded).
         loadRegionWatch();
         if (state.billingLoaded) {
             loadPaymentMethods();
@@ -526,14 +528,13 @@ async function switchAccount(accountId) {
             showError(`Failed to switch account: ${e.message}`);
         }
     } finally {
-        // Safety net for the paths that never reached the reopen above (the
-        // PUT itself failed): the server-side poller never stopped, so the UI
-        // must not pretend it did. A newer switch does its own reopen, so
-        // only the current generation may act.
-        if (state.monitorIntent && !state.monitoring && gen === state._switchGen) {
-            startMonitoring();
+        // Repaint the monitoring toggle + hint for whichever account is now
+        // active (it also re-opens the stream if the PUT failed above). A
+        // newer switch does its own refresh, so only the current one acts.
+        if (gen === state._switchGen) {
+            if (!state.streamOpen) openStream();
+            refreshMonitorRunState();
         }
-        if (gen === state._switchGen) refreshMonitorRunState();
     }
 }
 
@@ -551,7 +552,16 @@ function renderAccountList() {
             class: `flex justify-between items-center rounded p-3 ${isActive ? 'bg-blue-900/40 border border-blue-700' : 'bg-gray-700'}`,
         }, [
             el('div', {}, [
-                el('div', { class: 'font-bold', text: a.label }),
+                el('div', { class: 'flex items-center gap-2' }, [
+                    el('span', { class: 'font-bold', text: a.label }),
+                    // Monitoring is per-account and server-side, so it has to
+                    // be visible here - it is not implied by which account is
+                    // active.
+                    el('span', {
+                        class: `text-xs rounded px-1.5 py-0.5 ${a.monitoring_enabled ? 'bg-green-900/60 text-green-300' : 'bg-gray-600 text-gray-300'}`,
+                        text: a.monitoring_enabled ? 'Monitored' : 'Not monitored',
+                    }),
+                ]),
                 el('div', { class: 'text-xs text-gray-400', text: `${a.endpoint} · ${a.application_key_masked || '****'}` }),
             ]),
             el('div', { class: 'flex gap-2' }, [
@@ -2286,14 +2296,12 @@ const APP_SETTING_FIELDS = [
     ['app-ui-recent-alerts', 'ui_recent_alerts_shown'],
 ];
 
-// Show whether the poller is actually alive, which can differ from the
-// monitor_enabled setting if start() failed or the task died. Also drives
-// the monitor tab's hint line: the Start/Stop button only controls THIS
-// browser's live view, while the server keeps polling every account.
+// Reflect the SERVER's monitoring state: the global poller (which can differ
+// from the monitor_enabled setting if start() failed or the task died), this
+// account's own switch, and which other accounts are being monitored.
 async function refreshMonitorRunState() {
     const label = document.getElementById('app-monitor-state');
     const hint = document.getElementById('monitor-poller-state');
-    if (!label && !hint) return;
     let status = null;
     try {
         status = await apiRequest('GET', '/monitor/status');
@@ -2302,26 +2310,38 @@ async function refreshMonitorRunState() {
         if (hint) hint.textContent = '';
         return;
     }
+    // Keep the toggle honest even if something changed it elsewhere.
+    if (typeof status.monitoring_enabled === 'boolean') {
+        state.monitoringEnabled = status.monitoring_enabled;
+        renderMonitorToggle();
+    }
     if (label) {
-        label.textContent = status?.running ? '(running)' : '(stopped)';
-        label.className = `text-xs ${status?.running ? 'text-green-400' : 'text-gray-500'}`;
+        label.textContent = status.running ? '(running)' : '(stopped)';
+        label.className = `text-xs ${status.running ? 'text-green-400' : 'text-gray-500'}`;
     }
-    if (hint) {
-        if (!status?.running) {
-            hint.textContent = 'Background poller stopped (Settings → App).';
-            hint.className = 'text-xs text-yellow-500 mb-3';
-            return;
-        }
-        const accounts = status.accounts_polled || 0;
-        const total = status.total_alerts_count || 0;
-        const others = total - (status.alerts_count || 0);
-        let text = `Background poller running · ${total} alert(s) across ${accounts} account(s)`;
-        if (others > 0) {
-            text += ` · ${others} on other account(s), still monitored`;
-        }
-        hint.textContent = text;
-        hint.className = 'text-xs text-gray-500 mb-3';
+    if (!hint) return;
+
+    // The global master switch wins: nothing is monitored while it's off.
+    if (!status.running) {
+        hint.textContent = 'Background poller is stopped — turn it on in Settings → App.';
+        hint.className = 'text-xs text-yellow-500 mb-3';
+        return;
     }
+    const accounts = status.accounts || [];
+    const others = accounts
+        .filter(a => a.id !== status.active_account_id && a.polled)
+        .map(a => a.label);
+    const parts = [];
+    if (!status.monitoring_enabled) {
+        parts.push('Monitoring is off for this account');
+    } else if (status.alerts_count > 0) {
+        parts.push(`Monitoring this account · ${status.alerts_count} alert(s) every ${status.poll_interval}s`);
+    } else {
+        parts.push('Monitoring this account · no alerts yet');
+    }
+    if (others.length) parts.push(`also monitoring ${others.join(', ')}`);
+    hint.textContent = parts.join(' · ');
+    hint.className = `text-xs mb-3 ${status.monitoring_enabled ? 'text-gray-500' : 'text-yellow-500'}`;
 }
 
 async function loadAppSettings() {
@@ -2835,38 +2855,13 @@ async function setPollInterval(seconds) {
     }
 }
 
-// SSE monitoring
-
-// The monitor preference is only written on an EXPLICIT user action (the
-// toggle button, or arming a sniper from the rush form). Internal stops -
-// an account switch, or returning from a completed order - are transient
-// and must not clear it, or the live view would silently stop
-// auto-connecting after an ordinary order.
-function loadMonitorPreference() {
-    // Defaults to ON when the user has never chosen: the server polls
-    // regardless, so a fresh browser showing "Disconnected" next to
-    // "Background poller running" only ever read as broken. Stopping the
-    // monitor is remembered, so an explicit opt-out still sticks.
-    try {
-        const raw = localStorage.getItem(MONITOR_PREF_KEY);
-        state.monitorIntent = raw === null ? true : raw === '1';
-    } catch {
-        state.monitorIntent = true;  // storage blocked (private mode)
-    }
-    return state.monitorIntent;
-}
-
-function saveMonitorPreference(on) {
-    // Mirrored in memory so intent survives even when storage is blocked.
-    state.monitorIntent = on;
-    try {
-        localStorage.setItem(MONITOR_PREF_KEY, on ? '1' : '0');
-    } catch {
-        // Non-fatal: the session still works, it just won't be remembered.
-    }
-}
-
-function startMonitoring() {
+// The live event stream.
+//
+// This is a transport, not a setting: it carries what the server-side
+// poller is already doing, so it simply stays connected while the page is
+// open and reconnects itself on failure. Whether any monitoring HAPPENS is
+// decided per account on the server (setAccountMonitoring below).
+function openStream() {
     if (state.eventSource) {
         state.eventSource.close();
     }
@@ -2875,18 +2870,14 @@ function startMonitoring() {
         state.reconnectTimer = null;
     }
 
-    state.monitoring = true;
-    const btn = document.getElementById('toggle-monitor-btn');
-    btn.textContent = 'Stop Monitor';
-    btn.className = 'bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg';
-
-    unlockAudio();
+    state.streamOpen = true;
+    updateConnectionStatus('connecting');
 
     state.eventSource = new EventSource(`${API_BASE}/monitor/stream`);
 
     state.eventSource.onopen = () => {
         state.reconnectDelay = RECONNECT_BASE_MS;
-        updateConnectionStatus(true);
+        updateConnectionStatus('live');
     };
 
     state.eventSource.onmessage = async (event) => {
@@ -2933,28 +2924,28 @@ function startMonitoring() {
     };
 
     state.eventSource.onerror = () => {
-        updateConnectionStatus(false);
+        updateConnectionStatus('connecting');
         if (state.eventSource) {
             state.eventSource.close();
             state.eventSource = null;
         }
-        if (state.monitoring && !state.reconnectTimer) {
+        if (state.streamOpen && !state.reconnectTimer) {
             // Exponential backoff so a persistently failing endpoint isn't
-            // hammered every few seconds; reset on successful open/stop.
+            // hammered every few seconds; reset on successful open/close.
             const delay = state.reconnectDelay;
             state.reconnectDelay = Math.min(delay * 2, RECONNECT_MAX_MS);
             state.reconnectTimer = setTimeout(() => {
                 state.reconnectTimer = null;
-                if (state.monitoring) {
-                    startMonitoring();
+                if (state.streamOpen) {
+                    openStream();
                 }
             }, delay);
         }
     };
 }
 
-function stopMonitoring() {
-    state.monitoring = false;
+function closeStream() {
+    state.streamOpen = false;
     state.reconnectDelay = RECONNECT_BASE_MS;
     if (state.reconnectTimer) {
         clearTimeout(state.reconnectTimer);
@@ -2964,10 +2955,44 @@ function stopMonitoring() {
         state.eventSource.close();
         state.eventSource = null;
     }
+    updateConnectionStatus('offline');
+}
+
+// Per-account monitoring - the real "monitor on/off". Server-side and
+// persisted, so it survives restarts and applies to THIS account only.
+async function setAccountMonitoring(enabled) {
+    if (!state.activeAccountId) return;
+    try {
+        await apiRequest(
+            'PUT', `/accounts/${encodeURIComponent(state.activeAccountId)}/monitoring`,
+            { monitoring_enabled: enabled },
+        );
+        state.monitoringEnabled = enabled;
+        // Arming/altering monitoring is a user gesture, so it's a good moment
+        // to unlock audio for later stock alerts.
+        if (enabled) unlockAudio();
+        renderMonitorToggle();
+        await refreshMonitorRunState();
+        // Refresh the cached account rows so the Settings → Accounts badges
+        // don't show a stale Monitored/Not monitored state.
+        await loadAccounts();
+        renderAccountList();
+    } catch (e) {
+        showError(e.message);
+    }
+}
+
+function renderMonitorToggle() {
     const btn = document.getElementById('toggle-monitor-btn');
-    btn.textContent = 'Start Monitor';
-    btn.className = 'bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg';
-    updateConnectionStatus(false);
+    if (!btn) return;
+    const on = state.monitoringEnabled;
+    btn.textContent = on ? 'Monitoring: On' : 'Monitoring: Off';
+    btn.title = on
+        ? 'This account is being monitored. Click to stop monitoring it.'
+        : 'This account is not being monitored. Click to start.';
+    btn.className = on
+        ? 'bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg'
+        : 'bg-gray-600 hover:bg-gray-500 px-4 py-2 rounded-lg';
 }
 
 function showStockAlert(planCode, fqns, accountLabel = null) {
@@ -3107,11 +3132,12 @@ async function rushOrder(e) {
             await loadAlerts();
             await loadProfiles();
             await loadSniperStatus();
-            if (!state.monitoring) {
-                startMonitoring();
-                // Deliberate: arming a sniper is a "keep watching this"
-                // action, so the live view should come back on next load.
-                saveMonitorPreference(true);
+            // An armed sniper is useless if this account isn't monitored -
+            // nothing would ever poll the plan back into stock. Arming is an
+            // explicit "watch this for me", so turn monitoring on.
+            if (!state.monitoringEnabled) {
+                await setAccountMonitoring(true);
+                showToast('Monitoring turned on for this account so the sniper can fire.', 6000);
             }
             return;
         }
@@ -3122,7 +3148,9 @@ async function rushOrder(e) {
         showView('order-complete');
 
         document.getElementById('stock-alerts-panel').classList.add('hidden');
-        stopMonitoring();
+        // Deliberately does NOT touch monitoring: placing one order is no
+        // reason to stop watching the account (the old code closed the
+        // stream here, which read as "the monitor stopped itself").
         await loadOrders();
 
     } catch (e) {
@@ -4847,13 +4875,11 @@ async function init() {
         await loadSniperStatus();
         await loadRegionWatch();
         showView('monitor');
-        // Reconnect the live view if it was on when the tab was last closed.
-        // The server-side poller has been running all along, so a fresh tab
-        // showing "Start Monitor" only ever made monitoring look stopped.
-        // Notification permission is NOT requested here - that needs a user
-        // gesture; the same goes for audio, which unlocks on the first click.
-        if (loadMonitorPreference()) startMonitoring();
-        refreshMonitorRunState();
+        // The stream is a transport, so it just connects - there is nothing
+        // for the user to switch on. Notification permission is NOT requested
+        // here (needs a user gesture); audio unlocks on the first click.
+        openStream();
+        await refreshMonitorRunState();
     }
 
     // Setup wizard
@@ -4882,14 +4908,10 @@ async function init() {
     });
 
     document.getElementById('toggle-monitor-btn').addEventListener('click', () => {
-        if (state.monitoring) {
-            stopMonitoring();
-            saveMonitorPreference(false);
-        } else {
-            requestNotificationPermission();
-            startMonitoring();
-            saveMonitorPreference(true);
-        }
+        // Server-side, this account only. It does not touch the event stream
+        // (a transport) or the other accounts.
+        if (!state.monitoringEnabled) requestNotificationPermission();
+        setAccountMonitoring(!state.monitoringEnabled);
     });
 
     document.getElementById('poll-interval').addEventListener('change', (e) => {
@@ -5054,12 +5076,10 @@ async function init() {
 
     document.getElementById('back-to-monitor-btn').addEventListener('click', () => {
         showView('monitor');
-        // Reads intent, not state.monitoring: placing an order stops the
-        // stream transiently, which would otherwise leave the view dead for
-        // the rest of the session. A user who never enabled it has no intent,
-        // so the catalog's inline "Order Now" flow still doesn't force
-        // monitoring on.
-        if (state.monitorIntent && !state.monitoring) startMonitoring();
+        // Nothing to restart - the stream was never closed by the order, and
+        // monitoring lives on the server. Just resync the toggle + hint.
+        if (!state.streamOpen) openStream();
+        refreshMonitorRunState();
     });
 
     document.getElementById('sound-toggle').addEventListener('change', (e) => {
