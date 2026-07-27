@@ -832,6 +832,140 @@ async def test_sniper_fires_for_a_non_active_account(monitor, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_unmonitored_account_is_not_polled(monitor, monkeypatch):
+    """monitoring_enabled=0 means the poller does NO OVH work for that
+    account, while the other account carries on untouched."""
+    import app.services.monitor as monitor_mod
+
+    storage = monitor._storage_get()
+    a_id = _account(storage, "Account A")
+    b_id = _account(storage, "Account B", "ovh-us")
+    storage.set_active_account_id(a_id)
+    storage.upsert_alert("al-a", "plan-a", "*", True, None, account_id=a_id)
+    storage.upsert_alert("al-b", "plan-b", "*", True, None, account_id=b_id)
+    storage.set_account_monitoring(b_id, False)
+
+    stock = {a_id: {"plan-a": ["plan-a.x"]}, b_id: {"plan-b": ["plan-b.y"]}}
+    services = {aid: _fake_service(aid, stock[aid]) for aid in (a_id, b_id)}
+    _patch_services(monkeypatch, monitor_mod, services, a_id)
+
+    await monitor._load_from_storage()
+    await monitor._poll_once()
+
+    services[a_id].get_availability.assert_called_once_with("plan-a")
+    services[b_id].get_availability.assert_not_called()
+    assert monitor.is_monitoring_enabled(a_id) is True
+    assert monitor.is_monitoring_enabled(b_id) is False
+
+
+@pytest.mark.asyncio
+async def test_unmonitored_account_skips_price_scan(monitor, monkeypatch):
+    """'Off' covers the price/promo scan too, not just stock polling."""
+    import app.services.monitor as monitor_mod
+
+    storage = monitor._storage_get()
+    a_id = _account(storage, "Account A")
+    b_id = _account(storage, "Account B", "ovh-us")
+    storage.set_active_account_id(a_id)
+    storage.set_account_monitoring(b_id, False)
+
+    services = {}
+    for aid in (a_id, b_id):
+        fake = MagicMock()
+        fake.is_configured.return_value = True
+        fake.account_id = aid
+        services[aid] = fake
+    monkeypatch.setattr(
+        monitor_mod, "get_ovh_service", lambda account_id=None: services[account_id]
+    )
+
+    scanned = []
+
+    async def _scan(service, storage_arg):
+        scanned.append(service.account_id)
+
+    monkeypatch.setattr(monitor, "_check_prices_and_promos", _scan)
+
+    await monitor._load_from_storage()
+    await monitor._maybe_check_prices_and_promos()
+    assert scanned == [a_id]
+
+
+@pytest.mark.asyncio
+async def test_unmonitored_account_does_not_fire_snipers(monitor, monkeypatch):
+    """An armed sniper on an unmonitored account must not auto-order — 'off'
+    has to mean off, or the switch is a trap."""
+    import app.services.monitor as monitor_mod
+    monitor_mod._sniper_service = None
+    sniper = monitor_mod.get_sniper_service()
+
+    storage = monitor._storage_get()
+    a_id = _account(storage, "Account A")
+    storage.set_active_account_id(a_id)
+    storage.upsert_alert("al-a", "24sk10", "*", True, None, account_id=a_id)
+    storage.set_account_monitoring(a_id, False)
+
+    services = {a_id: _fake_service(a_id, {"24sk10": ["24sk10.x"]})}
+    _patch_services(monkeypatch, monitor_mod, services, a_id)
+
+    await monitor._load_from_storage()
+    sniper.arm("al-a", "prof-1", plan_code="24sk10",
+               fqn_pattern="*", account_id=a_id)
+
+    fired = []
+
+    async def _record(*args, **kwargs):
+        fired.append(args)
+
+    monkeypatch.setattr(sniper, "maybe_fire", _record)
+
+    await monitor._poll_once()
+    assert fired == []
+
+
+@pytest.mark.asyncio
+async def test_re_enabling_monitoring_primes_silently(monitor, monkeypatch):
+    """Stock moves unobserved while an account is off, so re-enabling must
+    re-prime rather than report the whole current stock as 'newly available'."""
+    import app.services.monitor as monitor_mod
+
+    storage = monitor._storage_get()
+    a_id = _account(storage, "Account A")
+    storage.set_active_account_id(a_id)
+    storage.upsert_alert("al-a", "plan-a", "*", True, None, account_id=a_id)
+
+    stock = {a_id: {"plan-a": ["plan-a.x"]}}
+    services = {a_id: _fake_service(a_id, stock[a_id])}
+    _patch_services(monkeypatch, monitor_mod, services, a_id)
+
+    notified = []
+
+    async def _notify(*args, **kwargs):
+        notified.append(args)
+
+    monkeypatch.setattr("app.services.notifier.notify_stock_alert", _notify)
+
+    await monitor._load_from_storage()
+    await monitor._poll_once()                       # prime
+    await monitor.set_monitoring_enabled(False, a_id)
+    assert monitor._primed == set()                  # baseline dropped
+
+    # Stock changed completely while nobody was watching.
+    stock[a_id]["plan-a"] = ["plan-a.y", "plan-a.z"]
+    await monitor.set_monitoring_enabled(True, a_id)
+    changes = await monitor._poll_once()
+
+    assert changes == []      # priming cycle, not a restock burst
+    assert notified == []
+    assert monitor._primed == {(a_id, "plan-a")}
+
+    # A genuine change after that IS reported.
+    stock[a_id]["plan-a"].append("plan-a.w")
+    changes = await monitor._poll_once()
+    assert [c["newly_available"] for c in changes] == [["plan-a.w"]]
+
+
+@pytest.mark.asyncio
 async def test_region_ticker_is_per_account(monitor, monkeypatch):
     """Enabling the ticker on one account must not enable it on another, and
     it persists on the account row."""

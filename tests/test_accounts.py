@@ -228,6 +228,70 @@ def test_monitor_keeps_watching_both_accounts_after_switch(client):
     assert status["accounts_polled"] == 2
 
 
+def test_monitoring_flag_defaults_on_and_toggles_per_account(client):
+    """Monitoring is a per-account, server-side switch — toggling one account
+    must not touch the other, and it must survive as stored state."""
+    from app.services.monitor import get_monitor_service
+
+    a = _create_account(client, label="A")
+    b = _create_account(client, label="B", endpoint="ovh-us")
+    assert a["monitoring_enabled"] is True      # opt-out, not opt-in
+    assert a["region_ticker_enabled"] is False
+
+    r = client.put(
+        f"/api/accounts/{b['id']}/monitoring",
+        json={"monitoring_enabled": False}, headers=XHR,
+    )
+    assert r.status_code == 200
+    assert r.json()["monitoring_enabled"] is False
+
+    monitor = get_monitor_service()
+    assert monitor.is_monitoring_enabled(b["id"]) is False
+    assert monitor.is_monitoring_enabled(a["id"]) is True
+
+    listed = {x["label"]: x["monitoring_enabled"] for x in client.get("/api/accounts").json()}
+    assert listed == {"A": True, "B": False}
+
+
+def test_monitoring_endpoint_sets_both_flags(client):
+    """Both per-account switches live on the account resource; omitted
+    fields are left alone."""
+    a = _create_account(client, label="A")
+    r = client.put(
+        f"/api/accounts/{a['id']}/monitoring",
+        json={"region_ticker_enabled": True}, headers=XHR,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["region_ticker_enabled"] is True
+    assert body["monitoring_enabled"] is True   # untouched
+
+    r = client.put("/api/accounts/nope/monitoring",
+                   json={"monitoring_enabled": False}, headers=XHR)
+    assert r.status_code == 404
+
+
+def test_monitor_status_reports_every_account(client):
+    """One call describes the whole picture: the global poller, this
+    account, and what the poller will actually do with the others."""
+    a = _create_account(client, label="A")
+    b = _create_account(client, label="B", endpoint="ovh-us")
+    _switch(client, a["id"])
+    _create_alert(client, "24ska")
+    _switch(client, b["id"])
+    client.put(f"/api/accounts/{b['id']}/monitoring",
+               json={"monitoring_enabled": False}, headers=XHR)
+
+    status = client.get("/api/monitor/status").json()
+    assert status["active_account_id"] == b["id"]
+    assert status["monitoring_enabled"] is False        # B, the active one
+    rows = {x["label"]: x for x in status["accounts"]}
+    assert rows["A"]["polled"] is True                  # monitored + 1 alert
+    assert rows["A"]["alerts_count"] == 1
+    assert rows["B"]["polled"] is False                 # switched off
+    assert status["accounts_polled"] == 1
+
+
 def test_profiles_scoped_to_active_account(client):
     """Profiles are created under + listed per the active account."""
     a = _create_account(client, label="A")
