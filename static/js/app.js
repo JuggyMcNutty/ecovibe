@@ -1670,19 +1670,35 @@ function renderCatalogDetail(plan) {
         selectedAddons[fam.name] = fam.default || (fam.addons || [])[0] || null;
     }
 
-    // Build the FQN string from the plan base + selected addon short codes.
-    // OVH FQN format: {planBase}.{memory}.{storage}.{bandwidth}.{vrack} - order matters!
+    // Live stock for this plan, populated by the async fetch below. Declared
+    // here (not next to updateStockDisplay) because buildFqn() reads it during
+    // the initial render, before that fetch resolves.
+    let stockData = [];
+
+    // Resolve the OVH availability FQN for the currently selected config.
+    //
+    // The FQN is NOT constructible from catalog addon codes. Real FQNs are
+    // `{planCode}.{memory}.{storage}[.{system-storage}][.{gpu}]`: they keep the
+    // plan code's region suffix and never carry a bandwidth or vrack segment
+    // (verified against all 25,511 live availability entries). Worse, the
+    // catalog's addon codes don't map onto the segments by string surgery -
+    // plan 24skstor012-v1-us lists `ram-16g-24skstor01-us` where the stock API
+    // reports `ram-16g-ecc-2133`, and the trailing product token varies in
+    // length (`-ks40`, `-24risegame01-ca`, `-25risel01-v1-ca`).
+    //
+    // So look the FQN up in the live stock feed through the same
+    // addonCodesMatch() the OOS badge uses, and fall back to a plan-wide glob
+    // when the plan has no stock to copy from. Returning a guessed FQN instead
+    // is what made every "Watch This Plan" alert silently unmatchable, and made
+    // the rush form's arm_if_oos check always miss.
     function buildFqn() {
-        const planBase = plan.planCode.split('-').slice(0, -1).join('-') || plan.planCode;
-        const parts = [planBase];
-        for (const famName of ['memory', 'storage', 'bandwidth', 'vrack']) {
-            const addon = selectedAddons[famName];
-            if (!addon) continue;
-            const segs = addon.split('-');
-            const short = segs.length > 2 ? segs.slice(0, -2).join('-') : addon;
-            parts.push(short);
-        }
-        return parts.join('.');
+        const memShort = addonShortCode(selectedAddons.memory);
+        const storShort = addonShortCode(selectedAddons.storage);
+        const match = stockData.find(e =>
+            addonCodesMatch(memShort, e.memory) &&
+            addonCodesMatch(storShort, e.storage)
+        );
+        return match?.fqn || `${plan.planCode}.*`;
     }
 
     const fqnPreview = el('div', { class: 'bg-gray-700 rounded p-2 mb-3' }, [
@@ -1810,9 +1826,6 @@ function renderCatalogDetail(plan) {
     ]);
     container.appendChild(stockSection);
 
-    // Store stock data for lookups when addons change
-    let stockData = [];
-
     function updateStockDisplay() {
         const sec = document.getElementById('stock-section');
         if (!sec) return;
@@ -1881,6 +1894,9 @@ function renderCatalogDetail(plan) {
             if (state.selectedPlanCode !== stockFetchPlanCode) return;
             stockData = data || [];
             updateStockDisplay();
+            // The first render ran before stock arrived, so the preview is
+            // still showing the plan-wide fallback - resolve it for real now.
+            updateFqnPreview();
         })
         .catch(() => { /* stock section stays "unavailable" */ });
 
