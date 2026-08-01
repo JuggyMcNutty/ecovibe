@@ -549,6 +549,27 @@ were created under (`account_id` column on each table).
   matches stock `ram-16g-ecc-2133`). `refreshStockForAllPlans` logs a
   `console.warn` when a plan's default combo fails to match any stock
   entry, so silent match failures are detectable.
+- **FQNs are looked up, never constructed** (2026-07-31). An availability
+  FQN is `{planCode}.{memory}.{storage}[.{system-storage}][.{gpu}]`. Verified
+  against all 25,511 live entries: the plan segment **always keeps the plan
+  code's region suffix** (`25skb012-eu`, `21adv01-v1-us` — all 666 distinct
+  plan segments), and **no FQN ever contains a bandwidth or vrack segment**
+  (0 of 25,511). Nor can the segments be derived from catalog addon codes by
+  string surgery: plan `24skstor012-v1-us` lists addon `ram-16g-24skstor01-us`
+  where the stock API reports `ram-16g-ecc-2133` (the `ecc-2133` appears
+  nowhere in the addon code), and the trailing product token varies in length
+  (`-ks40`, `-24risegame01-ca`, `-25risel01-v1-ca`) so no fixed slice works.
+  `buildFqn()` in `app.js` therefore resolves the FQN out of the live
+  `/catalog/stock` feed via `addonCodesMatch()` and falls back to
+  `{planCode}.*` when the plan has no stock to copy from.
+  It previously *built* the string — stripping the region suffix and
+  appending `.bandwidth-N` — which matched **0 of 141** catalog plans, so
+  every "Watch This Plan" alert was silently unmatchable
+  (`_matches_pattern` is `fnmatch`, and the pattern carried no wildcard) and
+  the rush form's `arm_if_oos` check always missed. Symptom: `monitor` logs
+  `stock change ...` with no matching `notifier` line, and no notification of
+  any kind is sent. If you touch `buildFqn()`, re-verify by resolving a
+  pattern for every catalog plan and matching it against live `get_stock()`.
 - **OOS badge**: the catalog list badge checks only the included (free)
   memory+storage combo (`fam.default` from `addonFamilies`), not all
   combos. A plan is OOS if its default config is unavailable in all DCs.
