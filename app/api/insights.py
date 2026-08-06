@@ -249,6 +249,28 @@ async def recent_promos(limit: int = Query(default=50, ge=1, le=500)) -> dict:
     return {"promos": _group_promos(rows)[:limit]}
 
 
+@router.get("/catalog-changes")
+async def catalog_changes(
+    days: int = Query(default=30, ge=1, le=365),
+    limit: int = Query(default=100, ge=1, le=500),
+    change_type: str | None = Query(default=None, pattern="^(added|removed)$"),
+) -> dict:
+    """Plans OVH added to or removed from the active account's catalog,
+    newest first.
+
+    Fed by the catalog watch, which diffs each price/promo scan's catalog
+    against a stored snapshot. Empty until the second scan — the first one
+    only records the baseline.
+    """
+    storage = get_storage()
+    service = get_active_ovh_service()
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    changes = storage.load_catalog_changes(
+        since, limit=limit, account_id=service.account_id, change_type=change_type
+    )
+    return {"days": days, "changes": changes}
+
+
 @router.get("/orders")
 async def list_orders(limit: int = Query(default=50, ge=1, le=500)) -> dict:
     """Return recently placed orders for the active account."""
