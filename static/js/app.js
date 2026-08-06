@@ -2312,6 +2312,15 @@ const APP_SETTING_FIELDS = [
     ['app-ui-recent-alerts', 'ui_recent_alerts_shown'],
 ];
 
+// Boolean app options. Kept apart from APP_SETTING_FIELDS, which is parsed
+// with parseInt.
+const APP_SETTING_CHECKBOXES = [
+    ['app-monitor-enabled', 'monitor_enabled'],
+    ['app-catalog-watch-enabled', 'catalog_watch_enabled'],
+    ['app-catalog-watch-notify', 'catalog_watch_notify'],
+    ['app-use-cache', 'use_cache'],
+];
+
 // Reflect the SERVER's monitoring state: the global poller (which can differ
 // from the monitor_enabled setting if start() failed or the task died), this
 // account's own switch, and which other accounts are being monitored.
@@ -2368,8 +2377,10 @@ async function loadAppSettings() {
             const input = document.getElementById(id);
             if (input && s[key] != null) input.value = s[key];
         }
-        document.getElementById('app-use-cache').checked = !!s.use_cache;
-        document.getElementById('app-monitor-enabled').checked = !!s.monitor_enabled;
+        for (const [id, key] of APP_SETTING_CHECKBOXES) {
+            const input = document.getElementById(id);
+            if (input) input.checked = !!s[key];
+        }
         document.getElementById('app-log-level').value = s.log_level || 'INFO';
         await refreshMonitorRunState();
         const env = data.env || {};
@@ -2404,10 +2415,11 @@ async function loadUiPrefs() {
 
 async function saveAppSettings() {
     const body = {
-        use_cache: document.getElementById('app-use-cache').checked,
-        monitor_enabled: document.getElementById('app-monitor-enabled').checked,
         log_level: document.getElementById('app-log-level').value,
     };
+    for (const [id, key] of APP_SETTING_CHECKBOXES) {
+        body[key] = !!document.getElementById(id)?.checked;
+    }
     for (const [id, key] of APP_SETTING_FIELDS) {
         body[key] = parseInt(document.getElementById(id).value, 10);
         if (isNaN(body[key])) {
@@ -2933,6 +2945,8 @@ function openStream() {
                 renderMonitoredList();
             } else if (data.type === 'region_restock') {
                 addRegionRestocks(data);
+            } else if (data.type === 'catalog_change') {
+                showCatalogChange(data);
             }
         } catch (e) {
             console.error('Failed to parse SSE message:', e);
@@ -4342,6 +4356,7 @@ async function loadInsightsData() {
     const days = insightsDays();
     loadInsightsOverview(days);
     loadInsightsPromos();
+    loadCatalogChanges();
     const planCode = document.getElementById('insights-plan-select').value;
     const detail = document.getElementById('insights-detail');
     if (!planCode) {
@@ -4484,6 +4499,98 @@ async function loadInsightsPromos() {
     } catch (e) {
         console.error('Failed to load promos:', e);
     }
+}
+
+// Catalog watch: plans OVH added to / removed from this account's catalog.
+// Recorded by the monitor's price/promo cycle (same fetch), so entries appear
+// at most one cycle after OVH publishes the change.
+async function loadCatalogChanges() {
+    const gen = state._switchGen;
+    const container = document.getElementById('insights-catalog-changes');
+    if (!container) return;
+    const filter = document.getElementById('catalog-changes-filter')?.value || '';
+    // Honours the tab's shared day range, like the overview and detail panels.
+    let query = `?days=${insightsDays()}`;
+    if (filter) query += `&change_type=${encodeURIComponent(filter)}`;
+    try {
+        const data = await apiRequest('GET', `/insights/catalog-changes${query}`);
+        if (gen !== state._switchGen) return;
+        const changes = data.changes || [];
+        container.innerHTML = '';
+        if (changes.length === 0) {
+            container.appendChild(el('p', {
+                class: 'text-gray-500',
+                text: 'No catalog changes seen. The first scan only records a baseline — changes show up from the next one on.',
+            }));
+            return;
+        }
+        changes.forEach(c => {
+            const added = c.change_type === 'added';
+            const row = el('div', {
+                class: 'flex items-center gap-2 bg-gray-700/50 rounded p-2 cursor-pointer hover:bg-gray-700',
+            });
+            row.addEventListener('click', () => selectInsightsPlan(c.plan_code));
+            row.appendChild(el('span', {
+                class: `font-mono font-bold ${added ? 'text-green-400' : 'text-red-400'}`,
+                text: added ? '+' : '−',
+            }));
+            const label = el('div', { class: 'flex-1 min-w-0' }, [
+                el('p', { class: 'text-gray-200 truncate', text: c.invoice_name || c.plan_code }),
+                el('p', { class: 'text-gray-500 text-xs font-mono truncate', text: c.plan_code }),
+            ]);
+            row.appendChild(label);
+            if (c.price_in_ucents != null) {
+                row.appendChild(el('span', {
+                    class: 'text-gray-400 text-xs whitespace-nowrap',
+                    text: `${(c.price_in_ucents / 100000000).toFixed(2)} ${c.currency_code || ''}`.trim(),
+                }));
+            }
+            row.appendChild(el('span', {
+                class: 'text-gray-500 text-xs whitespace-nowrap',
+                text: relativeTime(c.timestamp),
+            }));
+            if (added) {
+                const watch = el('button', {
+                    class: 'bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-xs whitespace-nowrap',
+                    text: 'Watch',
+                });
+                watch.addEventListener('click', async (ev) => {
+                    // Don't also trigger the row's drill-in.
+                    ev.stopPropagation();
+                    await addAlert(c.plan_code, '*');
+                    // addAlert surfaces its own failures; confirm from the
+                    // reloaded list rather than assuming the POST landed —
+                    // the alert lives on the Monitor tab, out of sight here.
+                    if ((state.alerts || []).some(a => a.plan_code === c.plan_code)) {
+                        showToast(`Watching ${c.plan_code} — see the Monitor tab.`);
+                    }
+                });
+                row.appendChild(watch);
+            }
+            container.appendChild(row);
+        });
+    } catch (e) {
+        console.error('Failed to load catalog changes:', e);
+    }
+}
+
+// A catalog_change SSE event: toast the summary and refresh the panel if the
+// user is looking at it. The event covers every monitored account, so name the
+// account when it isn't the active one (same rule as tagged stock alerts).
+function showCatalogChange(data) {
+    const added = data.added_count || 0;
+    const removed = data.removed_count || 0;
+    if (!added && !removed) return;
+    const isActive = !data.account_id || data.account_id === state.activeAccountId;
+    const acct = isActive ? '' : ` [${data.account_label || 'another account'}]`;
+    const parts = [];
+    if (added) parts.push(`+${added} plan${added === 1 ? '' : 's'}`);
+    if (removed) parts.push(`−${removed} plan${removed === 1 ? '' : 's'}`);
+    const codes = [...(data.added || []), ...(data.removed || [])]
+        .slice(0, 3).map(p => p.plan_code).join(', ');
+    showToast(`OVH catalog change${acct}: ${parts.join(' / ')}${codes ? ` — ${codes}` : ''}`, 8000);
+    const insightsVisible = !document.getElementById('insights-tab')?.classList.contains('hidden');
+    if (insightsVisible) loadCatalogChanges();
 }
 
 function selectInsightsPlan(code) {
@@ -5118,6 +5225,7 @@ async function init() {
     // Insights tab
     document.getElementById('insights-plan-select')?.addEventListener('change', loadInsightsData);
     document.getElementById('insights-days')?.addEventListener('change', loadInsightsData);
+    document.getElementById('catalog-changes-filter')?.addEventListener('change', loadCatalogChanges);
     document.getElementById('price-watch-save-btn')?.addEventListener('click', savePriceWatch);
 }
 

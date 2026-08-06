@@ -382,6 +382,22 @@
                             the app (catalog, orders, billing) keeps working.
                         </p>
                     </div>
+                    <div class="bg-gray-700/40 rounded p-3 mb-4">
+                        <label class="flex items-center gap-2">
+                            <input type="checkbox" id="app-catalog-watch-enabled" class="w-5 h-5">
+                            <span>Track catalog changes</span>
+                        </label>
+                        <label class="flex items-center gap-2 mt-2">
+                            <input type="checkbox" id="app-catalog-watch-notify" class="w-5 h-5">
+                            <span>Notify on catalog changes</span>
+                        </label>
+                        <p class="text-gray-500 text-xs mt-1">
+                            Records the plans OVH adds to or removes from each monitored
+                            account's catalog (same fetch as the price/promo check below —
+                            no extra API calls) and lists them on the Insights tab. The
+                            second box also sends them to your notification channels.
+                        </p>
+                    </div>
                     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
                         <div>
                             <label class="block text-sm text-gray-400 mb-1" for="app-price-check-interval">Price/promo check (s)</label>
@@ -935,6 +951,22 @@
                 <p class="text-gray-400 text-xs mb-3">Promotions OVH published on catalog pricing (checked every 15 min).</p>
                 <div id="insights-promos" class="space-y-1 text-sm">
                     <p class="text-gray-500">No promotions seen</p>
+                </div>
+            </div>
+
+            <!-- Catalog changes -->
+            <div class="bg-gray-800 rounded-lg p-4">
+                <div class="flex flex-wrap justify-between items-start gap-2 mb-1">
+                    <h2 class="text-lg font-bold">Catalog changes</h2>
+                    <select id="catalog-changes-filter" class="bg-gray-700 px-2 py-1 rounded text-sm">
+                        <option value="">Added &amp; removed</option>
+                        <option value="added">Added only</option>
+                        <option value="removed">Removed only</option>
+                    </select>
+                </div>
+                <p class="text-gray-400 text-xs mb-3">Plans OVH added to or removed from this account's catalog over the selected range (checked every 15 min). Turn tracking on or off in Settings &rarr; App.</p>
+                <div id="insights-catalog-changes" class="space-y-1 text-sm">
+                    <p class="text-gray-500">No catalog changes seen</p>
                 </div>
             </div>
 
