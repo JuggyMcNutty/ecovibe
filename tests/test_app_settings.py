@@ -108,7 +108,8 @@ def test_registry_covers_expected_keys():
     assert set(APP_SETTINGS) == {
         "monitor_enabled",
         "price_check_interval", "stock_event_retention_days",
-        "stock_event_max_rows", "use_cache", "cache_ttl", "log_level",
+        "stock_event_max_rows", "catalog_watch_enabled", "catalog_watch_notify",
+        "use_cache", "cache_ttl", "log_level",
         "log_file_max_bytes", "log_backup_count", "log_buffer_size",
         "ui_alert_autohide_ms", "ui_orders_days", "ui_orders_limit",
         "ui_logs_limit", "ui_region_feed_cap", "ui_recent_alerts_shown",
@@ -260,6 +261,20 @@ def test_put_app_settings_round_trip(client):
     assert got["ui_orders_days"] == 30
     # Values survive: they're in the DB, not just the lru cache.
     assert get_storage().get_setting("app_price_check_interval") == "300"
+
+
+def test_put_app_settings_round_trips_catalog_watch(client):
+    """The two catalog-watch switches are independent: muting the channels
+    must not also stop the tracking that feeds the Insights panel."""
+    body = _default_body()
+    assert body["catalog_watch_enabled"] is True  # on by default
+    body["catalog_watch_notify"] = False
+    r = client.put("/api/settings/app", json=body, headers=XHR)
+    assert r.status_code == 200, r.text
+    got = client.get("/api/settings/app").json()["settings"]
+    assert got["catalog_watch_enabled"] is True
+    assert got["catalog_watch_notify"] is False
+    assert get_storage().get_setting("app_catalog_watch_notify") == "false"
 
 
 def test_put_app_settings_invalid_writes_nothing(client):
