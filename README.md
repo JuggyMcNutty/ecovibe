@@ -152,15 +152,17 @@ Generate the `.htpasswd` file with `htpasswd -c /etc/nginx/.htpasswd admin`.
 - **Refresh all** - re-fetch all order statuses from OVH
 - **Filter** by status (all / pending / delivered / cancelled)
 
-### Price Watches & Promotions
+### Price Watches, Promotions & Catalog Changes
 - **Price-drop alerts** - set a per-plan price cap; the monitor re-checks the catalog every 15 minutes (for every account, not just the active one) and notifies (all channels) when the price falls to/below it. Re-fires only when the price moves again
 - **Promo detector** - OVH's catalog `promotions` field is scanned on the same cadence; newly published promotions notify and appear in the Insights "Recent promotions" panel
+- **Catalog watch** - the same catalog fetch is diffed against a stored snapshot of the account's plan codes, so **plans OVH adds or retires** are recorded and notified (no extra API calls). They appear in the Insights "Catalog changes" panel, newest first, with a one-click "Watch" button on new plans. The first scan for an account only records a baseline (it would otherwise report the whole catalog as new), the snapshot lives in SQLite so a restart still catches what changed while the app was down, and a truncated catalog response is ignored rather than reported as a mass retirement. Both switches live in **Settings → App**: *Track catalog changes* and *Notify on catalog changes*
 
 ### Owned Servers & Invoices
 - **Servers tab** - read-only list of your dedicated servers (state, range, datacenter, OS, expiry) with a detail panel
 - **Recent invoices** - last 6 months of invoices with totals and PDF links on the Billing tab
 
 ### Historical Insights
+- **Catalog changes** - plans OVH added to or retired from this account's catalog (see Catalog watch above), with price and a "Watch" shortcut on new arrivals
 - **Restock patterns** - stock events are logged to SQLite; view hourly bar chart aggregation to find the best times to monitor
 - **Region activity** - with the ticker on, every plan's transitions are recorded (retention-pruned: 90 days / 500k rows by default)
 - **Price history** - track price changes per plan over time with manual refresh
@@ -214,7 +216,9 @@ env-only and require a restart to change.
 | `OVH_CACHE_TTL` ⚙ | `300` | Cache TTL in seconds |
 | `OVH_DB_PATH` | `<project>/ovh-flash-monitor.db` | SQLite database path (defaults to project root) |
 | `OVH_CORS_ORIGINS` | `[]` | Comma-separated allowed CORS origins |
-| `OVH_PRICE_CHECK_INTERVAL` ⚙ | `900` | Price-watch/promo scan cadence in seconds (0 disables) |
+| `OVH_PRICE_CHECK_INTERVAL` ⚙ | `900` | Price-watch/promo/catalog scan cadence in seconds (0 disables) |
+| `OVH_CATALOG_WATCH_ENABLED` ⚙ | `true` | Track plans added to/removed from the catalog |
+| `OVH_CATALOG_WATCH_NOTIFY` ⚙ | `true` | Send catalog changes to the notification channels |
 | `OVH_STOCK_EVENT_RETENTION_DAYS` ⚙ | `90` | Stock events older than this are pruned hourly |
 | `OVH_STOCK_EVENT_MAX_ROWS` ⚙ | `500000` | Hard cap on the stock_events table (oldest dropped) |
 | `OVH_LOG_LEVEL` ⚙ | `INFO` | Log verbosity (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
@@ -328,6 +332,7 @@ GET  /api/insights/history/{plan_code}?days=N    - Recent stock events
 GET  /api/insights/patterns/{plan_code}          - Hourly restock count aggregation
 GET  /api/insights/region-activity?hours=N       - Region-wide stock events (ticker feed)
 GET  /api/insights/promos                        - Recently seen OVH promotions
+GET  /api/insights/catalog-changes?days=N        - Plans added to/removed from the catalog
 GET  /api/insights/price/{plan_code}             - Price history
 POST /api/insights/price/{plan_code}/refresh     - Fetch + log current price
 GET  /api/insights/orders                         - Recently placed orders

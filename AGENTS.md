@@ -144,7 +144,7 @@ app/
 │   ├── profiles.py      # Saved checkout profile CRUD (per-account)
 │   ├── price_watch.py   # Price-drop watch CRUD (per-account)
 │   ├── sniper.py        # Arm/disarm auto-order
-│   ├── insights.py      # History, patterns, price, promos, region activity
+│   ├── insights.py      # History, patterns, price, promos, region activity, catalog changes
 │   ├── orders.py        # Order management (live OVH list, detail, follow-up, waive)
 │   ├── servers.py       # Owned dedicated servers (read-only list + detail)
 │   ├── accounts.py      # Multi-account CRUD + active switch + test
@@ -274,6 +274,28 @@ were created under (`account_id` column on each table).
   NOTE: `price_watches`/`promo_events` upserts are manual
   SELECT-then-write because SQLite UNIQUE treats NULL account_ids as
   distinct (ON CONFLICT/OR IGNORE would silently duplicate).
+- **Catalog watch**: `_diff_catalog()` runs at the tail of
+  `_check_prices_and_promos`, reusing the catalog **already fetched** for the
+  price watches and promo scan — it must stay there, a separate fetch would
+  double the catalog traffic for no new data. It diffs the account's plan
+  codes against `catalog_plans` (the persisted snapshot) and writes
+  `added`/`removed` rows to `catalog_changes`, broadcasts a `catalog_change`
+  SSE event via `_publish()`, and notifies once per account per cycle
+  (`notify_catalog_change`, never per plan — the promo campaign lesson).
+  Three rules, all load-bearing:
+  (1) **The snapshot is in SQLite, not memory** — a restart compares against
+  the last observed catalog, so a plan added while the app was down is still
+  reported. (2) **First scan for an account primes silently**
+  (`apply_catalog_diff(..., log_changes=False)`): with no baseline the whole
+  ~700-plan catalog would read as new. (3) **Bad-response guards** — an empty
+  `plans` list, or removals exceeding half the snapshot, leave the snapshot
+  untouched and log a WARNING; a truncated fetch must never read as OVH
+  retiring a region (same reasoning as a failed batch availability fetch
+  keeping every plan's baseline). Two switches in Settings → App:
+  `catalog_watch_enabled` (track at all) and `catalog_watch_notify` (fan out
+  to channels), read live per cycle via `app_setting_bool`. `catalog_changes`
+  is not pruned — additions/removals are rare enough to be unbounded in
+  practice, unlike `stock_events`.
 - **Sniper**: fires under the alert's own `account_id`
   (`get_ovh_service(alert.account_id)`), not the active one — so an
   armed sniper keeps targeting the right region after a switch. Sniper
