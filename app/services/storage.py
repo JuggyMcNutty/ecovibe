@@ -197,6 +197,43 @@ class Storage:
                 )
                 """
             )
+            # Catalog watch: `catalog_plans` is the current snapshot of every
+            # plan code OVH lists for an account (one row per live plan);
+            # `catalog_changes` is the append-only log of additions and
+            # removals derived from diffing it. The snapshot lives in the DB
+            # rather than memory so a restart compares against the last known
+            # catalog — changes that happen while the app is down are still
+            # caught, instead of being swallowed by a fresh priming pass.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS catalog_plans (
+                    plan_code TEXT NOT NULL,
+                    account_id TEXT,
+                    invoice_name TEXT,
+                    first_seen TEXT NOT NULL,
+                    last_seen TEXT NOT NULL,
+                    UNIQUE(plan_code, account_id)
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS catalog_changes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    plan_code TEXT NOT NULL,
+                    change_type TEXT NOT NULL,
+                    invoice_name TEXT,
+                    price_in_ucents INTEGER,
+                    currency_code TEXT,
+                    account_id TEXT,
+                    timestamp TEXT NOT NULL
+                )
+                """
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_catalog_changes_ts "
+                "ON catalog_changes(timestamp)"
+            )
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS accounts (
@@ -1009,6 +1046,110 @@ class Storage:
             cur.execute(
                 f"SELECT plan_code, promo_key, payload, first_seen FROM promo_events "
                 f"WHERE {where} ORDER BY first_seen DESC, id DESC LIMIT ?",
+                params,
+            )
+            rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
+    # ----- catalog watch -----
+
+    def load_catalog_snapshot(self, account_id: str | None = None) -> dict[str, dict[str, Any]]:
+        """Return the last recorded catalog snapshot for an account, keyed by
+        plan code. Empty means the account has never been scanned — the
+        caller must prime silently rather than report the whole catalog as
+        newly added."""
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                "SELECT plan_code, invoice_name, first_seen, last_seen "
+                "FROM catalog_plans WHERE account_id IS ?",
+                (account_id,),
+            )
+            rows = cur.fetchall()
+        return {r["plan_code"]: dict(r) for r in rows}
+
+    def apply_catalog_diff(
+        self,
+        account_id: str | None,
+        added: list[dict[str, Any]],
+        removed: list[dict[str, Any]],
+        seen: list[str],
+        timestamp: datetime,
+        log_changes: bool = True,
+    ) -> None:
+        """Move the stored snapshot to the catalog just observed, in one
+        transaction.
+
+        ``added`` rows carry plan_code/invoice_name/price_in_ucents/
+        currency_code; ``removed`` rows are the stored snapshot rows for
+        plans that vanished; ``seen`` is every plan code still present (its
+        ``last_seen`` is refreshed so the snapshot shows liveness).
+
+        ``log_changes=False`` writes the snapshot without logging any
+        change rows — the priming path, where "everything is new" is an
+        artefact of having no baseline, not a real catalog change.
+        """
+        ts = _iso(timestamp)
+        with self._lock:
+            cur = self._conn.cursor()
+            for row in added:
+                cur.execute(
+                    "INSERT OR REPLACE INTO catalog_plans "
+                    "(plan_code, account_id, invoice_name, first_seen, last_seen) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (row["plan_code"], account_id, row.get("invoice_name"), ts, ts),
+                )
+            for row in removed:
+                cur.execute(
+                    "DELETE FROM catalog_plans WHERE plan_code = ? AND account_id IS ?",
+                    (row["plan_code"], account_id),
+                )
+            if seen:
+                cur.executemany(
+                    "UPDATE catalog_plans SET last_seen = ? "
+                    "WHERE plan_code = ? AND account_id IS ?",
+                    [(ts, code, account_id) for code in seen],
+                )
+            if log_changes:
+                cur.executemany(
+                    "INSERT INTO catalog_changes (plan_code, change_type, "
+                    "invoice_name, price_in_ucents, currency_code, account_id, "
+                    "timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            row["plan_code"], change_type, row.get("invoice_name"),
+                            row.get("price_in_ucents"), row.get("currency_code"),
+                            account_id, ts,
+                        )
+                        for change_type, rows in (("added", added), ("removed", removed))
+                        for row in rows
+                    ],
+                )
+            self._conn.commit()
+
+    def load_catalog_changes(
+        self, since: datetime, limit: int = 100,
+        account_id: str | None = None, change_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return recent catalog additions/removals, newest first.
+
+        ``change_type`` filters to 'added'/'removed'; None returns both.
+        """
+        where = "timestamp >= ?"
+        params: list[Any] = [_iso(since)]
+        if account_id is not None:
+            where += " AND account_id = ?"
+            params.append(account_id)
+        if change_type is not None:
+            where += " AND change_type = ?"
+            params.append(change_type)
+        params.append(limit)
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                f"SELECT plan_code, change_type, invoice_name, price_in_ucents, "
+                f"currency_code, timestamp FROM catalog_changes "
+                f"WHERE {where} ORDER BY timestamp DESC, id DESC LIMIT ?",
                 params,
             )
             rows = cur.fetchall()

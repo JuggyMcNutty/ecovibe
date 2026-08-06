@@ -103,6 +103,14 @@ class Settings(BaseSettings):
     # watches. 0 disables the check entirely.
     price_check_interval: int = 900
 
+    # Catalog watch. The same catalog fetch that drives price watches and the
+    # promo scan is diffed against a stored snapshot of the account's plan
+    # codes, so new/retired ECO plans are recorded (and optionally notified)
+    # at no extra API cost. `notify` gates the channels only — tracking keeps
+    # feeding the Insights panel either way.
+    catalog_watch_enabled: bool = True
+    catalog_watch_notify: bool = True
+
     # Stock-event retention. The monitor prunes stock_events hourly: rows
     # older than the retention window are deleted, and the table is hard-
     # capped at max_rows (oldest overflow dropped). Keeps the region

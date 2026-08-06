@@ -50,6 +50,9 @@ APP_SETTINGS: dict[str, AppSetting] = {s.key: s for s in (
                min=1, max=3650),
     AppSetting("stock_event_max_rows", "int", "monitoring",
                min=1000, max=10_000_000),
+    # Catalog watch — read live each price/promo cycle (it shares that fetch).
+    AppSetting("catalog_watch_enabled", "bool", "monitoring"),
+    AppSetting("catalog_watch_notify", "bool", "monitoring"),
     # Catalog cache — applied via the PUT hook (service registry reset).
     AppSetting("use_cache", "bool", "cache"),
     AppSetting("cache_ttl", "int", "cache", min=10, max=86_400),
