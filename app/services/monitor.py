@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from fnmatch import fnmatch
 from typing import Any
 
-from app.services.app_settings import app_setting_int
+from app.services.app_settings import app_setting_bool, app_setting_int
 from app.services.ovh_service import (
     OVHServiceError,
     get_active_ovh_service,
@@ -538,14 +538,7 @@ class MonitorService:
                     items.extend(self._region_events)
                     self._region_events = []
                 for item in items:
-                    # Fan out to every connected SSE client. Slow subscribers
-                    # (full queue) are dropped with a warning rather than
-                    # blocking the poller.
-                    for q in list(self._subscribers):
-                        try:
-                            q.put_nowait(item)
-                        except asyncio.QueueFull:
-                            logger.warning("dropping stock update for slow subscriber")
+                    self._publish(item)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -565,6 +558,20 @@ class MonitorService:
             except Exception:
                 logger.exception("price/promo check failed")
             await asyncio.sleep(self._effective_sleep())
+
+    def _publish(self, item: Any) -> None:
+        """Fan one event out to every connected SSE client.
+
+        Slow subscribers (full queue) are dropped with a warning rather than
+        blocking the caller. Used by the poll loop and by the catalog watch,
+        which runs after the loop's broadcast step and would otherwise have
+        to wait a whole cycle to be seen.
+        """
+        for q in list(self._subscribers):
+            try:
+                q.put_nowait(item)
+            except asyncio.QueueFull:
+                logger.warning("dropping stock update for slow subscriber")
 
     async def subscribe(self) -> asyncio.Queue:
         """Register a new SSE client. Returns the queue it should await."""
@@ -985,6 +992,116 @@ class MonitorService:
                 )
             except Exception:
                 logger.warning("promo notify failed", exc_info=True)
+
+        # Same catalog, third consumer: which plans OVH added or retired.
+        await self._diff_catalog(service, storage, catalog)
+
+    async def _diff_catalog(self, service, storage, catalog: dict[str, Any]) -> None:
+        """Diff this account's catalog plan codes against the stored snapshot,
+        recording additions and removals (and optionally notifying).
+
+        Piggybacks on the price/promo catalog fetch — no extra OVH call. The
+        snapshot lives in SQLite, so a restart still compares against the last
+        observed catalog instead of re-priming.
+        """
+        if not app_setting_bool("catalog_watch_enabled"):
+            return
+        from app.services.notifier import notify_catalog_change
+        from app.services.ovh_service import OVHService
+
+        current: dict[str, str | None] = {}
+        for plan in catalog.get("plans", []):
+            code = plan.get("planCode")
+            if code:
+                current[code] = plan.get("invoiceName")
+        if not current:
+            # An empty catalog is a bad response, never a retired region.
+            logger.warning(
+                "catalog watch: empty catalog for account %s; skipping diff",
+                service.account_id,
+            )
+            return
+
+        snapshot = await asyncio.to_thread(
+            storage.load_catalog_snapshot, service.account_id
+        )
+        now = datetime.now(timezone.utc)
+        currency = service.default_currency_code()
+
+        def _added_row(code: str) -> dict[str, Any]:
+            return {
+                "plan_code": code,
+                "invoice_name": current[code],
+                "price_in_ucents": OVHService.plan_price_from_catalog(catalog, code),
+                "currency_code": currency,
+            }
+
+        if not snapshot:
+            # First scan for this account: record the baseline only. Reporting
+            # ~700 plans as "added" would be an artefact of having no history.
+            await asyncio.to_thread(
+                storage.apply_catalog_diff, service.account_id,
+                [{"plan_code": c, "invoice_name": current[c]} for c in current],
+                [], [], now, False,
+            )
+            logger.info(
+                "catalog watch primed: %d plans for account %s",
+                len(current), service.account_id,
+            )
+            return
+
+        added = [_added_row(c) for c in current if c not in snapshot]
+        removed = [dict(snapshot[c]) for c in snapshot if c not in current]
+        seen = [c for c in current if c in snapshot]
+        if not added and not removed:
+            return
+        # A truncated catalog must not read as a mass retirement (same rule as
+        # a failed batch availability fetch keeping every plan's baseline).
+        if len(removed) > len(snapshot) / 2:
+            logger.warning(
+                "catalog watch: %d of %d plans missing for account %s — "
+                "treating as a bad catalog response, snapshot left untouched",
+                len(removed), len(snapshot), service.account_id,
+            )
+            return
+
+        await asyncio.to_thread(
+            storage.apply_catalog_diff, service.account_id,
+            added, removed, seen, now,
+        )
+        label = self._account_label(service.account_id)
+        if added:
+            logger.info(
+                "catalog watch: %d plan(s) added for account %s: %s",
+                len(added), service.account_id,
+                ", ".join(r["plan_code"] for r in added[:10]),
+            )
+        if removed:
+            logger.info(
+                "catalog watch: %d plan(s) removed for account %s: %s",
+                len(removed), service.account_id,
+                ", ".join(r["plan_code"] for r in removed[:10]),
+            )
+        self._publish({
+            "type": "catalog_change",
+            "account_id": service.account_id,
+            "account_label": label,
+            "added": [
+                {"plan_code": r["plan_code"], "invoice_name": r["invoice_name"]}
+                for r in added[:50]
+            ],
+            "removed": [
+                {"plan_code": r["plan_code"], "invoice_name": r.get("invoice_name")}
+                for r in removed[:50]
+            ],
+            "added_count": len(added),
+            "removed_count": len(removed),
+        })
+        if app_setting_bool("catalog_watch_notify"):
+            try:
+                await notify_catalog_change(added, removed, account_label=label)
+            except Exception:
+                logger.warning("catalog change notify failed", exc_info=True)
 
     async def _maybe_prune_events(self) -> None:
         """Prune old stock events at most once an hour (best-effort)."""

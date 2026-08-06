@@ -383,6 +383,54 @@ async def notify_promo(
     await broadcast(f"OVH promotion{acct} on {count}", plain, html)
 
 
+def _plan_list(rows: list[dict[str, Any]], limit: int = 5) -> str:
+    """`"a, b, c (+2 more)"` from catalog-change rows, truncated like the
+    stock/promo formatters so a big catalog shift can't overflow a chat
+    client."""
+    codes = [str(r.get("plan_code") or "") for r in rows]
+    shown = ", ".join(codes[:limit])
+    return shown + (f" (+{len(codes) - limit} more)" if len(codes) > limit else "")
+
+
+async def notify_catalog_change(
+    added: list[dict[str, Any]], removed: list[dict[str, Any]],
+    account_label: str | None = None,
+) -> None:
+    """Notify that OVH added plans to, or removed plans from, the catalog.
+
+    Called once per account per scan cycle with the whole diff — never once
+    per plan. A range launch touches many plan codes at once, and per-plan
+    messages would repeat the same news a dozen times (the bug that made
+    promo notifications group by campaign).
+    """
+    acct = _account_suffix(account_label)
+    counts = f"+{len(added)} / -{len(removed)} plan{'' if len(added) + len(removed) == 1 else 's'}"
+    logger.info(
+        "notifying catalog change%s: %d added, %d removed",
+        acct, len(added), len(removed),
+    )
+    lines = []
+    if added:
+        lines.append(f"Added: {_plan_list(added)}")
+    if removed:
+        lines.append(f"Removed: {_plan_list(removed)}")
+    plain = f"OVH catalog change{acct}: {counts}\n" + "\n".join(lines)
+    html_lines = "<br>".join(
+        f"<b>{label}</b>: <code>{escape(_plan_list(rows))}</code>"
+        for label, rows in (("Added", added), ("Removed", removed)) if rows
+    )
+    html = (
+        f"<b>OVH catalog change</b>{escape(acct)}: {escape(counts)}<br>{html_lines}"
+    )
+    fields = [
+        {"name": label, "value": f"`{_plan_list(rows)}`", "inline": False}
+        for label, rows in (("Added", added), ("Removed", removed)) if rows
+    ]
+    if account_label:
+        fields.append({"name": "Account", "value": account_label, "inline": True})
+    await broadcast(f"OVH catalog change{acct}: {counts}", plain, html, fields)
+
+
 def configured_channels() -> list[str]:
     """Return the names of channels that have all their required settings.
 
