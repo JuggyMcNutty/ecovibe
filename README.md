@@ -159,7 +159,16 @@ Generate the `.htpasswd` file with `htpasswd -c /etc/nginx/.htpasswd admin`.
 - **Catalog watch** - the same catalog fetch is diffed against a stored snapshot of the account's plan codes, so **plans OVH adds or retires** are recorded and notified (no extra API calls). They appear in the Insights "Catalog changes" panel, newest first, with a one-click "Watch" button on new plans. The first scan for an account only records a baseline (it would otherwise report the whole catalog as new), the snapshot lives in SQLite so a restart still catches what changed while the app was down, and a truncated catalog response is ignored rather than reported as a mass retirement. Both switches live in **Settings → App**: *Track catalog changes* and *Notify on catalog changes*
 
 ### Owned Servers & Invoices
-- **Servers tab** - read-only list of your dedicated servers (state, range, datacenter, OS, expiry) with a detail panel
+- **Servers tab** - full control panel for each dedicated server, not just a list:
+  - **Power & boot** - pick a netboot (hard disk / rescue / power-off), set it for the next boot or apply it with a reboot, or hard-reboot now
+  - **Flags & rescue** - ICMP monitoring, block-datacenter-intervention, rescue email and rescue SSH key
+  - **Tasks** - live view of OVH's task queue with cancel, auto-refreshing while anything is running
+  - **Reinstall** - pick from the OS templates compatible with your hardware, with hostname, SSH key, post-install script and custom-image (BYOI) options, and live installation progress
+  - **IPMI / KVM** - request a console session; only the console types your machine actually reports are offered
+  - **Info panels** - hardware, network, IPs, interfaces, options, licences, intervention history, planned changes, virtual MACs, secondary DNS, SPLA, vRack, and traffic graphs
+  - **Service** - renewal settings, and a two-step termination flow (OVH emails a token; nothing is cancelled without it)
+- **Only what your server supports is shown.** OVH advertises 98 API paths for dedicated servers but any given machine implements a subset — an entry-level box has no firewall, KVM, cloud backup, BIOS settings, burst or hardware RAID. ECOVibe probes each server once, caches the answer, and renders only the sections that exist, so there are no dead buttons
+- **Destructive actions are gated** - reinstall, OLA reset and termination require typing the server's name to confirm
 - **Server watch** - on the same cadence as the delivery watch, your dedicated-server list is diffed against a stored snapshot, so a **newly delivered server announces itself** on your notification channels and appears in the Servers tab without a manual refresh (servers that vanish are reported too). The first scan for an account only records a baseline
 - **Recent invoices** - last 6 months of invoices with totals and PDF links on the Billing tab
 
@@ -346,9 +355,38 @@ GET    /api/price-watches                        - List price watches (active ac
 POST   /api/price-watches                        - Create/update a watch (body: {plan_code, threshold_ucents})
 DELETE /api/price-watches/{id}                   - Delete a watch
 
-# Owned Servers (read-only)
-GET  /api/servers                                - List dedicated servers (enriched)
-GET  /api/servers/{service_name}                 - Full server detail + serviceInfos
+# Owned Servers
+GET    /api/servers                                     - List dedicated servers (enriched)
+GET    /api/servers/{name}                              - Full server detail + serviceInfos
+GET    /api/servers/{name}/capabilities?refresh=        - Which optional features this server has
+GET    /api/servers/{name}/resource/{key}               - Read a registry-defined sub-resource
+GET    /api/servers/{name}/boot                         - Netboot options (resolved)
+PUT    /api/servers/{name}/boot                         - Set next boot (body: {boot_id, reboot?})
+POST   /api/servers/{name}/reboot                       - Hard reboot
+PUT    /api/servers/{name}/properties                   - Monitoring, no-intervention, rescue mail/key
+GET    /api/servers/{name}/tasks                        - Recent tasks (+ /{id}, /{id}/timeslots)
+POST   /api/servers/{name}/tasks/{id}/cancel            - Cancel a task
+POST   /api/servers/{name}/tasks/{id}/schedule          - Book an intervention slot
+GET    /api/servers/{name}/install/templates            - Compatible OS templates
+GET    /api/servers/{name}/install/partition-schemes    - Schemes for a template
+GET    /api/servers/{name}/install/raid-profile         - Hardware RAID profile (or unsupported)
+GET    /api/servers/{name}/install/status               - Installation progress
+POST   /api/servers/{name}/reinstall                    - Reinstall the OS (ERASES the server)
+GET    /api/servers/{name}/ipmi                         - IPMI state + supported console types
+POST   /api/servers/{name}/ipmi/access                  - Open a console session
+POST   /api/servers/{name}/ipmi/{test|reset-sessions|reset-interface}
+POST   /api/servers/{name}/ola/{group|ungroup|aggregation|reset}
+POST   /api/servers/{name}/vni/{uuid}/{enable|disable}  - Virtual network interface
+POST   /api/servers/{name}/ip-move                      - Move a failover IP here
+POST   /api/servers/{name}/ip-block-merge               - Merge a split block (irreversible)
+POST   /api/servers/{name}/virtual-mac                  - Add a virtual MAC (+ /{mac}/address)
+POST   /api/servers/{name}/secondary-dns                - Add a secondary DNS domain
+POST   /api/servers/{name}/spla                         - Add an SPLA licence (+ /{id}/revoke)
+DELETE /api/servers/{name}/option/{option}              - Release an option
+POST   /api/servers/{name}/support/replace/{cooling|hard-disk-drive|memory}
+PUT    /api/servers/{name}/service-infos                - Renewal settings
+POST   /api/servers/{name}/terminate                    - Request termination (OVH emails a token)
+POST   /api/servers/{name}/confirm-termination          - Confirm with the token
 
 # Setup Wizard
 GET    /api/setup/credentials                    - Check if credentials are configured (masked)
@@ -465,7 +503,7 @@ ovh-gui/
 │   │   ├── sniper.py        # Sniper arm/disarm/status
 │   │   ├── insights.py      # History, patterns, price, promos, region activity
 │   │   ├── orders.py        # Order management (live OVH list, detail, follow-up, waive, cancel)
-│   │   ├── servers.py       # Owned dedicated servers (read-only)
+│   │   ├── servers.py       # Owned dedicated servers: full control, capability-gated
 │   │   ├── accounts.py      # Multi-account CRUD + active switch + test
 │   │   ├── settings.py      # Notification channel settings (Telegram/Discord/Slack/SMTP)
 │   │   ├── account.py       # OVH account + payment methods + defaults + bills
@@ -477,12 +515,13 @@ ovh-gui/
 │       ├── notifier.py      # Telegram/Discord/Slack/email fan-out
 │       ├── storage.py       # SQLite persistence (alerts, profiles, events, prices, orders)
 │       ├── logbus.py        # In-memory log ring buffer + SSE pub/sub (Logs tab)
+│       ├── server_features.py # Dedicated-server resource registry + capability probe
 │       └── cache.py         # In-memory TTL cache
 ├── static/js/app.js         # Frontend SPA (vanilla JS, ~4600 lines)
 ├── static/css/input.css     # Tailwind v4 source
 ├── static/css/app.css       # Built/minified (do not edit)
 ├── templates/index.html    # SPA shell with cache-busted asset refs
-├── tests/                   # pytest suite (306 tests, uses TestClient)
+├── tests/                   # pytest suite (347 tests, uses TestClient)
 ├── requirements.txt         # Runtime dependencies
 ├── requirements-dev.txt     # Dev dependencies (ruff, pytest, httpx)
 ├── pyproject.toml           # Project metadata + tool config

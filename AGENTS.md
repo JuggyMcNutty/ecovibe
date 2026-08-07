@@ -138,7 +138,7 @@ app/
 │   ├── sniper.py        # Arm/disarm auto-order
 │   ├── insights.py      # History, patterns, price, promos, region activity, catalog changes
 │   ├── orders.py        # Order management (live OVH list, detail, follow-up, waive)
-│   ├── servers.py       # Owned dedicated servers (read-only list + detail)
+│   ├── servers.py       # Owned dedicated servers: full control, capability-gated
 │   ├── accounts.py      # Multi-account CRUD + active switch + test
 │   ├── settings.py      # Notification channel settings (Telegram/Discord/Slack/SMTP)
 │   ├── account.py       # OVH account + payment methods + defaults + bills
@@ -152,12 +152,13 @@ app/
     ├── notifier.py      # Telegram/Discord/Slack/email fan-out
     ├── storage.py       # SQLite persistence (singleton)
     ├── logbus.py        # In-memory log ring buffer + SSE pub/sub (Logs tab)
+    ├── server_features.py # Dedicated-server resource registry + capability probe
     └── cache.py         # In-memory TTL cache
 static/js/app.js         # Frontend SPA (vanilla JS, ~4600 lines)
 static/css/input.css     # Tailwind source
 static/css/app.css       # Built/minified (do not edit — rebuild from input.css)
 templates/index.html     # SPA shell with cache-busted asset refs
-tests/                   # pytest suite (306 tests, uses TestClient)
+tests/                   # pytest suite (347 tests, uses TestClient)
 ```
 
 ## Multi-account model
@@ -487,6 +488,39 @@ were created under (`account_id` column on each table).
   order can read `delivered` while the timeline still shows `DELIVERING/DOING`
   because invoicing is running. The UI annotates that rather than faking the
   step states (`followupDisagreementNote` in `app.js`).
+- **Server capabilities are probed, never assumed**: OVH's `/dedicated/server`
+  schema has **98 paths / 117 operations**, but any given machine implements
+  only some — verified live on a KS-C, which 404s `/features/firewall`,
+  `/features/kvm`, `/features/backupCloud`, `/biosSettings` and `/burst`, and
+  403s `/install/hardwareRaidProfile`, while 26 other sub-resources answer
+  normally. Building the Servers tab from the schema alone would therefore give
+  a panel full of buttons that cannot work. `app/services/server_features.py`
+  holds a declarative `SERVER_RESOURCES` registry (same shape as `APP_SETTINGS`)
+  that drives both the probe and `GET /api/servers/{name}/resource/{key}`.
+  Rules:
+  (1) **Only `optional=True` entries are probed** (~8 calls). Every OVH call
+  serialises on the account's client lock, so probing all 32 would make opening
+  a server crawl for no new information.
+  (2) **403/404 means absent and is cached; anything else is omitted**, not
+  recorded as `False` — a timeout must not permanently hide a real feature.
+  (3) Results persist in the `server_capabilities` table (JSON + `probed_at`)
+  and are re-probed only when missing, older than `CAPABILITY_TTL_DAYS` (7), or
+  explicitly refreshed. Hardware doesn't grow a KVM overnight.
+  (4) **Capability detail that comes free must not be re-derived**:
+  `/features/ipmi` reports `supportedFeatures`, which is the *only* correct
+  source for which consoles work — on the KS-C `activated` is true but only
+  `kvmipJnlp` is supported, so offering HTML5 KVM or Serial-over-LAN would be
+  three dead buttons out of four.
+  `GET /resource/{key}` is **registry-keyed, not a path passthrough** — an
+  unknown key 404s rather than reaching an arbitrary OVH endpoint.
+  `OVHService.server_get/post/put/delete` carry the subpath so 117 operations
+  don't become 117 one-line wrappers; they still route through `_call`, so
+  **POST is never retried on 5xx** — which matters most for reboot and
+  reinstall, where a retry would fire a second wipe.
+  Destructive operations (reinstall, OLA reset/ungroup, ipBlockMerge,
+  termination) are gated in the UI by `confirmTyped()`, which requires typing
+  the service name. Termination is inherently two-step: `POST /terminate` only
+  makes OVH email a token, and `/confirmTermination` needs that token.
 - **Catalog config-option order**: OVH returns `plan.addonFamilies` (and the
   addons within each) in arbitrary order. `renderCatalogDetail` standardizes them
   once — families in `CATALOG_FAMILY_ORDER` (memory→storage→bandwidth→vrack),
