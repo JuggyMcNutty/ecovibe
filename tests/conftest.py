@@ -1,5 +1,7 @@
 """Shared test fixtures: isolate singletons and DB per test."""
 
+import sqlite3
+
 import pytest
 
 
@@ -9,6 +11,23 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setenv("OVH_DB_PATH", str(tmp_path / "test.db"))
     # Keep the rotating log file out of the project tree during tests.
     monkeypatch.setenv("OVH_LOG_FILE", str(tmp_path / "test.log"))
+
+    # Every test builds a fresh 14-table schema, and by default each of those
+    # commits fsyncs. On this host that costs ~389ms per test (~141s of a 163s
+    # run) with the process parked in D state on the XFS journal -- which looks
+    # exactly like a hang. A throwaway DB that dies with the test needs no
+    # crash durability, so drop it: ~389ms -> ~5ms, and the suite runs in ~15s.
+    # Nothing here depends on the on-disk journal (no test shells out or opens
+    # the DB itself), and monkeypatch restores the real connect after each test.
+    real_connect = sqlite3.connect
+
+    def _fast_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        conn.execute("PRAGMA synchronous=OFF")
+        conn.execute("PRAGMA journal_mode=MEMORY")
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", _fast_connect)
 
     import app.services.cache as cache_mod
     cache_mod._cache = None

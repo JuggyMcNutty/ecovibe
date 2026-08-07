@@ -50,6 +50,7 @@ When developing or coming up with decisions on this project always choose to do 
 
 ```bash
 # Tests (must use PYTHONPATH=. since app/ is not installed)
+# ~10s for the full suite -- run it in the FOREGROUND, don't background it.
 PYTHONPATH=. .venv/bin/pytest
 
 # Lint
@@ -90,7 +91,7 @@ was installed are all per-deployment — check `git remote -v` and
    match existing style and patterns.
 2. **After code changes**:
    - Run lint: `.venv/bin/ruff check app/ tests/ run.py`
-   - Run tests: `PYTHONPATH=. .venv/bin/pytest`
+   - Run tests: `PYTHONPATH=. .venv/bin/pytest` (~10s, foreground)
    - If you changed `static/css/input.css` or any class names in
      `templates/index.html` / `static/js/app.js`: rebuild CSS with
      `/tmp/tailwindcss`.
@@ -610,6 +611,23 @@ were created under (`account_id` column on each table).
   the rush flow uses them directly.
 - **Cache busters** are automatic (content-hash based, see
   `app/utils/cache_buster.py`); no manual `?v=N` bumping is needed.
+- **The test suite is fast on purpose — don't background it, and don't poll
+  for it.** `conftest.py`'s `isolated_state` wraps `sqlite3.connect` to apply
+  `PRAGMA synchronous=OFF` + `journal_mode=MEMORY`. Every test builds a fresh
+  14-table schema, and fsyncing those commits cost ~389ms per test on XFS —
+  ~141s of a 163s run, with the process parked in `D` state on
+  `xlog_wait_on_iclog`. That reads as a hang but is just disk wait. Without the
+  pragmas the suite takes ~163s; with them, ~10s. Don't "fix" a slow suite by
+  moving temp files to tmpfs (`--basetemp=/dev/shm` gets the same 14x but is
+  Linux-only and discards pytest's temp-dir retention) — and never relax
+  durability in `Storage` itself, which production depends on.
+  - **Never wait on a background command with
+    `pgrep -f "<pattern>"` when `<pattern>` appears in the waiting command's
+    own command line.** `-f` matches the full command line, so
+    `until ! pgrep -f "pytest -q"; do sleep 10; done` matches *itself* and
+    loops forever — the tests finish, the watcher never does. This is what
+    "the suite runs indefinitely" has actually meant every time. Wait on the
+    PID (`kill -0 $PID`) or just run the suite in the foreground.
 - **Logging**: use `logger.info()`/`logger.warning()` on a
   `logging.getLogger(__name__)` — never `print(file=sys.stderr)`. The system
   has three sinks, all wired by `setup_logging()` in `app/logging_config.py`:

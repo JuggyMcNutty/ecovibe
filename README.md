@@ -476,6 +476,8 @@ to an account automatically on first run.
 
 ```bash
 # Run tests (must use PYTHONPATH=. since app/ is not installed)
+# ~10s for the full suite: the per-test SQLite DB is created without fsync
+# (see `tests/conftest.py`), which is worth ~14x on a spinning/journalled FS.
 PYTHONPATH=. .venv/bin/pytest
 
 # Lint
