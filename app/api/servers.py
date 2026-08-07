@@ -865,3 +865,221 @@ async def merge_ip_block(
         "server %s: merging IP block %s (irreversible)", service_name, request.block
     )
     return {"block": request.block, "task": task}
+
+
+# ---------------------------------------------------------------------------
+# Virtual MACs, secondary DNS, SPLA, options, vRack
+# ---------------------------------------------------------------------------
+
+
+class VirtualMacCreate(BaseModel):
+    ip_address: str
+    virtual_machine_name: str
+    type: str = "ovh"          # dedicated.server.VmacTypeEnum: ovh | vmware
+
+
+class VirtualMacAddressCreate(BaseModel):
+    ip_address: str
+    virtual_machine_name: str
+
+
+class SecondaryDnsCreate(BaseModel):
+    domain: str
+    ip: str | None = None
+
+
+class SplaCreate(BaseModel):
+    serial_number: str
+    type: str
+
+
+@router.post("/{service_name}/virtual-mac")
+async def create_virtual_mac(
+    service_name: str, request: VirtualMacCreate,
+) -> dict[str, Any]:
+    """Attach a virtual MAC to a failover IP (for VMs on this server)."""
+    service = _configured_service()
+    try:
+        task = await asyncio.to_thread(
+            service.server_post, service_name, "/virtualMac",
+            ipAddress=request.ip_address,
+            virtualMachineName=request.virtual_machine_name,
+            type=request.type,
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    logger.info("server %s: virtual MAC added for %s", service_name, request.ip_address)
+    return {"task": task}
+
+
+@router.post("/{service_name}/virtual-mac/{mac}/address")
+async def add_virtual_mac_address(
+    service_name: str, mac: str, request: VirtualMacAddressCreate,
+) -> dict[str, Any]:
+    service = _configured_service()
+    try:
+        task = await asyncio.to_thread(
+            service.server_post, service_name, f"/virtualMac/{mac}/virtualAddress",
+            ipAddress=request.ip_address,
+            virtualMachineName=request.virtual_machine_name,
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    return {"task": task}
+
+
+@router.delete("/{service_name}/virtual-mac/{mac}/address/{ip}")
+async def remove_virtual_mac_address(
+    service_name: str, mac: str, ip: str,
+) -> dict[str, Any]:
+    """Detach an IP from a virtual MAC.
+
+    Per OVH: removing the last linked IP deletes the virtual MAC itself.
+    """
+    service = _configured_service()
+    try:
+        task = await asyncio.to_thread(
+            service.server_delete, service_name,
+            f"/virtualMac/{mac}/virtualAddress/{ip}",
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    logger.info("server %s: IP %s removed from virtual MAC %s", service_name, ip, mac)
+    return {"mac": mac, "ip": ip, "task": task}
+
+
+@router.post("/{service_name}/secondary-dns")
+async def add_secondary_dns(
+    service_name: str, request: SecondaryDnsCreate,
+) -> dict[str, Any]:
+    service = _configured_service()
+    payload: dict[str, Any] = {"domain": request.domain}
+    if request.ip:
+        payload["ip"] = request.ip
+    try:
+        await asyncio.to_thread(
+            service.server_post, service_name, "/secondaryDnsDomains", **payload
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    logger.info("server %s: secondary DNS domain %s added", service_name, request.domain)
+    return {"domain": request.domain}
+
+
+@router.delete("/{service_name}/secondary-dns/{domain}")
+async def remove_secondary_dns(service_name: str, domain: str) -> dict[str, Any]:
+    service = _configured_service()
+    try:
+        await asyncio.to_thread(
+            service.server_delete, service_name, f"/secondaryDnsDomains/{domain}"
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    return {"domain": domain, "removed": True}
+
+
+@router.post("/{service_name}/spla")
+async def add_spla(service_name: str, request: SplaCreate) -> dict[str, Any]:
+    service = _configured_service()
+    try:
+        licence = await asyncio.to_thread(
+            service.server_post, service_name, "/spla",
+            serialNumber=request.serial_number, type=request.type,
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    return {"licence": licence}
+
+
+@router.post("/{service_name}/spla/{licence_id}/revoke")
+async def revoke_spla(service_name: str, licence_id: int) -> dict[str, Any]:
+    service = _configured_service()
+    try:
+        await asyncio.to_thread(
+            service.server_post, service_name, f"/spla/{licence_id}/revoke"
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    logger.info("server %s: SPLA licence %s revoked", service_name, licence_id)
+    return {"licence_id": licence_id, "revoked": True}
+
+
+@router.delete("/{service_name}/option/{option}")
+async def release_option(service_name: str, option: str) -> dict[str, Any]:
+    """Release a paid option from the server."""
+    service = _configured_service()
+    try:
+        await asyncio.to_thread(service.server_delete, service_name, f"/option/{option}")
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    logger.info("server %s: option %s released", service_name, option)
+    return {"option": option, "released": True}
+
+
+@router.delete("/{service_name}/vrack/{vrack}")
+async def remove_from_vrack(service_name: str, vrack: str) -> dict[str, Any]:
+    """Remove this server from a vRack (OVH marks this endpoint LEGACY)."""
+    service = _configured_service()
+    try:
+        task = await asyncio.to_thread(
+            service.server_delete, service_name, f"/vrack/{vrack}"
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    return {"vrack": vrack, "task": task}
+
+
+# ---------------------------------------------------------------------------
+# Hardware replacement requests
+# ---------------------------------------------------------------------------
+
+
+class HardwareReplacement(BaseModel):
+    """Body for POST /api/servers/{name}/support/replace/{part}.
+
+    ``details`` is required by OVH for cooling and memory; ``disks``/``inverse``
+    are the hard-drive variant's own required fields.
+    """
+    comment: str
+    details: str | None = None
+    disks: list[dict[str, Any]] | None = None
+    inverse: bool | None = None
+    slots: list[str] | None = None
+
+
+@router.post("/{service_name}/support/replace/{part}")
+async def request_hardware_replacement(
+    service_name: str, part: str, request: HardwareReplacement,
+) -> dict[str, Any]:
+    """Open an OVH hardware-replacement request (cooling / disk / memory)."""
+    subpaths = {
+        "cooling": "/support/replace/cooling",
+        "hard-disk-drive": "/support/replace/hardDiskDrive",
+        "memory": "/support/replace/memory",
+    }
+    subpath = subpaths.get(part)
+    if subpath is None:
+        raise HTTPException(status_code=404, detail=f"Unknown part: {part}")
+
+    payload: dict[str, Any] = {"comment": request.comment}
+    if part == "hard-disk-drive":
+        if not request.disks:
+            raise HTTPException(status_code=422, detail="disks is required")
+        payload["disks"] = request.disks
+        payload["inverse"] = bool(request.inverse)
+    else:
+        if not request.details:
+            raise HTTPException(status_code=422, detail="details is required")
+        payload["details"] = request.details
+        if part == "memory" and request.slots:
+            payload["slots"] = request.slots
+
+    service = _configured_service()
+    try:
+        result = await asyncio.to_thread(
+            service.server_post, service_name, subpath, **payload
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    logger.info("server %s: %s replacement requested", service_name, part)
+    return {"part": part, "result": result}

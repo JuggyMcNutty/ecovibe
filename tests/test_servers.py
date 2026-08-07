@@ -607,6 +607,82 @@ def test_ip_block_merge_uses_ovhs_block_parameter(client):
     )
 
 
+# ----- niche CRUD and hardware replacement -----
+
+
+def test_virtual_mac_and_option_release(client):
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_post = MagicMock(return_value={"taskId": 11})
+    svc.server_delete = MagicMock(return_value=None)
+
+    client.post(
+        "/api/servers/ns1.example/virtual-mac",
+        json={"ip_address": "1.2.3.4", "virtual_machine_name": "vm1"}, headers=XHR,
+    )
+    svc.server_post.assert_called_once_with(
+        "ns1.example", "/virtualMac",
+        ipAddress="1.2.3.4", virtualMachineName="vm1", type="ovh",
+    )
+
+    client.delete("/api/servers/ns1.example/option/BANDWIDTH", headers=XHR)
+    svc.server_delete.assert_called_with("ns1.example", "/option/BANDWIDTH")
+
+
+def test_hardware_replacement_requires_the_right_fields_per_part(client):
+    """OVH requires `details` for cooling/memory but `disks`+`inverse` for
+    drives; sending the wrong shape 400s at OVH, so catch it here."""
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_post = MagicMock(return_value={"ok": True})
+
+    # Cooling without details.
+    r = client.post(
+        "/api/servers/ns1.example/support/replace/cooling",
+        json={"comment": "fan noise"}, headers=XHR,
+    )
+    assert r.status_code == 422
+
+    # Drive without disks.
+    r = client.post(
+        "/api/servers/ns1.example/support/replace/hard-disk-drive",
+        json={"comment": "smart errors"}, headers=XHR,
+    )
+    assert r.status_code == 422
+    svc.server_post.assert_not_called()
+
+    # Drive with disks: `inverse` defaults to False rather than being omitted.
+    client.post(
+        "/api/servers/ns1.example/support/replace/hard-disk-drive",
+        json={"comment": "smart errors", "disks": [{"diskId": 1}]}, headers=XHR,
+    )
+    svc.server_post.assert_called_once_with(
+        "ns1.example", "/support/replace/hardDiskDrive",
+        comment="smart errors", disks=[{"diskId": 1}], inverse=False,
+    )
+
+    assert client.post(
+        "/api/servers/ns1.example/support/replace/psu",
+        json={"comment": "x", "details": "y"}, headers=XHR,
+    ).status_code == 404
+
+
+def test_memory_replacement_passes_slots_through(client):
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_post = MagicMock(return_value={})
+
+    client.post(
+        "/api/servers/ns1.example/support/replace/memory",
+        json={"comment": "ecc errors", "details": "slot 3", "slots": ["DIMM3"]},
+        headers=XHR,
+    )
+    svc.server_post.assert_called_once_with(
+        "ns1.example", "/support/replace/memory",
+        comment="ecc errors", details="slot 3", slots=["DIMM3"],
+    )
+
+
 def test_bills_list_caps_and_reads_defensively(client):
     _create_account(client)
     svc = get_active_ovh_service()
