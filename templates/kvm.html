@@ -34,22 +34,22 @@
       The 2017 tree is plain globals, so it loads with ordinary script tags; the
       order below is taken from the fork's own vnc_auto.html and matters.
     -->
-    <script src="/static/vendor/novnc/core/util.js"></script>
-    <script src="/static/vendor/novnc/core/base64.js"></script>
-    <script src="/static/vendor/novnc/core/websock.js"></script>
-    <script src="/static/vendor/novnc/core/des.js"></script>
-    <script src="/static/vendor/novnc/core/input/keysymdef.js"></script>
-    <script src="/static/vendor/novnc/core/input/xtscancodes.js"></script>
-    <script src="/static/vendor/novnc/core/input/util.js"></script>
-    <script src="/static/vendor/novnc/core/input/devices.js"></script>
-    <script src="/static/vendor/novnc/core/ast2100/ast2100.js"></script>
-    <script src="/static/vendor/novnc/core/ast2100/ast2100idct.js"></script>
-    <script src="/static/vendor/novnc/core/ast2100/ast2100util.js"></script>
-    <script src="/static/vendor/novnc/core/ast2100/ast2100const.js"></script>
-    <script src="/static/vendor/novnc/core/display.js"></script>
-    <script src="/static/vendor/novnc/core/inflator.js"></script>
-    <script src="/static/vendor/novnc/core/rfb.js"></script>
-    <script src="/static/vendor/novnc/core/input/keysym.js"></script>
+    <script src="/static/vendor/novnc/core/util.js?v={{ vendor_hash }}"></script>
+    <script src="/static/vendor/novnc/core/base64.js?v={{ vendor_hash }}"></script>
+    <script src="/static/vendor/novnc/core/websock.js?v={{ vendor_hash }}"></script>
+    <script src="/static/vendor/novnc/core/des.js?v={{ vendor_hash }}"></script>
+    <script src="/static/vendor/novnc/core/input/keysymdef.js?v={{ vendor_hash }}"></script>
+    <script src="/static/vendor/novnc/core/input/xtscancodes.js?v={{ vendor_hash }}"></script>
+    <script src="/static/vendor/novnc/core/input/util.js?v={{ vendor_hash }}"></script>
+    <script src="/static/vendor/novnc/core/input/devices.js?v={{ vendor_hash }}"></script>
+    <script src="/static/vendor/novnc/core/ast2100/ast2100.js?v={{ vendor_hash }}"></script>
+    <script src="/static/vendor/novnc/core/ast2100/ast2100idct.js?v={{ vendor_hash }}"></script>
+    <script src="/static/vendor/novnc/core/ast2100/ast2100util.js?v={{ vendor_hash }}"></script>
+    <script src="/static/vendor/novnc/core/ast2100/ast2100const.js?v={{ vendor_hash }}"></script>
+    <script src="/static/vendor/novnc/core/display.js?v={{ vendor_hash }}"></script>
+    <script src="/static/vendor/novnc/core/inflator.js?v={{ vendor_hash }}"></script>
+    <script src="/static/vendor/novnc/core/rfb.js?v={{ vendor_hash }}"></script>
+    <script src="/static/vendor/novnc/core/input/keysym.js?v={{ vendor_hash }}"></script>
 
     <script>window.KVM_SERVICE_NAME = {{ service_name | tojson }};</script>
     <script src="/static/js/kvm.js?v={{ js_hash }}"></script>

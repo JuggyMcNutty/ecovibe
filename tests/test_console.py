@@ -6,6 +6,8 @@ Java runs. These tests use a fake BMC (an asyncio echo/greeter on localhost) so
 no hardware is needed.
 """
 import asyncio
+import os
+import re
 import threading
 import time
 from unittest.mock import MagicMock
@@ -262,6 +264,61 @@ def test_relay_rejects_a_cross_origin_socket(client):
             pass
 
 
+# ----- the vendored decoder's one local patch -----
+
+# Captured live from OVH's BMC after selecting security type 16 (see
+# PROVENANCE.md). 24 bytes; the leading u32 is 0xa7f95fbe, which is what makes
+# noVNC pick heuristic #0.
+LIVE_ATEN_PREAMBLE = bytes.fromhex(
+    "a7f95fbe5021020020a6000070ecefbe00704b40102e0100"
+)
+_RFB_JS = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "static", "vendor", "novnc", "core", "rfb.js",
+)
+
+
+def _aten_preamble_arithmetic():
+    """The three numbers that decide whether the ATEN handshake stays aligned,
+    read out of the vendored file itself."""
+    src = open(_RFB_JS).read()
+    return {
+        "length": int(re.search(r"var ATEN_PREAMBLE_LENGTH = (\d+);", src).group(1)),
+        "h0": int(re.search(
+            r"heuristic #0.*?_aten_preamble_read = (\d+);", src, re.S).group(1)),
+        "h1": int(re.search(
+            r"heuristic #1.*?_aten_preamble_read = (\d+);", src, re.S).group(1)),
+    }
+
+
+@pytest.mark.parametrize("heuristic", ["h0", "h1"])
+def test_both_aten_heuristics_consume_the_whole_preamble(heuristic):
+    """Upstream skips a flat 16 bytes after the detection read, which totals 24
+    via heuristic #1 but only 20 via #0. Via #0 that left 4 bytes of preamble
+    queued, and `_handle_security_result` read them instead of the real result —
+    surfacing as "Unsupported server (Unknown SecurityResult)" in the browser.
+
+    Both paths must land exactly on the end of the preamble. This is the one
+    local modification to the vendored fork, so a re-vendor that overwrites it
+    must fail here rather than silently breaking the console again.
+    """
+    a = _aten_preamble_arithmetic()
+    assert a["length"] == len(LIVE_ATEN_PREAMBLE)
+    consumed = a[heuristic]
+    # The detection read, plus the skip of everything remaining.
+    assert consumed + (a["length"] - consumed) == len(LIVE_ATEN_PREAMBLE)
+
+
+def test_the_vendored_fork_skips_the_remainder_not_a_fixed_count():
+    """Pin the mechanism, not just the totals: a flat `rQskipBytes(16)` is the
+    bug, and it reads as correct until you check it against a #0 server."""
+    src = open(_RFB_JS).read()
+    aten = src[src.index("_negotiate_aten_auth:"):]
+    aten = aten[:aten.index("_negotiate_xvp_auth:")]
+    assert "rQskipBytes(ATEN_PREAMBLE_LENGTH - consumed)" in aten
+    assert "rQskipBytes(16)" not in aten
+
+
 def test_console_page_renders_with_the_vendored_bundle(client):
     r = client.get("/console/ns1.example")
     assert r.status_code == 200
@@ -271,3 +328,17 @@ def test_console_page_renders_with_the_vendored_bundle(client):
     assert body.index("core/util.js") < body.index("core/rfb.js")
     assert body.index("core/ast2100/ast2100.js") < body.index("core/rfb.js")
     assert "/static/js/kvm.js" in body
+
+
+def test_every_vendored_script_is_cache_busted(client):
+    """The vendored bundle shipped with no `?v=`, so the ATEN handshake fix
+    could not reach a browser that had already loaded the broken rfb.js."""
+    body = client.get("/console/ns1.example").text
+    tags = re.findall(r'<script src="(/static/vendor/novnc/[^"]+)"', body)
+    assert len(tags) == 16, tags
+    unbusted = [t for t in tags if "?v=" not in t]
+    assert not unbusted, f"vendored scripts without a cache buster: {unbusted}"
+    # One hash for the whole bundle, and it must be real, not the "dev" fallback.
+    versions = {t.split("?v=", 1)[1] for t in tags}
+    assert len(versions) == 1, versions
+    assert versions != {"dev"}

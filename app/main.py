@@ -16,7 +16,7 @@ from starlette.responses import FileResponse, Response
 from starlette.staticfiles import NotModifiedResponse
 from starlette.types import Scope
 
-from app.utils.cache_buster import get_file_hash
+from app.utils.cache_buster import get_file_hash, get_tree_hash
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +246,9 @@ def create_app():
             {
                 "css_hash": get_file_hash("static/css/app.css"),
                 "js_hash": get_file_hash("static/js/kvm.js"),
+                # One buster for the whole vendored bundle - they load together,
+                # and a patch to any of them must reach cached browsers.
+                "vendor_hash": get_tree_hash("static/vendor/novnc"),
                 "service_name": service_name,
             },
         )

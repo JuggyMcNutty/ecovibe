@@ -47,6 +47,7 @@
 
     this._rfb_tightvnc = false;
     this._rfb_atenikvm = false;
+    this._aten_preamble_read = 0;  // ECOVibe, see _negotiate_aten_auth
     this._rfb_xvp_ver = 0;
 
     // In preference order
@@ -461,6 +462,7 @@
             this._mouse_arr        = [];
             this._rfb_tightvnc     = false;
             this._rfb_atenikvm     = false;
+            this._aten_preamble_read = 0;  // ECOVibe, see _negotiate_aten_auth
             this._convert_color    = false;
 
             // Clear the per connection encoding stats
@@ -908,14 +910,33 @@
             this._rfb_atenikvm = true;
             this._convert_color = true;
 
+            // ECOVibe divergence from upstream -- see ../PROVENANCE.md.
+            //
+            // The ATEN preamble is 24 bytes total, but the two detection
+            // heuristics above arrive here having consumed different amounts of
+            // it: #0 read 4 (numTunnels), #1 read 8 (numTunnels + subAuthCount).
+            // Upstream then skips a flat 16 either way, which totals 24 via #1
+            // but only 20 via #0 -- leaving 4 bytes of preamble in the queue,
+            // which _handle_security_result then reads as the SecurityResult.
+            //
+            // Measured against OVH's BMC (24-byte preamble, numTunnels =
+            // 0xa7f95fbe, so heuristic #0 fires): the leftover 0x102e0100 hit
+            // the `default:` branch as "Unsupported server / Unknown
+            // SecurityResult" while the real result (0x00000000, OK) went
+            // unread. Skip the remainder of the preamble rather than a fixed
+            // count, so both heuristics land in the same place.
+            var ATEN_PREAMBLE_LENGTH = 24;
+            var consumed;
             if (this._rfb_tightvnc) {
                 // N.B.(kelleyk): We've already "skipped" the four bytes that we read into numTunnels.
+                consumed = this._aten_preamble_read || 4;
                 this._rfb_tightvnc = false;
             } else {
                 this._sock.rQskipBytes(4);
+                consumed = 4;
             }
 
-            this._sock.rQskipBytes(16);
+            this._sock.rQskipBytes(ATEN_PREAMBLE_LENGTH - consumed);
 
             var username = aten_auth[0];
             username += new Array(24 - username.length+1).join("\x00");
@@ -1017,6 +1038,8 @@
                         (numTunnels <= 0 || numTunnels > 0x1000000)) {
                     Util.Info('Detected ATEN iKVM server (using heuristic #0 -- ' +
                               'older Winbond/Nuvoton or Renesas BMC?).');
+                    // ECOVibe: 4 preamble bytes consumed so far (numTunnels).
+                    this._aten_preamble_read = 4;
                     return this._negotiate_aten_auth();
                 }
                 if (numTunnels > 0 && this._sock.rQwait("tunnel capabilities", 16 * numTunnels, 4)) { return false; }
@@ -1045,6 +1068,8 @@
                     numTunnels === 0 &&
                     (subAuthCount === 0 || (subAuthCount & 0xFFFF) == 0x0100)) {
                 Util.Info('Detected ATEN iKVM server (using heuristic #1 -- newer AST2400 BMC?).');
+                // ECOVibe: 8 consumed so far (numTunnels + subAuthCount).
+                this._aten_preamble_read = 8;
                 return this._negotiate_aten_auth();
             }
             
