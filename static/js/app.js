@@ -2298,6 +2298,7 @@ async function sendTestEmail() {
 // input id ↔ API key for every editable app option.
 const APP_SETTING_FIELDS = [
     ['app-price-check-interval', 'price_check_interval'],
+    ['app-order-check-interval', 'order_check_interval'],
     ['app-stock-retention-days', 'stock_event_retention_days'],
     ['app-stock-max-rows', 'stock_event_max_rows'],
     ['app-cache-ttl', 'cache_ttl'],
@@ -2947,6 +2948,10 @@ function openStream() {
                 addRegionRestocks(data);
             } else if (data.type === 'catalog_change') {
                 showCatalogChange(data);
+            } else if (data.type === 'order_update') {
+                showOrderUpdate(data);
+            } else if (data.type === 'server_change') {
+                showServerChange(data);
             }
         } catch (e) {
             console.error('Failed to parse SSE message:', e);
@@ -4591,6 +4596,53 @@ function showCatalogChange(data) {
     showToast(`OVH catalog change${acct}: ${parts.join(' / ')}${codes ? ` — ${codes}` : ''}`, 8000);
     const insightsVisible = !document.getElementById('insights-tab')?.classList.contains('hidden');
     if (insightsVisible) loadCatalogChanges();
+}
+
+// The delivery watch (order status + owned servers) runs server-side on its own
+// cadence, so these arrive whether or not the relevant tab was ever opened.
+// Both tabs are active-account-scoped: a background account's event still
+// toasts (tagged, like stock_update and catalog_change) but must not trigger a
+// reload, which would refetch the active account's identical data.
+
+function showOrderUpdate(data) {
+    const changes = data.changes || [];
+    if (!changes.length) return;
+    const isActive = !data.account_id || data.account_id === state.activeAccountId;
+    const acct = isActive ? '' : ` [${data.account_label || 'another account'}]`;
+    for (const c of changes) {
+        const name = c.name || `Order #${c.order_id}`;
+        const headline = c.status === 'delivered' ? 'Server delivered' : `Order ${c.status}`;
+        showToast(`${headline}${acct}: ${name}`, 10000);
+    }
+    if (!isActive) return;
+    const ordersVisible = !document.getElementById('orders-tab')?.classList.contains('hidden');
+    if (ordersVisible) {
+        loadOrdersTab();
+        return;
+    }
+    // Tab not open: patch the cached list in place so a later render (or a
+    // filter change, which re-renders from state without refetching) doesn't
+    // show the pre-delivery status.
+    for (const c of changes) {
+        const row = state.allOrders.find(o => o.order_id === c.order_id);
+        if (row) row.status = c.status;
+    }
+}
+
+function showServerChange(data) {
+    const added = data.added || [];
+    const removed = data.removed || [];
+    if (!added.length && !removed.length) return;
+    const isActive = !data.account_id || data.account_id === state.activeAccountId;
+    const acct = isActive ? '' : ` [${data.account_label || 'another account'}]`;
+    const parts = [];
+    if (added.length) parts.push(`+${added.join(', ')}`);
+    if (removed.length) parts.push(`−${removed.join(', ')}`);
+    const headline = added.length && !removed.length ? 'New OVH server' : 'OVH servers changed';
+    showToast(`${headline}${acct}: ${parts.join(' / ')}`, 10000);
+    if (!isActive) return;
+    const serversVisible = !document.getElementById('servers-tab')?.classList.contains('hidden');
+    if (serversVisible) loadServersTab();
 }
 
 function selectInsightsPlan(code) {

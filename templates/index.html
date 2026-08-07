@@ -398,11 +398,21 @@
                             second box also sends them to your notification channels.
                         </p>
                     </div>
-                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
                         <div>
                             <label class="block text-sm text-gray-400 mb-1" for="app-price-check-interval">Price/promo check (s)</label>
                             <input type="number" id="app-price-check-interval" class="w-full bg-gray-700 px-3 py-2 rounded"
                                    min="0" max="86400" title="0 disables; otherwise 60-86400 seconds">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1" for="app-order-check-interval">Delivery check (s)</label>
+                            <input type="number" id="app-order-check-interval" class="w-full bg-gray-700 px-3 py-2 rounded"
+                                   min="0" max="86400" title="0 disables; otherwise 60-86400 seconds">
+                            <p class="text-gray-500 text-xs mt-1">
+                                How often pending orders are re-checked and your dedicated-server
+                                list is diffed, so a delivered server notifies you without
+                                opening the Orders tab.
+                            </p>
                         </div>
                         <div>
                             <label class="block text-sm text-gray-400 mb-1" for="app-stock-retention-days">Stock-event retention (days)</label>
