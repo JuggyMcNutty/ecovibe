@@ -53,6 +53,9 @@ APP_SETTINGS: dict[str, AppSetting] = {s.key: s for s in (
     # Catalog watch — read live each price/promo cycle (it shares that fetch).
     AppSetting("catalog_watch_enabled", "bool", "monitoring"),
     AppSetting("catalog_watch_notify", "bool", "monitoring"),
+    # Delivery watch (order status + owned servers) — read live each cycle.
+    AppSetting("order_check_interval", "int", "monitoring",
+               min=60, max=86_400, allow_zero=True),
     # Catalog cache — applied via the PUT hook (service registry reset).
     AppSetting("use_cache", "bool", "cache"),
     AppSetting("cache_ttl", "int", "cache", min=10, max=86_400),

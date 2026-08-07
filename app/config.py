@@ -111,6 +111,13 @@ class Settings(BaseSettings):
     catalog_watch_enabled: bool = True
     catalog_watch_notify: bool = True
 
+    # Delivery watch. How often (seconds) the monitor re-checks the status of
+    # non-terminal orders and diffs the account's dedicated-server list, so a
+    # delivered order is noticed without opening the Orders tab. Kept separate
+    # from price_check_interval: delivery news should not wait 15 minutes.
+    # 0 disables the check entirely.
+    order_check_interval: int = 300
+
     # Stock-event retention. The monitor prunes stock_events hourly: rows
     # older than the retention window are deleted, and the table is hard-
     # capped at max_rows (oldest overflow dropped). Keeps the region

@@ -107,7 +107,8 @@ def test_validate_type_errors():
 def test_registry_covers_expected_keys():
     assert set(APP_SETTINGS) == {
         "monitor_enabled",
-        "price_check_interval", "stock_event_retention_days",
+        "price_check_interval", "order_check_interval",
+        "stock_event_retention_days",
         "stock_event_max_rows", "catalog_watch_enabled", "catalog_watch_notify",
         "use_cache", "cache_ttl", "log_level",
         "log_file_max_bytes", "log_backup_count", "log_buffer_size",

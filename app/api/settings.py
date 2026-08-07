@@ -178,6 +178,7 @@ class AppSettingsUpdate(BaseModel):
     stock_event_max_rows: int
     catalog_watch_enabled: bool
     catalog_watch_notify: bool
+    order_check_interval: int
     use_cache: bool
     cache_ttl: int
     log_level: str
