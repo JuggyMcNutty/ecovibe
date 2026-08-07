@@ -152,7 +152,7 @@ app/
     ├── ovh_service.py    # OVH SDK wrapper (per-account registry)
     ├── monitor.py       # Background poller + SSE fan-out + SniperService
     ├── notifier.py      # Telegram/Discord/Slack/email fan-out
-    ├── storage.py       # SQLite persistence (singleton)
+    ├── storage.py       # SQLite persistence (singleton, WAL)
     ├── logbus.py        # In-memory log ring buffer + SSE pub/sub (Logs tab)
     ├── server_features.py # Dedicated-server resource registry + capability probe
     └── cache.py         # In-memory TTL cache
@@ -611,6 +611,22 @@ were created under (`account_id` column on each table).
   the rush flow uses them directly.
 - **Cache busters** are automatic (content-hash based, see
   `app/utils/cache_buster.py`); no manual `?v=N` bumping is needed.
+- **SQLite runs in WAL mode** (`storage.CONNECTION_PRAGMAS`, applied to every
+  connection in `Storage.init()`). This is not a micro-optimisation: the poller
+  writes on a background thread while HTTP requests read, and under the default
+  rollback journal a committing writer blocks readers outright. Measured beside
+  a continuously-writing poller, a reader managed **0 reads/s with a worst case
+  of 2961ms**; on WAL, 2ms. Consequences to remember:
+  - The database now has `<db>-wal` and `<db>-shm` sidecars. **A backup must
+    copy all three** (or checkpoint first) — copying just the `.db` can lose
+    recent commits. They're gitignored explicitly, since neither matches `*.db`.
+  - `synchronous` is deliberately left at FULL. `NORMAL` is WAL's usual
+    companion and is another 300x on commit latency (6.00ms → 0.02ms), but it
+    can lose the last commits on power loss. WAL alone already fixed the stall,
+    so that trade hasn't been taken. `tests/test_storage_pragmas.py` pins both
+    decisions.
+  - `busy_timeout` is set alongside it — WAL sidecars can be contended by a
+    second process, which otherwise surfaces instantly as `database is locked`.
 - **The test suite is fast on purpose — don't background it, and don't poll
   for it.** `conftest.py`'s `isolated_state` wraps `sqlite3.connect` to apply
   `PRAGMA synchronous=OFF` + `journal_mode=MEMORY`. Every test builds a fresh

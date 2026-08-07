@@ -1,7 +1,5 @@
 """Shared test fixtures: isolate singletons and DB per test."""
 
-import sqlite3
-
 import pytest
 
 
@@ -16,18 +14,16 @@ def isolated_state(tmp_path, monkeypatch):
     # commits fsyncs. On this host that costs ~389ms per test (~141s of a 163s
     # run) with the process parked in D state on the XFS journal -- which looks
     # exactly like a hang. A throwaway DB that dies with the test needs no
-    # crash durability, so drop it: ~389ms -> ~5ms, and the suite runs in ~15s.
-    # Nothing here depends on the on-disk journal (no test shells out or opens
-    # the DB itself), and monkeypatch restores the real connect after each test.
-    real_connect = sqlite3.connect
-
-    def _fast_connect(*args, **kwargs):
-        conn = real_connect(*args, **kwargs)
-        conn.execute("PRAGMA synchronous=OFF")
-        conn.execute("PRAGMA journal_mode=MEMORY")
-        return conn
-
-    monkeypatch.setattr(sqlite3, "connect", _fast_connect)
+    # crash durability, so swap production's pragmas (WAL + busy_timeout, see
+    # storage.CONNECTION_PRAGMAS) for ones that never touch the disk:
+    # ~389ms -> ~5ms per test, and the suite runs in ~10s instead of ~163s.
+    # Nothing here depends on the on-disk journal - no test shells out or opens
+    # the DB itself - and monkeypatch restores the real tuple after each test.
+    import app.services.storage as storage_mod
+    monkeypatch.setattr(
+        storage_mod, "CONNECTION_PRAGMAS",
+        ("PRAGMA synchronous=OFF", "PRAGMA journal_mode=MEMORY"),
+    )
 
     import app.services.cache as cache_mod
     cache_mod._cache = None
@@ -38,7 +34,6 @@ def isolated_state(tmp_path, monkeypatch):
     import app.services.ovh_service as ovh_mod
     ovh_mod.reset_all_services()
 
-    import app.services.storage as storage_mod
     storage_mod._storage = None
 
     # Stop any leaked monitor poller task before resetting the singleton.

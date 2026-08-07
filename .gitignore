@@ -34,6 +34,9 @@ Thumbs.db
 
 # Local runtime data
 *.db
+# WAL sidecars -- these do NOT match *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 *.log

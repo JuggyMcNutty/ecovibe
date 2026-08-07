@@ -19,5 +19,5 @@ run:
 	python run.py
 
 clean:
-	rm -rf __pycache__ .pytest_cache .ruff_cache *.db
+	rm -rf __pycache__ .pytest_cache .ruff_cache *.db *.db-wal *.db-shm
 	find . -type d -name __pycache__ -exec rm -rf {} +
