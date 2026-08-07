@@ -4263,28 +4263,120 @@ function renderOrderDetail(data) {
 
     // Follow-up timeline
     if (followup.length) {
-        const followSection = el('div', { class: 'mb-4' });
-        followSection.appendChild(el('h4', { class: 'font-bold text-gray-400 text-sm uppercase mb-2', text: 'Delivery Timeline' }));
-        for (const f of followup) {
-            const stepClass = f.status === 'DONE' ? 'text-green-400' :
-                              f.status === 'DOING' ? 'text-blue-400' :
-                              f.status === 'ERROR' ? 'text-red-400' :
-                              'text-gray-400';
-            followSection.appendChild(el('div', { class: 'bg-gray-700 rounded px-3 py-2 mb-1' }, [
-                el('div', { class: 'flex justify-between' }, [
-                    el('span', { class: 'text-sm font-bold', text: f.step || '' }),
-                    el('span', { class: `text-xs font-bold ${stepClass}`, text: f.status || '' }),
-                ]),
-            ]));
-            for (const h of (f.history || [])) {
-                followSection.appendChild(el('div', { class: 'text-gray-500 text-xs ml-4 pl-2 border-l border-gray-600' }, [
-                    el('span', { text: h.date ? new Date(h.date).toLocaleString() : '' }),
-                    el('span', { class: 'ml-2', text: h.label || h.description || '' }),
-                ]));
-            }
-        }
-        container.appendChild(followSection);
+        container.appendChild(renderDeliveryTimeline(followup, status));
     }
+}
+
+// ----- Delivery timeline -----
+
+// OVH's follow-up step states, mapped to a marker, a colour and wording a
+// human would use. `DOING` pulses so an in-flight step is obvious at a glance.
+const FOLLOWUP_STEP_STATES = {
+    DONE:  { label: 'Done',        text: 'text-green-400', dot: 'bg-green-400 border-green-400' },
+    DOING: { label: 'In progress', text: 'text-blue-400',  dot: 'bg-blue-400 border-blue-400 animate-pulse' },
+    ERROR: { label: 'Error',       text: 'text-red-400',   dot: 'bg-red-400 border-red-400' },
+    TODO:  { label: 'Pending',     text: 'text-gray-500',  dot: 'bg-gray-800 border-gray-500' },
+};
+
+const FOLLOWUP_STEP_NAMES = {
+    VALIDATING: 'Validating',
+    VALIDATED: 'Validated',
+    DELIVERING: 'Delivering',
+    AVAILABLE: 'Available',
+};
+
+function followupStepName(step) {
+    if (!step) return '';
+    return FOLLOWUP_STEP_NAMES[step]
+        || step.charAt(0) + step.slice(1).toLowerCase().replace(/_/g, ' ');
+}
+
+// The backend normalises follow-up dates to ISO-8601 WITH the order's offset
+// (see _followup_date in app/api/orders.py), so `new Date()` is reliable here —
+// OVH's raw "2026-08-04 20:05:02" is neither offset-aware nor ISO, and was
+// rendering an hour off and as Invalid Date on Safari.
+function fmtTimelineDate(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return String(iso);
+    return d.toLocaleString(undefined, {
+        month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit', second: '2-digit',
+    });
+}
+
+// OVH's follow-up and its order-status endpoint can disagree: the status can
+// read `delivered` while the timeline still shows DELIVERING/DOING because
+// something like invoicing is still running. Say so rather than either
+// silently contradicting ourselves or faking the step states.
+function followupDisagreementNote(followup, status) {
+    const st = (status || '').toLowerCase();
+    if (!['delivered', 'cancelled'].includes(st)) return null;
+    if (!followup.some(f => f.status && f.status !== 'DONE')) return null;
+    const doing = followup.find(f => f.status === 'DOING');
+    if (!doing) {
+        return `Order status is already ${st} — OVH has not finished updating its delivery timeline.`;
+    }
+    const latest = (doing.history || []).slice(-1)[0];
+    const what = latest ? (latest.description || latest.label || '') : '';
+    return `Order status is already ${st} — OVH still reports `
+        + `${followupStepName(doing.step)} in progress`
+        + (what ? ` (${what.charAt(0).toLowerCase() + what.slice(1)})` : '')
+        + '.';
+}
+
+function renderDeliveryTimeline(followup, status) {
+    const section = el('div', { class: 'mb-4' });
+    section.appendChild(el('h4', {
+        class: 'font-bold text-gray-400 text-sm uppercase mb-2', text: 'Delivery Timeline',
+    }));
+
+    const rail = el('div', { class: 'pl-1' });
+    followup.forEach((f, i) => {
+        const state = FOLLOWUP_STEP_STATES[f.status] || FOLLOWUP_STEP_STATES.TODO;
+        const isLast = i === followup.length - 1;
+        // The connector is the step's own left border, so it spans exactly the
+        // gap to the next marker; the last step draws none.
+        const step = el('div', {
+            class: `relative pl-5 ${isLast ? 'pb-0' : 'pb-4 border-l'} ${isLast ? '' : 'border-gray-600'}`,
+        });
+        step.appendChild(el('span', {
+            class: `absolute left-0 top-1 -translate-x-1/2 w-2.5 h-2.5 rounded-full border ${state.dot}`,
+        }));
+        step.appendChild(el('div', { class: 'flex justify-between items-baseline gap-2' }, [
+            el('span', { class: 'text-sm font-bold', text: followupStepName(f.step), title: f.step || '' }),
+            el('span', { class: `text-xs font-bold ${state.text}`, text: state.label }),
+        ]));
+        for (const h of (f.history || [])) {
+            step.appendChild(el('div', { class: 'flex gap-2 mt-1 text-xs' }, [
+                el('span', { class: 'text-gray-500 whitespace-nowrap', text: fmtTimelineDate(h.date) }),
+                el('span', {
+                    class: 'text-gray-300',
+                    text: h.description || h.label || '',
+                    title: h.label || '',
+                }),
+            ]));
+        }
+        rail.appendChild(step);
+    });
+    section.appendChild(rail);
+
+    // An unpaid order comes back as four TODO steps with no history at all;
+    // without this it renders as a bare ladder with no explanation.
+    if (!followup.some(f => (f.history || []).length)) {
+        section.appendChild(el('p', {
+            class: 'text-gray-500 text-xs mt-2', text: 'No delivery events recorded yet.',
+        }));
+    }
+
+    const note = followupDisagreementNote(followup, status);
+    if (note) {
+        section.appendChild(el('p', { class: 'text-gray-400 text-xs mt-3 flex gap-2' }, [
+            el('span', { class: 'text-blue-400', text: 'ℹ' }),
+            el('span', { text: note }),
+        ]));
+    }
+    return section;
 }
 
 // ----- Insights tab -----
