@@ -1,4 +1,5 @@
 """SQLite persistence for alerts, profiles, credentials, and history."""
+import json
 import logging
 import os
 import sqlite3
@@ -246,6 +247,21 @@ class Storage:
                     account_id TEXT,
                     first_seen TEXT NOT NULL,
                     last_seen TEXT NOT NULL,
+                    UNIQUE(service_name, account_id)
+                )
+                """
+            )
+            # Which optional OVH sub-resources a server actually has. Probing
+            # costs one API call per feature, and hardware capabilities don't
+            # change, so the answer is cached here rather than re-derived every
+            # time the detail panel opens. See services/server_features.py.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS server_capabilities (
+                    service_name TEXT NOT NULL,
+                    account_id TEXT,
+                    capabilities TEXT NOT NULL,
+                    probed_at TEXT NOT NULL,
                     UNIQUE(service_name, account_id)
                 )
                 """
@@ -1196,6 +1212,45 @@ class Storage:
                     "WHERE service_name = ? AND account_id IS ?",
                     [(ts, name, account_id) for name in seen],
                 )
+            self._conn.commit()
+
+    def load_server_capabilities(
+        self, service_name: str, account_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return ``{"capabilities": {...}, "probed_at": iso}`` or ``None``.
+
+        ``None`` means never probed; the caller decides whether the stored
+        ``probed_at`` is too old to trust (see ``CAPABILITY_TTL_DAYS``).
+        """
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                "SELECT capabilities, probed_at FROM server_capabilities "
+                "WHERE service_name = ? AND account_id IS ?",
+                (service_name, account_id),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        try:
+            caps = json.loads(row["capabilities"])
+        except (ValueError, TypeError):
+            # A corrupt row must read as "never probed", not crash the panel.
+            return None
+        return {"capabilities": caps, "probed_at": row["probed_at"]}
+
+    def save_server_capabilities(
+        self, service_name: str, capabilities: dict[str, Any],
+        timestamp: datetime, account_id: str | None = None,
+    ) -> None:
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                "INSERT OR REPLACE INTO server_capabilities "
+                "(service_name, account_id, capabilities, probed_at) "
+                "VALUES (?, ?, ?, ?)",
+                (service_name, account_id, json.dumps(capabilities), _iso(timestamp)),
+            )
             self._conn.commit()
 
     def load_catalog_changes(

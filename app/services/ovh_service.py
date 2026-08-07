@@ -607,6 +607,33 @@ class OVHService:
         """Return the server's serviceInfos (expiration, renewal mode, ...)."""
         return self.get(f"/dedicated/server/{service_name}/serviceInfos")
 
+    # ---- Dedicated server sub-resources (generic) ----
+    #
+    # OVH exposes 117 operations under /dedicated/server/{serviceName}. Writing
+    # a wrapper per operation would be ~500 lines of one-line methods that add
+    # nothing; these four generics carry the subpath instead, and the callers
+    # that matter (the mutating ones in app/api/servers.py) name themselves.
+    #
+    # Everything still routes through _call, so these inherit the per-account
+    # client lock, the 403 stale-signature retry, and — load-bearing for
+    # reboot/reinstall — the rule that POST is NEVER retried on 5xx, so a lost
+    # response can't fire a second reboot or a second OS install.
+
+    def _server_path(self, service_name: str, subpath: str = "") -> str:
+        return f"/dedicated/server/{service_name}{subpath}"
+
+    def server_get(self, service_name: str, subpath: str = "", **kwargs) -> Any:
+        return self.get(self._server_path(service_name, subpath), **kwargs)
+
+    def server_post(self, service_name: str, subpath: str = "", **kwargs) -> Any:
+        return self.post(self._server_path(service_name, subpath), **kwargs)
+
+    def server_put(self, service_name: str, subpath: str = "", **kwargs) -> Any:
+        return self.put(self._server_path(service_name, subpath), **kwargs)
+
+    def server_delete(self, service_name: str, subpath: str = "", **kwargs) -> Any:
+        return self.delete(self._server_path(service_name, subpath), **kwargs)
+
     # ---- Billing (read-only) ----
 
     def list_bills(self, date_from: str | None = None) -> list[str]:
