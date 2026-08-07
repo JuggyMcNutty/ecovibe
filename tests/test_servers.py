@@ -118,6 +118,11 @@ _KSC_IPMI = {
 }
 
 
+async def _fake_egress():
+    """Stand in for the public-IP lookup so tests never touch the network."""
+    return "203.0.113.7"
+
+
 def _fake_server_get(calls, absent=None, ipmi=None):
     from app.services.ovh_service import OVHServiceError
 
@@ -546,6 +551,83 @@ def test_ipmi_access_validates_type_and_ttl(client):
     svc.server_post.assert_called_once_with(
         "ns1.example", "/features/ipmi/access", type="kvmipJnlp", ttl=15
     )
+
+
+def test_ipmi_session_polls_the_task_and_sends_ip_to_allow(client, monkeypatch):
+    """The access value does not exist until OVH's task reaches `done` (~12s
+    live). Sleeping a fixed interval and hoping was the original bug."""
+    from app.services.ovh_service import OVHServiceError
+
+    _create_account(client)
+    monkeypatch.setattr("app.api.servers.IPMI_POLL_INTERVAL", 0)
+    monkeypatch.setattr("app.api.servers._public_egress_ip", _fake_egress)
+    svc = get_active_ovh_service()
+
+    task_reads = []
+    statuses = iter(["init", "doing", "done"])
+
+    def _get(name, subpath="", **kw):
+        if subpath == "/features/ipmi/access":
+            # 404 until the task is done, then the value.
+            if len(task_reads) < 3:
+                raise OVHServiceError("not ready", status_code=404)
+            return {"value": "https://kvm.example/session", "expiration": "2026-08-07T06:00:00Z"}
+        if subpath.startswith("/task/"):
+            task_reads.append(subpath)
+            return {"taskId": 1, "status": next(statuses)}
+        raise AssertionError(subpath)
+
+    svc.server_get = MagicMock(side_effect=_get)
+    svc.server_post = MagicMock(return_value={"taskId": 1, "status": "init"})
+
+    body = client.post(
+        "/api/servers/ns1.example/ipmi/session",
+        json={"type": "kvmipHtml5URL", "ttl": 15}, headers=XHR,
+    ).json()
+
+    assert body["access"]["value"] == "https://kvm.example/session"
+    assert body["reused"] is False
+    assert len(task_reads) == 3                     # polled, not slept
+    svc.server_post.assert_called_once_with(
+        "ns1.example", "/features/ipmi/access",
+        type="kvmipHtml5URL", ttl=15, ipToAllow="203.0.113.7",
+    )
+
+
+def test_ipmi_session_reuses_an_existing_one(client):
+    """OVH keeps a session alive for its TTL; asking again must not burn a task."""
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_get = MagicMock(return_value={"value": "https://kvm.example/live"})
+    svc.server_post = MagicMock()
+
+    body = client.post(
+        "/api/servers/ns1.example/ipmi/session", json={}, headers=XHR,
+    ).json()
+
+    assert body["reused"] is True
+    svc.server_post.assert_not_called()
+
+
+def test_ipmi_session_surfaces_a_failed_task(client, monkeypatch):
+    from app.services.ovh_service import OVHServiceError
+
+    _create_account(client)
+    monkeypatch.setattr("app.api.servers.IPMI_POLL_INTERVAL", 0)
+    monkeypatch.setattr("app.api.servers._public_egress_ip", _fake_egress)
+    svc = get_active_ovh_service()
+
+    def _get(name, subpath="", **kw):
+        if subpath == "/features/ipmi/access":
+            raise OVHServiceError("not ready", status_code=404)
+        return {"taskId": 1, "status": "ovhError", "comment": "boom"}
+
+    svc.server_get = MagicMock(side_effect=_get)
+    svc.server_post = MagicMock(return_value={"taskId": 1})
+
+    r = client.post("/api/servers/ns1.example/ipmi/session", json={}, headers=XHR)
+    assert r.status_code == 502
+    assert "ovhError" in r.json()["detail"]
 
 
 def test_ipmi_action_rejects_unknown_actions(client):

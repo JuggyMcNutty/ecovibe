@@ -4339,28 +4339,41 @@ function buildIpmiPanel(serviceName, features) {
         serialOverLanSshKey: 'Serial-over-LAN (SSH key)',
     };
 
+    // Opening a session is POST -> poll task -> GET value, and the value does
+    // not exist until the task finishes (~12s measured). The backend does the
+    // whole sequence in one call, so this button just waits for it rather than
+    // guessing at a delay.
     const buttons = supported.map(t => el('button', {
         class: 'bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm',
         text: labels[t] || t,
-        onclick: async () => {
+        onclick: async (e) => {
+            const btn = e.target;
+            const original = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Opening session…';
             try {
-                await apiRequest('POST', srv(serviceName, '/ipmi/access'), { type: t, ttl: 15 });
-                showToast('IPMI session requested — fetching access…', 5000);
-                setTimeout(async () => {
-                    try {
-                        const r = await apiRequest('GET', srv(serviceName, `/ipmi/access?type=${encodeURIComponent(t)}`));
-                        const value = r.access?.value || r.access;
-                        if (typeof value === 'string' && value.startsWith('http')) {
-                            window.open(value, '_blank', 'noopener');
-                        } else {
-                            showToast('IPMI session ready — see the OVH manager for the file.', 8000);
-                        }
-                    } catch (e) {
-                        showToast(`IPMI access not ready: ${e.message}`, 8000);
-                    }
-                }, 5000);
-            } catch (e) {
-                showToast(`IPMI request failed: ${e.message}`, 8000);
+                const r = await apiRequest('POST', srv(serviceName, '/ipmi/session'), { type: t, ttl: 15 });
+                const value = r.access?.value || r.access;
+                if (typeof value === 'string' && value.trim().startsWith('http')) {
+                    window.open(value, '_blank', 'noopener');
+                    showToast('Console opened in a new tab.', 6000);
+                } else if (typeof value === 'string' && value.trim().startsWith('<')) {
+                    // A JNLP descriptor — hand it over as a file. It needs a
+                    // desktop JNLP runtime (OpenWebStart); Chrome cannot run it.
+                    const blob = new Blob([value], { type: 'application/x-java-jnlp-file' });
+                    const url = URL.createObjectURL(blob);
+                    const a = el('a', { href: url, download: `${serviceName}.jnlp` });
+                    document.body.appendChild(a); a.click(); a.remove();
+                    setTimeout(() => URL.revokeObjectURL(url), 30000);
+                    showToast('Downloaded .jnlp — open it with OpenWebStart (Chrome cannot run it).', 12000);
+                } else {
+                    showToast('Session ready — see the OVH manager for access.', 8000);
+                }
+            } catch (err) {
+                showToast(`IPMI session failed: ${err.message}`, 10000);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = original;
             }
         },
     }));

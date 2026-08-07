@@ -6,9 +6,11 @@ given machine only implements some of them — see
 """
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
@@ -647,6 +649,12 @@ IPMI_ACCESS_TYPES = ("kvmipHtml5URL", "kvmipJnlp", "serialOverLanURL", "serialOv
 # dedicated.server.CacheTTLEnum — session lifetime in minutes.
 IPMI_TTLS = (1, 3, 5, 10, 15)
 
+# Waiting on the IPMI access task. Measured live: the task went
+# init -> doing -> done in ~12s, so the timeout is generous but bounded.
+IPMI_POLL_INTERVAL = 3.0
+IPMI_SESSION_TIMEOUT = 120.0
+IPMI_ACCESS_TIMEOUT = 30.0
+
 
 class IpmiAccessRequest(BaseModel):
     """Body for POST /api/servers/{name}/ipmi/access."""
@@ -702,6 +710,127 @@ async def create_ipmi_access(
         raise_ovh_http_error(e)
     logger.info("server %s IPMI access requested (%s)", service_name, request.type)
     return {"task": task}
+
+
+# The console session's allow-listed IP must be the address OVH will see the
+# *connection* coming from. For the HTML5 URL that is the browser; for the
+# WebSocket relay it is this host. On this deployment both egress through the
+# same address, so the host's public IP is the right default — and it is the
+# only one we can determine reliably (the browser's LAN address would be
+# rejected: OVH needs a public IPv4).
+_egress_ip: str | None = None
+_EGRESS_LOOKUP = "https://ifconfig.me/ip"
+
+
+async def _public_egress_ip() -> str | None:
+    """This host's public IPv4, cached for the process lifetime."""
+    global _egress_ip
+    if _egress_ip:
+        return _egress_ip
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(_EGRESS_LOOKUP)
+            r.raise_for_status()
+            ip = r.text.strip()
+    except Exception:
+        logger.warning("could not determine public egress IP", exc_info=True)
+        return None
+    if ip.count(".") == 3:
+        _egress_ip = ip
+    return _egress_ip
+
+
+class IpmiSessionRequest(BaseModel):
+    """Body for POST /api/servers/{name}/ipmi/session."""
+    type: str = "kvmipJnlp"
+    ttl: int = 15
+    ip_to_allow: str | None = None
+
+
+@router.post("/{service_name}/ipmi/session")
+async def open_ipmi_session(
+    service_name: str, request: IpmiSessionRequest,
+) -> dict[str, Any]:
+    """Open a console session and return its access value, end to end.
+
+    OVH's flow is three steps and the middle one is not optional: the POST
+    returns a *task*, and the access value only exists once that task reaches
+    ``done``. Polling it (rather than sleeping a fixed interval and hoping) is
+    the difference between this working and intermittently 404ing — the task
+    took ~12s when measured against a live server.
+    """
+    if request.type not in IPMI_ACCESS_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"type must be one of: {', '.join(IPMI_ACCESS_TYPES)}",
+        )
+    if request.ttl not in IPMI_TTLS:
+        raise HTTPException(status_code=422, detail="Invalid ttl")
+    service = _configured_service()
+
+    # An unexpired session can be reused; OVH 404s when there isn't one.
+    try:
+        existing = await asyncio.to_thread(
+            service.server_get, service_name, "/features/ipmi/access",
+            type=request.type,
+        )
+        return {"reused": True, "type": request.type, "access": existing}
+    except OVHServiceError as e:
+        if e.status_code != 404:
+            raise_ovh_http_error(e)
+
+    ip_to_allow = request.ip_to_allow or await _public_egress_ip()
+    payload: dict[str, Any] = {"type": request.type, "ttl": request.ttl}
+    if ip_to_allow:
+        payload["ipToAllow"] = ip_to_allow
+    try:
+        task = await asyncio.to_thread(
+            service.server_post, service_name, "/features/ipmi/access", **payload
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+
+    task_id = (task or {}).get("taskId")
+    if task_id:
+        deadline = time.monotonic() + IPMI_SESSION_TIMEOUT
+        while time.monotonic() < deadline:
+            await asyncio.sleep(IPMI_POLL_INTERVAL)
+            try:
+                t = await asyncio.to_thread(
+                    service.server_get, service_name, f"/task/{task_id}"
+                )
+            except OVHServiceError:
+                continue
+            status = str(t.get("status"))
+            if status == "done":
+                break
+            if status in TERMINAL_TASK_STATUSES:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"IPMI access task {status}: {t.get('comment') or ''}".strip(),
+                )
+        else:
+            raise HTTPException(
+                status_code=504, detail="Timed out waiting for the IPMI access task"
+            )
+
+    # The value can lag the task by a beat; retry briefly before giving up.
+    deadline = time.monotonic() + IPMI_ACCESS_TIMEOUT
+    last: OVHServiceError | None = None
+    while time.monotonic() < deadline:
+        try:
+            access = await asyncio.to_thread(
+                service.server_get, service_name, "/features/ipmi/access",
+                type=request.type,
+            )
+            return {
+                "reused": False, "type": request.type,
+                "access": access, "ip_to_allow": ip_to_allow,
+            }
+        except OVHServiceError as e:
+            last = e
+            await asyncio.sleep(IPMI_POLL_INTERVAL)
+    raise_ovh_http_error(last or OVHServiceError("IPMI access unavailable", 504))
 
 
 @router.get("/{service_name}/ipmi/access")
