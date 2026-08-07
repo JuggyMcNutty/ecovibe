@@ -210,9 +210,26 @@
             if (canvas.width !== width || canvas.height !== height) {
 
                 // We have to save the canvas data since changing the size will clear it
+                //
+                // ECOVibe divergence from upstream -- see ../PROVENANCE.md.
+                // Only the top-left overlap of the old and new sizes survives:
+                // putImageData below writes at (0,0) and the canvas clips
+                // anything past its bounds, so reading the full old canvas
+                // copies pixels that are immediately discarded.
+                //
+                // That is ruinous on the ATEN path specifically. rfb.js sizes
+                // the framebuffer to 10000x10000 up front ("we do not know the
+                // resolution till the first fbupdate so go large"), so when the
+                // real resolution lands this read was 10000*10000*4 = 400 MB of
+                // a blank canvas, plus 400 MB written back. Clamped to a 1024x768
+                // console that is 3.15 MB -- ~127x less -- for an identical result.
+                // It is also what triggered Chrome's "Multiple readback
+                // operations ... willReadFrequently" advisory.
                 var saveImg = null;
-                if (canvas.width > 0 && canvas.height > 0) {
-                    saveImg = this._drawCtx.getImageData(0, 0, canvas.width, canvas.height);
+                var copyWidth = Math.min(canvas.width, width);
+                var copyHeight = Math.min(canvas.height, height);
+                if (copyWidth > 0 && copyHeight > 0) {
+                    saveImg = this._drawCtx.getImageData(0, 0, copyWidth, copyHeight);
                 }
 
                 if (canvas.width !== width) {

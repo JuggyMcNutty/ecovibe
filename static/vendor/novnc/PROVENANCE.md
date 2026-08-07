@@ -67,6 +67,33 @@ constructor and in the per-connection reset next to `_rfb_atenikvm`.
 — the BMC writes all 24 bytes at once and the relay is local — and fixing it
 properly needs a re-entrant init state, which is a much larger divergence.
 
+### Patch: clamp the resize readback to the surviving overlap (2026-08-07)
+
+**Symptom:** Chrome logged *"Multiple readback operations using getImageData
+are faster with the willReadFrequently attribute set to true"* from
+`display.js` → `resize`.
+
+**Cause.** `Display.resize()` saved the canvas across a size change with
+`getImageData(0, 0, canvas.width, canvas.height)`. Only the top-left overlap of
+the old and new sizes actually survives — `putImageData` writes at `(0,0)` and
+the canvas clips the rest — so the full read copies pixels that are discarded
+immediately.
+
+On the ATEN path that is severe. `rfb.js` sizes the framebuffer to
+**10000×10000** before the first framebuffer update ("we do not know the
+resolution till the first fbupdate so go large"), so when the real resolution
+arrived this read back `10000 * 10000 * 4` = **400 MB** of a blank canvas and
+wrote the same 400 MB back. For a 1024×768 console the surviving overlap is
+3.15 MB — about 127x less, for a bit-identical result.
+
+**Fix.** Read only `min(old, new)` in each dimension.
+
+**Deliberately not done:** setting `willReadFrequently: true` on the backbuffer
+context, which is what the browser message literally suggests. That flag opts
+the canvas into software rendering to make readbacks cheap — the wrong trade
+here, because `getImageData` is called only on resize while the canvas is drawn
+to every frame. It would silence the message by slowing down the console.
+
 ## Licence
 
 noVNC core is **MPL-2.0** (`LICENSE.txt`); ECOVibe is MIT. MPL-2.0 is

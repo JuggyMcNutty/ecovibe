@@ -319,6 +319,32 @@ def test_the_vendored_fork_skips_the_remainder_not_a_fixed_count():
     assert "rQskipBytes(16)" not in aten
 
 
+_DISPLAY_JS = os.path.join(os.path.dirname(_RFB_JS), "display.js")
+
+
+def test_resize_only_reads_back_the_surviving_overlap():
+    """`resize()` used to `getImageData` the whole old canvas, but only the
+    top-left overlap survives a resize. On the ATEN path rfb.js sizes the
+    framebuffer to 10000x10000 before the first update, so that was a 400MB
+    readback of a blank canvas every time the real resolution arrived.
+
+    Guards the fix and, just as importantly, guards against "fixing" the
+    browser's willReadFrequently advisory the way it literally suggests: that
+    flag makes the canvas software-rendered, trading every frame's draw for a
+    readback that only happens on resize.
+    """
+    src = open(_DISPLAY_JS).read()
+    resize = src[src.index("resize: function"):]
+    resize = resize[:resize.index("viewportChangePos(0, 0);")]
+
+    assert "Math.min(canvas.width, width)" in resize
+    assert "Math.min(canvas.height, height)" in resize
+    assert "getImageData(0, 0, copyWidth, copyHeight)" in resize
+    assert "getImageData(0, 0, canvas.width, canvas.height)" not in resize
+    # No options object on either getContext -- that is where the flag would go.
+    assert re.findall(r"getContext\((.*?)\)", src) == ["'2d'", "'2d'"]
+
+
 def test_console_page_renders_with_the_vendored_bundle(client):
     r = client.get("/console/ns1.example")
     assert r.status_code == 200
