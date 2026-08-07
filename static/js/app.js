@@ -3860,48 +3860,665 @@ function renderServersList(servers) {
     });
 }
 
+// ----- Server control panel -----
+//
+// OVH's /dedicated/server schema has 98 paths but any given machine implements
+// only some of them — a KS-C 404s firewall/KVM/backupCloud/BIOS/burst and 403s
+// hardware RAID. The backend probes that once per server
+// (GET /servers/{name}/capabilities); everything below renders from that map,
+// so a section for a feature the hardware lacks is never drawn. No dead buttons.
+
+const SERVER_TASK_TERMINAL = ['done', 'cancelled', 'customerError', 'ovhError'];
+
+function srv(serviceName, path = '', params = '') {
+    return `/servers/${encodeURIComponent(serviceName)}${path}${params}`;
+}
+
+/** Native prompt gated on typing the exact service name. Used for the three
+ *  operations that destroy data, connectivity or the service itself. */
+function confirmTyped(message, expected) {
+    const answer = prompt(`${message}\n\nType the server name to confirm:\n${expected}`);
+    if (answer === null) return false;
+    if (answer.trim() !== expected) {
+        showToast('Name did not match — nothing was done.', 5000);
+        return false;
+    }
+    return true;
+}
+
+function kvGrid(fields) {
+    const grid = el('div', { class: 'grid grid-cols-1 sm:grid-cols-2 gap-2' });
+    let any = false;
+    for (const [label, value] of fields) {
+        if (value == null || value === '') continue;
+        any = true;
+        grid.appendChild(el('div', { class: 'bg-gray-700 rounded p-2' }, [
+            el('p', { class: 'text-gray-500 text-xs', text: label }),
+            el('p', { class: 'text-gray-200 text-sm break-all', text: String(value) }),
+        ]));
+    }
+    return any ? grid : el('p', { class: 'text-gray-500 text-sm', text: 'Nothing reported.' });
+}
+
+/** A collapsible section whose contents are fetched the first time it opens.
+ *  Opening a server therefore costs a handful of calls, not twenty. */
+function lazySection(title, loader, opts = {}) {
+    const body = el('div', { class: 'mt-2' });
+    const wrap = el('details', {
+        class: `bg-gray-800 border ${opts.danger ? 'border-red-800' : 'border-gray-700'} rounded p-3 mb-2`,
+    }, [
+        el('summary', {
+            class: `cursor-pointer font-bold text-sm ${opts.danger ? 'text-red-400' : 'text-gray-200'}`,
+            text: title,
+        }),
+        body,
+    ]);
+    let loaded = false;
+    wrap.addEventListener('toggle', async () => {
+        if (!wrap.open || loaded) return;
+        loaded = true;
+        body.innerHTML = '';
+        body.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'Loading…' }));
+        try {
+            const content = await loader();
+            body.innerHTML = '';
+            body.appendChild(content);
+        } catch (e) {
+            body.innerHTML = '';
+            body.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
+            loaded = false;   // let the user retry by collapsing and reopening
+        }
+    });
+    return wrap;
+}
+
+/** An always-open section for the everyday controls. */
+function serverPanel(title, children, opts = {}) {
+    return el('div', {
+        class: `bg-gray-800 border ${opts.danger ? 'border-red-800' : 'border-gray-700'} rounded p-3 mb-2`,
+    }, [
+        el('h4', {
+            class: `font-bold text-sm mb-2 ${opts.danger ? 'text-red-400' : 'text-gray-200'}`,
+            text: title,
+        }),
+        ...children,
+    ]);
+}
+
+function stateBadge(text, tone) {
+    const tones = {
+        ok: 'bg-green-900/50 text-green-400 border-green-700',
+        warn: 'bg-yellow-900/50 text-yellow-400 border-yellow-700',
+        bad: 'bg-red-900/50 text-red-400 border-red-700',
+        idle: 'bg-gray-700 text-gray-400 border-gray-600',
+    };
+    return el('span', {
+        class: `text-xs px-2 py-0.5 rounded border ${tones[tone] || tones.idle}`,
+        text,
+    });
+}
+
 async function loadServerDetail(serviceName) {
     const container = document.getElementById('server-detail');
     if (!container) return;
+    // Selecting another server must not leave the previous one's pollers
+    // running against a panel that no longer exists.
+    clearTimeout(state._serverTaskTimer);
+    clearTimeout(state._installTimer);
+    state._serverPanelName = serviceName;
     container.innerHTML = '';
     container.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'Loading server details...' }));
     const gen = state._switchGen;
     try {
-        const data = await apiRequest('GET', `/servers/${encodeURIComponent(serviceName)}`);
+        // The capability probe can be slow on a first run (one OVH call per
+        // optional feature), but it's cached server-side afterwards. Failing it
+        // must not hide the server — fall back to "nothing optional".
+        const [data, caps] = await Promise.all([
+            apiRequest('GET', srv(serviceName)),
+            apiRequest('GET', srv(serviceName, '/capabilities')).catch(() => ({ capabilities: {} })),
+        ]);
         if (gen !== state._switchGen) return;
-        container.innerHTML = '';
-        const summary = data.summary || {};
-        container.appendChild(el('h3', { class: 'text-lg font-bold mb-3', text: summary.display_name || serviceName }));
-        const grid = el('div', { class: 'grid grid-cols-1 sm:grid-cols-2 gap-2' });
-        const detail = data.detail || {};
-        const info = data.service_info || {};
-        const fields = [
-            ['Service', serviceName],
-            ['State', detail.state],
-            ['Datacenter', detail.datacenter],
-            ['Range', detail.commercialRange],
-            ['OS', detail.os],
-            ['IP', detail.ip],
-            ['Reverse', detail.reverse],
-            ['Rack', detail.rack],
-            ['Monitoring', detail.monitoring != null ? String(detail.monitoring) : null],
-            ['Expiration', info.expiration],
-            ['Renewal', info.renewalType],
-            ['Creation', info.creation],
-        ];
-        for (const [label, value] of fields) {
-            if (value == null || value === '') continue;
-            grid.appendChild(el('div', { class: 'bg-gray-700 rounded p-2' }, [
-                el('p', { class: 'text-gray-500 text-xs', text: label }),
-                el('p', { class: 'text-gray-200 text-sm break-all', text: String(value) }),
-            ]));
-        }
-        container.appendChild(grid);
+        renderServerPanel(serviceName, data, caps.capabilities || {});
     } catch (e) {
         if (gen !== state._switchGen) return;
         container.innerHTML = '';
         container.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
     }
+}
+
+function renderServerPanel(serviceName, data, caps) {
+    const container = document.getElementById('server-detail');
+    container.innerHTML = '';
+    const detail = data.detail || {};
+    const info = data.service_info || {};
+    const summary = data.summary || {};
+
+    // Header
+    container.appendChild(el('div', { class: 'flex justify-between items-start gap-2 mb-3' }, [
+        el('div', { class: 'min-w-0' }, [
+            el('h3', { class: 'text-lg font-bold break-all', text: summary.display_name || serviceName }),
+            el('p', { class: 'text-gray-500 text-xs break-all', text: serviceName }),
+        ]),
+        el('div', { class: 'flex flex-col items-end gap-1' }, [
+            stateBadge(detail.state || 'unknown', detail.state === 'ok' ? 'ok' : 'bad'),
+            detail.powerState
+                ? stateBadge(detail.powerState, detail.powerState === 'poweron' ? 'ok' : 'warn')
+                : null,
+        ].filter(Boolean)),
+    ]));
+
+    container.appendChild(buildPowerPanel(serviceName, detail));
+    container.appendChild(buildFlagsPanel(serviceName, detail));
+    container.appendChild(buildTasksPanel(serviceName));
+    container.appendChild(buildReinstallPanel(serviceName));
+
+    // --- read-only info, lazily fetched ---
+    const res = (key, params) => async () => {
+        const r = await apiRequest('GET', srv(serviceName, `/resource/${key}`, params || ''));
+        return el('pre', {
+            class: 'text-xs text-gray-300 overflow-x-auto whitespace-pre-wrap break-all',
+            text: JSON.stringify(r.data, null, 2),
+        });
+    };
+
+    container.appendChild(lazySection('Hardware', async () => {
+        const r = await apiRequest('GET', srv(serviceName, '/resource/hardware'));
+        const h = r.data || {};
+        const cpu = h.processorName || (h.cpu || {}).brand;
+        return kvGrid([
+            ['CPU', cpu],
+            ['Cores / threads', h.coresPerProcessor && h.threadsPerProcessor
+                ? `${h.coresPerProcessor} cores · ${h.threadsPerProcessor} threads` : null],
+            ['Form factor', h.formFactor],
+            ['Memory', (h.memorySize || {}).value ? `${h.memorySize.value} ${h.memorySize.unit}` : null],
+            ['Disk groups', (h.diskGroups || []).length || null],
+            ['Motherboard', h.motherboard],
+            ['Expansion cards', (h.expansionCards || []).map(c => c.description).join(', ') || null],
+        ]);
+    }));
+
+    container.appendChild(lazySection('Network', async () => {
+        const r = await apiRequest('GET', srv(serviceName, '/resource/network_spec'));
+        const n = r.data || {};
+        const bw = n.bandwidth || {};
+        return kvGrid([
+            ['Switch', (n.switching || {}).name],
+            ['To internet', (bw.OvhToInternet || {}).value ? `${bw.OvhToInternet.value} ${bw.OvhToInternet.unit}` : null],
+            ['From internet', (bw.InternetToOvh || {}).value ? `${bw.InternetToOvh.value} ${bw.InternetToOvh.unit}` : null],
+            ['vRack', (n.vrack || {}).bandwidth ? `${n.vrack.bandwidth.value} ${n.vrack.bandwidth.unit}` : null],
+            ['Traffic', (n.traffic || {}).isThrottleable != null ? String(n.traffic.isThrottleable) : null],
+        ]);
+    }));
+
+    container.appendChild(lazySection('IP addresses', async () => {
+        const r = await apiRequest('GET', srv(serviceName, '/resource/ips'));
+        const list = el('div', { class: 'space-y-1' });
+        for (const ip of r.data || []) {
+            list.appendChild(el('p', { class: 'text-sm text-gray-300 font-mono break-all', text: ip }));
+        }
+        return (r.data || []).length ? list
+            : el('p', { class: 'text-gray-500 text-sm', text: 'No IPs reported.' });
+    }));
+
+    container.appendChild(lazySection('Traffic', () => buildTrafficSection(serviceName)));
+    container.appendChild(lazySection('Network interfaces', res('nic')));
+    container.appendChild(lazySection('Virtual network interfaces', res('vni')));
+    container.appendChild(lazySection('Options', res('options')));
+    container.appendChild(lazySection('Intervention history', res('intervention')));
+    container.appendChild(lazySection('Planned changes', res('planned_change')));
+    container.appendChild(lazySection('Virtual MACs', res('virtual_mac')));
+    container.appendChild(lazySection('Secondary DNS', res('secondary_dns')));
+    container.appendChild(lazySection('SPLA licences', res('spla')));
+    container.appendChild(lazySection('vRack', res('vrack')));
+
+    // --- capability-gated sections ---
+    if (caps.ipmi) {
+        container.appendChild(buildIpmiPanel(serviceName, caps.ipmi_features || {}));
+    }
+    if (caps.firewall) container.appendChild(lazySection('Firewall', res('firewall')));
+    if (caps.backup_cloud) container.appendChild(lazySection('Cloud backup', res('backup_cloud')));
+    if (caps.bios) container.appendChild(lazySection('BIOS settings', res('bios')));
+    if (caps.burst) container.appendChild(lazySection('Burst', res('burst')));
+
+    container.appendChild(lazySection('Service & renewal', async () => kvGrid([
+        ['Expiration', info.expiration],
+        ['Renewal', info.renewalType],
+        ['Creation', info.creation],
+        ['Status', info.status],
+        ['Engagement', (info.renew || {}).period ? `${info.renew.period} month(s)` : null],
+        ['Auto-renew', (info.renew || {}).automatic != null ? String(info.renew.automatic) : null],
+    ])));
+
+    container.appendChild(buildDangerZone(serviceName));
+}
+
+function buildPowerPanel(serviceName, detail) {
+    const select = el('select', {
+        id: 'server-boot-select',
+        class: 'bg-gray-700 px-2 py-1 rounded text-sm w-full',
+    }, [el('option', { value: '', text: 'Loading boot options…' })]);
+
+    apiRequest('GET', srv(serviceName, '/boot')).then(r => {
+        select.innerHTML = '';
+        for (const o of r.options || []) {
+            select.appendChild(el('option', {
+                value: String(o.boot_id),
+                text: `${o.description || o.kernel || o.boot_id} (${o.boot_type || '?'})`,
+            }));
+        }
+        if (detail.bootId != null) select.value = String(detail.bootId);
+    }).catch(() => {
+        select.innerHTML = '';
+        select.appendChild(el('option', { value: '', text: 'Could not load boot options' }));
+    });
+
+    const apply = async (reboot) => {
+        const bootId = parseInt(select.value, 10);
+        if (!bootId) return;
+        const chosen = select.options[select.selectedIndex]?.text || bootId;
+        if (reboot && !confirm(`Reboot ${serviceName} into "${chosen}"?\nThis interrupts anything running on it.`)) return;
+        try {
+            await apiRequest('PUT', srv(serviceName, '/boot'), { boot_id: bootId, reboot });
+            showToast(reboot ? `Rebooting into ${chosen}` : `Next boot set to ${chosen}`, 6000);
+            if (reboot) pollServerTasks(serviceName);
+        } catch (e) {
+            showToast(`Boot change failed: ${e.message}`, 8000);
+        }
+    };
+
+    return serverPanel('Power & Boot', [
+        el('div', { class: 'space-y-2' }, [
+            select,
+            el('div', { class: 'flex gap-2 flex-wrap' }, [
+                el('button', {
+                    class: 'bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm',
+                    text: 'Set next boot', onclick: () => apply(false),
+                }),
+                el('button', {
+                    class: 'bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-sm',
+                    text: 'Set & reboot', onclick: () => apply(true),
+                }),
+                el('button', {
+                    class: 'bg-yellow-600 hover:bg-yellow-700 px-3 py-1 rounded text-sm',
+                    text: 'Reboot now',
+                    onclick: async () => {
+                        if (!confirm(`Hard reboot ${serviceName}?\nThis interrupts anything running on it.`)) return;
+                        try {
+                            await apiRequest('POST', srv(serviceName, '/reboot'));
+                            showToast('Reboot requested', 6000);
+                            pollServerTasks(serviceName);
+                        } catch (e) {
+                            showToast(`Reboot failed: ${e.message}`, 8000);
+                        }
+                    },
+                }),
+            ]),
+            el('p', { class: 'text-gray-500 text-xs', text: 'A boot change only takes effect on the next boot — use "Set & reboot" to apply it now.' }),
+        ]),
+    ]);
+}
+
+function buildFlagsPanel(serviceName, detail) {
+    const monitoring = el('input', { type: 'checkbox', class: 'w-4 h-4' });
+    monitoring.checked = !!detail.monitoring;
+    const noIntervention = el('input', { type: 'checkbox', class: 'w-4 h-4' });
+    noIntervention.checked = !!detail.noIntervention;
+    const rescueMail = el('input', {
+        type: 'email', class: 'bg-gray-700 px-2 py-1 rounded text-sm w-full',
+        placeholder: 'Rescue credentials email', value: detail.rescueMail || '',
+    });
+    const rescueKey = el('input', {
+        type: 'text', class: 'bg-gray-700 px-2 py-1 rounded text-sm w-full font-mono',
+        placeholder: 'Rescue mode SSH public key', value: detail.rescueSshKey || '',
+    });
+
+    return serverPanel('Flags & rescue', [
+        el('div', { class: 'space-y-2' }, [
+            el('label', { class: 'flex items-center gap-2 text-sm' }, [
+                monitoring, el('span', { text: 'ICMP monitoring' }),
+            ]),
+            el('label', { class: 'flex items-center gap-2 text-sm' }, [
+                noIntervention, el('span', { text: 'Block datacenter intervention' }),
+            ]),
+            rescueMail,
+            rescueKey,
+            el('button', {
+                class: 'bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-sm',
+                text: 'Save',
+                onclick: async (e) => {
+                    const btn = e.target;
+                    btn.disabled = true;
+                    try {
+                        await apiRequest('PUT', srv(serviceName, '/properties'), {
+                            monitoring: monitoring.checked,
+                            no_intervention: noIntervention.checked,
+                            rescue_mail: rescueMail.value || null,
+                            rescue_ssh_key: rescueKey.value || null,
+                        });
+                        showToast('Server properties saved', 4000);
+                    } catch (err) {
+                        showToast(`Save failed: ${err.message}`, 8000);
+                    } finally {
+                        btn.disabled = false;
+                    }
+                },
+            }),
+        ]),
+    ]);
+}
+
+function buildTasksPanel(serviceName) {
+    const body = el('div', { id: 'server-tasks-body', class: 'space-y-1' }, [
+        el('p', { class: 'text-gray-500 text-sm', text: 'Loading tasks…' }),
+    ]);
+    const p = serverPanel('Tasks', [
+        body,
+        el('button', {
+            class: 'bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm mt-2',
+            text: 'Refresh', onclick: () => refreshServerTasks(serviceName, body),
+        }),
+    ]);
+    refreshServerTasks(serviceName, body);
+    return p;
+}
+
+async function refreshServerTasks(serviceName, body) {
+    try {
+        const r = await apiRequest('GET', srv(serviceName, '/tasks?limit=10'));
+        body.innerHTML = '';
+        const tasks = r.tasks || [];
+        if (!tasks.length) {
+            body.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No recent tasks.' }));
+            return tasks;
+        }
+        for (const t of tasks) {
+            const status = String(t.status || 'unknown');
+            const done = SERVER_TASK_TERMINAL.includes(status);
+            const row = el('div', { class: 'flex justify-between items-center gap-2 bg-gray-700/50 rounded p-2' }, [
+                el('div', { class: 'min-w-0' }, [
+                    el('p', { class: 'text-sm text-gray-200 truncate', text: t.function || t.comment || `Task ${t.taskId}` }),
+                    el('p', { class: 'text-gray-500 text-xs', text: t.startDate ? fmtTimelineDate(t.startDate) : `#${t.taskId}` }),
+                ]),
+                el('div', { class: 'flex items-center gap-2' }, [
+                    stateBadge(status, status === 'done' ? 'ok' : done ? 'bad' : 'warn'),
+                    done ? null : el('button', {
+                        class: 'text-xs text-gray-400 hover:text-red-400',
+                        text: 'Cancel',
+                        onclick: async () => {
+                            if (!confirm(`Cancel task ${t.taskId}? OVH only allows this for some tasks.`)) return;
+                            try {
+                                await apiRequest('POST', srv(serviceName, `/tasks/${t.taskId}/cancel`));
+                                showToast('Task cancellation requested', 5000);
+                                refreshServerTasks(serviceName, body);
+                            } catch (e) {
+                                showToast(`Cancel failed: ${e.message}`, 8000);
+                            }
+                        },
+                    }),
+                ].filter(Boolean)),
+            ]);
+            body.appendChild(row);
+        }
+        return tasks;
+    } catch (e) {
+        body.innerHTML = '';
+        body.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
+        return [];
+    }
+}
+
+/** Poll the task list while anything is still running, so a reboot or install
+ *  visibly progresses instead of needing manual refreshes. Stops on its own. */
+function pollServerTasks(serviceName) {
+    clearTimeout(state._serverTaskTimer);
+    const tick = async () => {
+        // Stop if the panel is gone or now shows a different server — the
+        // element is rebuilt on every selection, so this ends itself.
+        const panelBody = document.getElementById('server-tasks-body');
+        if (!panelBody || state._serverPanelName !== serviceName) return;
+        const tasks = await refreshServerTasks(serviceName, panelBody);
+        const busy = (tasks || []).some(t => !SERVER_TASK_TERMINAL.includes(String(t.status)));
+        if (busy) state._serverTaskTimer = setTimeout(tick, 15000);
+    };
+    state._serverTaskTimer = setTimeout(tick, 5000);
+}
+
+async function buildTrafficSection(serviceName) {
+    const wrap = el('div', {});
+    const period = el('select', { class: 'bg-gray-700 px-2 py-1 rounded text-sm' },
+        ['hourly', 'daily', 'weekly', 'monthly', 'yearly'].map(p =>
+            el('option', { value: p, text: p })));
+    period.value = 'daily';
+    const type = el('select', { class: 'bg-gray-700 px-2 py-1 rounded text-sm' },
+        ['traffic:download', 'traffic:upload', 'packets:download', 'packets:upload',
+         'errors:download', 'errors:upload'].map(t => el('option', { value: t, text: t })));
+    const chart = el('div', { class: 'mt-2' });
+
+    const draw = async () => {
+        chart.innerHTML = '';
+        chart.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'Loading…' }));
+        try {
+            const r = await apiRequest('GET', srv(serviceName,
+                `/resource/mrtg?period=${encodeURIComponent(period.value)}&type=${encodeURIComponent(type.value)}`));
+            // OVH returns null values for buckets it has no data for (common on
+            // a freshly delivered server) — charting those would break the path.
+            const pts = (r.data || [])
+                .filter(p => typeof p.value === 'number')
+                .map(p => ({ v: p.value, label: fmtTimelineDate(new Date(p.timestamp * 1000).toISOString()) }));
+            chart.innerHTML = '';
+            if (pts.length < 2) {
+                chart.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No traffic data for this period yet.' }));
+                return;
+            }
+            const values = pts.map(p => p.v);
+            chart.appendChild(buildSparkline(pts, Math.min(...values), Math.max(...values), {
+                format: v => `${v.toLocaleString()} ${type.value.startsWith('traffic') ? 'bps' : '/s'}`,
+                label: `${type.value} over ${period.value}`,
+            }));
+        } catch (e) {
+            chart.innerHTML = '';
+            chart.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
+        }
+    };
+    period.addEventListener('change', draw);
+    type.addEventListener('change', draw);
+    wrap.appendChild(el('div', { class: 'flex gap-2 flex-wrap' }, [period, type]));
+    wrap.appendChild(chart);
+    draw();
+    return wrap;
+}
+
+function buildIpmiPanel(serviceName, features) {
+    // Only offer the console types OVH says this machine supports. On a KS-C
+    // that is kvmipJnlp alone — the other three buttons would 400.
+    const supported = Object.entries(features).filter(([, ok]) => ok).map(([k]) => k);
+    const labels = {
+        kvmipHtml5URL: 'Open HTML5 KVM',
+        kvmipJnlp: 'Download KVM .jnlp',
+        serialOverLanURL: 'Serial-over-LAN URL',
+        serialOverLanSshKey: 'Serial-over-LAN (SSH key)',
+    };
+
+    const buttons = supported.map(t => el('button', {
+        class: 'bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm',
+        text: labels[t] || t,
+        onclick: async () => {
+            try {
+                await apiRequest('POST', srv(serviceName, '/ipmi/access'), { type: t, ttl: 15 });
+                showToast('IPMI session requested — fetching access…', 5000);
+                setTimeout(async () => {
+                    try {
+                        const r = await apiRequest('GET', srv(serviceName, `/ipmi/access?type=${encodeURIComponent(t)}`));
+                        const value = r.access?.value || r.access;
+                        if (typeof value === 'string' && value.startsWith('http')) {
+                            window.open(value, '_blank', 'noopener');
+                        } else {
+                            showToast('IPMI session ready — see the OVH manager for the file.', 8000);
+                        }
+                    } catch (e) {
+                        showToast(`IPMI access not ready: ${e.message}`, 8000);
+                    }
+                }, 5000);
+            } catch (e) {
+                showToast(`IPMI request failed: ${e.message}`, 8000);
+            }
+        },
+    }));
+
+    const actions = [['test', 'Run IPMI test'], ['reset-sessions', 'Reset sessions'],
+                     ['reset-interface', 'Reset interface']]
+        .map(([action, label]) => el('button', {
+            class: 'bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm',
+            text: label,
+            onclick: async () => {
+                if (!confirm(`${label} on ${serviceName}?`)) return;
+                try {
+                    await apiRequest('POST', srv(serviceName, `/ipmi/${action}`));
+                    showToast(`${label}: requested`, 5000);
+                } catch (e) {
+                    showToast(`${label} failed: ${e.message}`, 8000);
+                }
+            },
+        }));
+
+    return serverPanel('IPMI / KVM', [
+        supported.length
+            ? el('div', { class: 'flex gap-2 flex-wrap mb-2' }, buttons)
+            : el('p', { class: 'text-gray-500 text-sm mb-2', text: 'This server reports no supported console types.' }),
+        el('div', { class: 'flex gap-2 flex-wrap' }, actions),
+    ]);
+}
+
+function buildReinstallPanel(serviceName) {
+    const os = el('select', { class: 'bg-gray-700 px-2 py-1 rounded text-sm w-full' },
+        [el('option', { value: '', text: 'Loading templates…' })]);
+    apiRequest('GET', srv(serviceName, '/install/templates')).then(r => {
+        os.innerHTML = '';
+        for (const t of r.all || []) os.appendChild(el('option', { value: t, text: t }));
+    }).catch(() => {
+        os.innerHTML = '';
+        os.appendChild(el('option', { value: '', text: 'Could not load templates' }));
+    });
+
+    const hostname = el('input', {
+        type: 'text', class: 'bg-gray-700 px-2 py-1 rounded text-sm w-full',
+        placeholder: 'Hostname (optional)',
+    });
+    const sshKey = el('input', {
+        type: 'text', class: 'bg-gray-700 px-2 py-1 rounded text-sm w-full font-mono',
+        placeholder: 'SSH public key (optional)',
+    });
+    const script = el('textarea', {
+        class: 'bg-gray-700 px-2 py-1 rounded text-sm w-full font-mono', rows: '3',
+        placeholder: 'Post-installation script (optional)',
+    });
+    const imageUrl = el('input', {
+        type: 'text', class: 'bg-gray-700 px-2 py-1 rounded text-sm w-full',
+        placeholder: 'Custom image URL (BYOI, optional)',
+    });
+    const status = el('p', { class: 'text-gray-500 text-xs mt-2', text: '' });
+
+    return serverPanel('Reinstall', [
+        el('div', { class: 'space-y-2' }, [
+            os, hostname, sshKey, script, imageUrl,
+            el('button', {
+                class: 'bg-red-700 hover:bg-red-800 px-3 py-1 rounded text-sm',
+                text: 'Reinstall…',
+                onclick: async () => {
+                    if (!os.value) { showToast('Pick an OS template first', 4000); return; }
+                    if (!confirmTyped(
+                        `REINSTALL ${serviceName} with ${os.value}?\n\nThis ERASES the server. All data on it is lost.`,
+                        serviceName,
+                    )) return;
+                    const customizations = {};
+                    if (hostname.value) customizations.hostname = hostname.value;
+                    if (sshKey.value) customizations.ssh_key = sshKey.value;
+                    if (script.value) customizations.post_installation_script = script.value;
+                    if (imageUrl.value) customizations.image_url = imageUrl.value;
+                    try {
+                        await apiRequest('POST', srv(serviceName, '/reinstall'), {
+                            operating_system: os.value,
+                            customizations: Object.keys(customizations).length ? customizations : null,
+                        });
+                        showToast('Reinstall started', 8000);
+                        pollInstallStatus(serviceName, status);
+                    } catch (e) {
+                        showToast(`Reinstall failed: ${e.message}`, 10000);
+                    }
+                },
+            }),
+            status,
+        ]),
+    ], { danger: true });
+}
+
+async function pollInstallStatus(serviceName, target) {
+    clearTimeout(state._installTimer);
+    const tick = async () => {
+        try {
+            const r = await apiRequest('GET', srv(serviceName, '/install/status'));
+            if (!r.installing) {
+                target.textContent = 'No installation running.';
+                return;
+            }
+            const steps = (r.status || {}).progress || [];
+            const current = steps.filter(s => s.status === 'doing').map(s => s.comment).join(', ');
+            const done = steps.filter(s => s.status === 'done').length;
+            target.textContent = `Installing: ${done}/${steps.length} steps${current ? ` — ${current}` : ''}`;
+            state._installTimer = setTimeout(tick, 20000);
+        } catch (e) {
+            target.textContent = `Install status unavailable: ${e.message}`;
+        }
+    };
+    tick();
+}
+
+function buildDangerZone(serviceName) {
+    return serverPanel('Danger Zone', [
+        el('p', { class: 'text-gray-400 text-xs mb-2', text: 'Termination is two steps: OVH emails you a token, which you paste below to confirm. Requesting it alone cancels nothing.' }),
+        el('div', { class: 'flex gap-2 flex-wrap items-center' }, [
+            el('button', {
+                class: 'bg-red-700 hover:bg-red-800 px-3 py-1 rounded text-sm',
+                text: 'Request termination',
+                onclick: async () => {
+                    if (!confirmTyped(
+                        `Request termination of ${serviceName}?\n\nOVH will email a confirmation token. The service is NOT cancelled until you submit it.`,
+                        serviceName,
+                    )) return;
+                    try {
+                        await apiRequest('POST', srv(serviceName, '/terminate'));
+                        showToast('Termination requested — check your email for the token.', 12000);
+                    } catch (e) {
+                        showToast(`Termination request failed: ${e.message}`, 10000);
+                    }
+                },
+            }),
+            (() => {
+                const token = el('input', {
+                    type: 'text', class: 'bg-gray-700 px-2 py-1 rounded text-sm',
+                    placeholder: 'Emailed token',
+                });
+                const confirmBtn = el('button', {
+                    class: 'bg-red-800 hover:bg-red-900 px-3 py-1 rounded text-sm',
+                    text: 'Confirm termination',
+                    onclick: async () => {
+                        if (!token.value.trim()) { showToast('Paste the emailed token first', 4000); return; }
+                        if (!confirmTyped(
+                            `CONFIRM TERMINATION of ${serviceName}?\n\nThis cancels the service at the end of its billing term. It cannot be undone here.`,
+                            serviceName,
+                        )) return;
+                        try {
+                            await apiRequest('POST', srv(serviceName, '/confirm-termination'), { token: token.value.trim() });
+                            showToast('Termination confirmed.', 12000);
+                        } catch (e) {
+                            showToast(`Confirmation failed: ${e.message}`, 10000);
+                        }
+                    },
+                });
+                return el('div', { class: 'flex gap-2 items-center' }, [token, confirmBtn]);
+            })(),
+        ]),
+    ], { danger: true });
 }
 
 async function loadOrdersTab(refresh = false) {
@@ -5073,7 +5690,12 @@ function renderPriceTrend(planCode, history) {
 
 // Inline SVG line chart (no chart library). 2px line, min/max gridlines,
 // per-point hover via <title>.
-function buildSparkline(pts, min, max) {
+function buildSparkline(pts, min, max, opts = {}) {
+    // `format` renders the hover value and `label` names the chart for screen
+    // readers. Both default to the price-history case this was written for; the
+    // server traffic graph passes its own so values aren't shown as currency.
+    const format = opts.format || formatCurrency;
+    const ariaLabel = opts.label || 'Price over time';
     const W = 400, H = 96, padX = 6, padY = 10;
     const span = (max - min) || 1;
     const n = pts.length;
@@ -5082,11 +5704,11 @@ function buildSparkline(pts, min, max) {
     const line = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.v).toFixed(1)}`).join(' ');
     const area = `${line} L${x(n - 1).toFixed(1)},${(H - padY).toFixed(1)} L${x(0).toFixed(1)},${(H - padY).toFixed(1)} Z`;
     const dots = pts.map((p, i) =>
-        `<circle cx="${x(i).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="3.5" fill="#60a5fa"><title>${p.label} — ${formatCurrency(p.v)}</title></circle>`
+        `<circle cx="${x(i).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="3.5" fill="#60a5fa"><title>${p.label} — ${format(p.v)}</title></circle>`
     ).join('');
     const wrap = el('div', { class: 'w-full' });
     wrap.innerHTML =
-        `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="none" role="img" aria-label="Price over time">
+        `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="none" role="img" aria-label="${ariaLabel}">
             <line x1="${padX}" y1="${padY}" x2="${W - padX}" y2="${padY}" stroke="#374151" stroke-width="1" stroke-dasharray="3 3"/>
             <line x1="${padX}" y1="${H - padY}" x2="${W - padX}" y2="${H - padY}" stroke="#374151" stroke-width="1" stroke-dasharray="3 3"/>
             <path d="${area}" fill="rgba(59,130,246,0.12)"/>
