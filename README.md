@@ -165,6 +165,7 @@ Generate the `.htpasswd` file with `htpasswd -c /etc/nginx/.htpasswd admin`.
   - **Tasks** - live view of OVH's task queue with cancel, auto-refreshing while anything is running
   - **Reinstall** - pick from the OS templates compatible with your hardware, with hostname, SSH key, post-install script and custom-image (BYOI) options, and live installation progress
   - **IPMI / KVM** - request a console session; only the console types your machine actually reports are offered
+  - **Console in your browser** - "Open console in browser" gives you the server's screen, keyboard and mouse in a normal Chrome tab, **even on hardware where OVH only offers a Java `.jnlp`**. OVH's entry-level servers report `kvmipHtml5URL: false`, and Java Web Start no longer runs anywhere — but the `.jnlp` is only a connection descriptor. Behind it these BMCs are ATEN iKVM speaking plain VNC, so ECOVibe brokers the session, relays it over a WebSocket, and renders it with a vendored noVNC build that understands ATEN's video encoding. No Java, no containers, no browser plugins
   - **Info panels** - hardware, network, IPs, interfaces, options, licences, intervention history, planned changes, virtual MACs, secondary DNS, SPLA, vRack, and traffic graphs
   - **Service** - renewal settings, and a two-step termination flow (OVH emails a token; nothing is cancelled without it)
 - **Only what your server supports is shown.** OVH advertises 98 API paths for dedicated servers but any given machine implements a subset — an entry-level box has no firewall, KVM, cloud backup, BIOS settings, burst or hardware RAID. ECOVibe probes each server once, caches the answer, and renders only the sections that exist, so there are no dead buttons
@@ -373,7 +374,11 @@ GET    /api/servers/{name}/install/raid-profile         - Hardware RAID profile 
 GET    /api/servers/{name}/install/status               - Installation progress
 POST   /api/servers/{name}/reinstall                    - Reinstall the OS (ERASES the server)
 GET    /api/servers/{name}/ipmi                         - IPMI state + supported console types
-POST   /api/servers/{name}/ipmi/access                  - Open a console session
+POST   /api/servers/{name}/ipmi/session                 - Open a console session (POST + task poll + fetch)
+POST   /api/servers/{name}/ipmi/access                  - Raw access request (returns a task)
+POST   /api/servers/{name}/console/session              - Broker a browser console session
+WS     /api/servers/{name}/console/ws?session=          - WebSocket relay to the BMC
+GET    /console/{name}                                  - Full-page browser KVM console
 POST   /api/servers/{name}/ipmi/{test|reset-sessions|reset-interface}
 POST   /api/servers/{name}/ola/{group|ungroup|aggregation|reset}
 POST   /api/servers/{name}/vni/{uuid}/{enable|disable}  - Virtual network interface
@@ -504,6 +509,7 @@ ovh-gui/
 │   │   ├── insights.py      # History, patterns, price, promos, region activity
 │   │   ├── orders.py        # Order management (live OVH list, detail, follow-up, waive, cancel)
 │   │   ├── servers.py       # Owned dedicated servers: full control, capability-gated
+│   │   ├── console.py       # Browser KVM: session brokering + WebSocket↔BMC relay
 │   │   ├── accounts.py      # Multi-account CRUD + active switch + test
 │   │   ├── settings.py      # Notification channel settings (Telegram/Discord/Slack/SMTP)
 │   │   ├── account.py       # OVH account + payment methods + defaults + bills
@@ -521,7 +527,7 @@ ovh-gui/
 ├── static/css/input.css     # Tailwind v4 source
 ├── static/css/app.css       # Built/minified (do not edit)
 ├── templates/index.html    # SPA shell with cache-busted asset refs
-├── tests/                   # pytest suite (347 tests, uses TestClient)
+├── tests/                   # pytest suite (364 tests, uses TestClient)
 ├── requirements.txt         # Runtime dependencies
 ├── requirements-dev.txt     # Dev dependencies (ruff, pytest, httpx)
 ├── pyproject.toml           # Project metadata + tool config

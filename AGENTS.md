@@ -139,6 +139,7 @@ app/
 │   ├── insights.py      # History, patterns, price, promos, region activity, catalog changes
 │   ├── orders.py        # Order management (live OVH list, detail, follow-up, waive)
 │   ├── servers.py       # Owned dedicated servers: full control, capability-gated
+│   ├── console.py       # Browser KVM: session brokering + WebSocket↔BMC relay
 │   ├── accounts.py      # Multi-account CRUD + active switch + test
 │   ├── settings.py      # Notification channel settings (Telegram/Discord/Slack/SMTP)
 │   ├── account.py       # OVH account + payment methods + defaults + bills
@@ -158,7 +159,7 @@ static/js/app.js         # Frontend SPA (vanilla JS, ~4600 lines)
 static/css/input.css     # Tailwind source
 static/css/app.css       # Built/minified (do not edit — rebuild from input.css)
 templates/index.html     # SPA shell with cache-busted asset refs
-tests/                   # pytest suite (347 tests, uses TestClient)
+tests/                   # pytest suite (364 tests, uses TestClient)
 ```
 
 ## Multi-account model
@@ -521,6 +522,44 @@ were created under (`account_id` column on each table).
   termination) are gated in the UI by `confirmTyped()`, which requires typing
   the service name. Termination is inherently two-step: `POST /terminate` only
   makes OVH email a token, and `/confirmTermination` needs that token.
+- **The KVM console is ATEN iKVM = plain RFB, not Java.** OVH reports
+  `kvmipJnlp: true, kvmipHtml5URL: false` on Kimsufi hardware, which reads as
+  "Java applet, dead in browsers". It isn't: the `.jnlp` is only a *connection
+  descriptor*. Verified live on `ns3147088.ip-51-83-10.eu` — its
+  `<application-desc main-class="tw.com.aten.ikvm.KVMMain">` carries positional
+  arguments `host, user, password, (unused), videoPort=5900, ipmiPort=623, …`,
+  and connecting to that host:port greets with `RFB 003.008` offering exactly
+  one security type, `16`. So the console is a VNC problem. Nothing Java runs
+  anywhere in this feature.
+  - `app/api/console.py` brokers a session (OVH IPMI access → parse the JNLP →
+    stash host/port/creds under an opaque id) and relays
+    `WebSocket ↔ BMC TCP`. A browser cannot open a raw socket, so the relay is
+    mandatory; it is asyncio in this process — **no container, no new
+    dependency** (`uvicorn[standard]` already ships `websockets`).
+  - `static/vendor/novnc` is the **kelleyk/noVNC `bmc-support` fork** (MPL-2.0,
+    see its `PROVENANCE.md`). Upstream noVNC cannot talk to these BMCs: the fork
+    adds ATEN security type 16 (`_negotiate_aten_auth` — skip 4+16 bytes, then
+    username and password each NUL-padded to 24) and the ATEN video encodings
+    (`0x57` AST2100 and friends). Vendored **unmodified**; keep it that way.
+  - **The relay is deliberately a dumb byte pipe and the browser gets the
+    credentials.** Terminating the handshake server-side would keep them here,
+    but noVNC only switches into ATEN mode *inside* `_negotiate_aten_auth`
+    (it sets `_rfb_atenikvm`/`_convert_color` there, and the ATEN encodings and
+    `atenKeyEvent`/`atenPointerEvent` framing are gated on that flag), so faking
+    the handshake would leave the decoder off. The credentials are per-session
+    and expire with OVH's TTL; the BMC host/port still never reach the browser.
+  - `templates/kvm.html` loads the vendored bundle with plain `<script>` tags —
+    the 2017 tree is globals with the ES-module form in `[module]` comments, so
+    there is no build step. **Order matters** and is taken from the fork's own
+    `vnc_auto.html`; `rfb.js` must come after `util`, `websock`, `display`,
+    `inflator`, `des`, `input/*` and `ast2100/*`.
+  - **OVH's access flow is three steps and the middle one is not optional**:
+    `POST /features/ipmi/access` returns a *task*, and the value only exists
+    once it reaches `done` (~12s measured live). `POST /api/servers/{name}/ipmi/session`
+    does POST → poll task → GET value, reuses an unexpired session rather than
+    burning a task, and sets `ipToAllow` — which must be the address the
+    *connection* comes from, i.e. this host for the relay path
+    (`_public_egress_ip()`), not the browser's LAN address.
 - **Catalog config-option order**: OVH returns `plan.addonFamilies` (and the
   addons within each) in arbitrary order. `renderCatalogDetail` standardizes them
   once — families in `CATALOG_FAMILY_ORDER` (memory→storage→bandwidth→vrack),
