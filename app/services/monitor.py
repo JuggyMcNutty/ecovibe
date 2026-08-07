@@ -18,7 +18,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatch
 from typing import Any
 
@@ -37,6 +37,22 @@ logger = logging.getLogger(__name__)
 # hammering it every second would keep the per-account client lock busy
 # and strain OVH. Single-plan polling keeps its 1s fidelity for sniping.
 BATCH_MIN_POLL_INTERVAL = 3
+
+# Delivery watch. An order in one of these states is finished with — OVH will
+# not move it again — so it is never re-queried, and a long order history
+# costs nothing after the first settle.
+TERMINAL_ORDER_STATUSES = frozenset({"delivered", "cancelled"})
+
+# Terminal transitions worth a notification. Intermediate churn
+# (checking → delivering) is persisted and streamed but never fanned out.
+NOTIFY_ORDER_STATUSES = TERMINAL_ORDER_STATUSES
+
+# How far back the delivery watch lists orders, and how many status calls it
+# will spend per account per cycle. Every OVH call serialises on the account's
+# client lock, so an account with a pile of pending orders must not be able to
+# monopolise a cycle (same reasoning as name_budget in api/orders.py).
+ORDER_WATCH_DAYS = 90
+ORDER_STATUS_BUDGET = 10
 
 
 @dataclass
@@ -327,6 +343,9 @@ class MonitorService:
         self._last_prune = 0.0
         # Monotonic timestamp of the last price/promo catalog check.
         self._last_price_check = 0.0
+        # Monotonic timestamp of the last delivery watch (order status +
+        # owned-server diff). Separate cadence from the price check.
+        self._last_order_check = 0.0
         self._poll_interval = 3  # clamped to [1, 60]
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
@@ -557,6 +576,13 @@ class MonitorService:
                 raise
             except Exception:
                 logger.exception("price/promo check failed")
+            # Periodic delivery watch (order status + owned servers).
+            try:
+                await self._maybe_check_orders_and_servers()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("order/server check failed")
             await asyncio.sleep(self._effective_sleep())
 
     def _publish(self, item: Any) -> None:
@@ -1102,6 +1128,225 @@ class MonitorService:
                 await notify_catalog_change(added, removed, account_label=label)
             except Exception:
                 logger.warning("catalog change notify failed", exc_info=True)
+
+    async def _maybe_check_orders_and_servers(self) -> None:
+        """Every ``order_check_interval`` seconds, for EVERY account: re-check
+        the status of its non-terminal orders and diff its dedicated-server
+        list. Best-effort; never raises.
+
+        This is what makes a delivery visible without the browser: the Orders
+        and Servers tabs only fetch OVH when they are opened, so before this
+        watch existed an order sat at whatever status it had when the tab was
+        last viewed and OVH's own email was the only notice a server was ready.
+
+        Runs per-account for the same reason the poller does, and honours the
+        same per-account master switch — off means no OVH work at all.
+        """
+        interval = app_setting_int("order_check_interval")
+        if interval <= 0:
+            return
+        if time.monotonic() - self._last_order_check < interval:
+            return
+        self._last_order_check = time.monotonic()
+        storage = self._storage_get()
+        if not storage:
+            return
+        accounts = await asyncio.to_thread(storage.list_accounts)
+        for acct in accounts:
+            if not self._monitoring_enabled.get(acct["id"], True):
+                continue
+            service = get_ovh_service(acct["id"])
+            if not service.is_configured():
+                continue
+            for check in (self._check_orders, self._check_servers):
+                try:
+                    await check(service, storage)
+                except Exception:
+                    # One account (or one half of the watch) failing must not
+                    # skip the rest.
+                    logger.warning(
+                        "%s failed for account %s",
+                        check.__name__, acct["id"], exc_info=True,
+                    )
+
+    async def _check_orders(self, service, storage) -> None:
+        """Re-check non-terminal orders and record/notify status transitions.
+
+        Costs one ``/me/order`` list call plus one status call per pending
+        order (capped by ``ORDER_STATUS_BUDGET``). Terminal orders are skipped
+        outright, so a settled account costs exactly one call per cycle.
+
+        **Notify only on a transition from a status we already knew.** An order
+        id seen for the first time is recorded silently — otherwise a fresh
+        install (or an account whose orders were all placed in the OVH manager)
+        would fan out a notification for every historical delivered order the
+        first time this ran. That is the same priming lesson as the catalog
+        watch, expressed as a rule about transitions instead of a first-scan
+        branch, so it also covers an account that gains orders later.
+        """
+        from app.services.notifier import notify_order_status
+
+        date_from = (
+            datetime.now(timezone.utc) - timedelta(days=ORDER_WATCH_DAYS)
+        ).isoformat()
+        try:
+            ovh_ids = await asyncio.to_thread(service.list_orders, date_from, None)
+        except OVHServiceError as e:
+            if e.status_code != 404:
+                raise
+            ovh_ids = []
+
+        local_rows = await asyncio.to_thread(
+            storage.load_orders, 200, service.account_id
+        )
+        known: dict[int, str | None] = {
+            r["order_id"]: r.get("status") for r in local_rows if r.get("order_id")
+        }
+        names: dict[int, str | None] = {
+            r["order_id"]: (r.get("server_name") or r.get("plan_code") or None)
+            for r in local_rows if r.get("order_id")
+        }
+
+        budget = ORDER_STATUS_BUDGET
+        changes: list[dict[str, Any]] = []
+        notify: list[dict[str, Any]] = []
+        primed = 0
+        # Newest first: a just-placed order is the one the user is waiting on.
+        for oid in sorted(ovh_ids, reverse=True):
+            previous = known.get(oid)
+            if previous in TERMINAL_ORDER_STATUSES:
+                continue
+            if budget <= 0:
+                break
+            budget -= 1
+            try:
+                status = str(await asyncio.to_thread(service.get_order_status, oid))
+            except OVHServiceError:
+                logger.debug("order status fetch failed for %s", oid, exc_info=True)
+                continue
+            if status == previous:
+                continue
+            await asyncio.to_thread(
+                storage.upsert_order_enriched, oid,
+                status=status, account_id=service.account_id,
+            )
+            if oid not in known:
+                # First sighting — record the baseline, say nothing.
+                primed += 1
+                continue
+            logger.info(
+                "order %s (account %s): %s -> %s",
+                oid, service.account_id, previous or "?", status,
+            )
+            entry = {
+                "order_id": oid, "name": names.get(oid),
+                "status": status, "previous": previous,
+            }
+            changes.append(entry)
+            if status in NOTIFY_ORDER_STATUSES:
+                notify.append(entry)
+
+        if primed:
+            logger.info(
+                "order watch primed: %d order(s) for account %s",
+                primed, service.account_id,
+            )
+        if not changes:
+            return
+        label = self._account_label(service.account_id)
+        self._publish({
+            "type": "order_update",
+            "account_id": service.account_id,
+            "account_label": label,
+            "changes": changes,
+        })
+        for entry in notify:
+            try:
+                await notify_order_status(
+                    entry["order_id"], entry["name"], entry["status"],
+                    entry["previous"], account_label=label,
+                )
+            except Exception:
+                logger.warning("order status notify failed", exc_info=True)
+
+    async def _check_servers(self, service, storage) -> None:
+        """Diff the account's dedicated-server list against the stored snapshot.
+
+        One OVH call. A delivered order turns into a machine appearing here, so
+        this is the signal that the thing the user actually ordered has landed.
+
+        Unlike the catalog watch there is no "more than half missing" guard:
+        that rule exists because a truncated ~700-plan catalog response is
+        indistinguishable from a retired region, whereas ``/dedicated/server``
+        returns a short, complete list where ``[]`` is a legitimate answer (an
+        account may genuinely own no servers). A failed fetch raises and leaves
+        the snapshot untouched — that is the guard that matters here.
+        """
+        from app.services.notifier import notify_server_change
+
+        names = await asyncio.to_thread(service.list_dedicated_servers)
+        current = [str(n) for n in (names or [])]
+
+        snapshot = await asyncio.to_thread(
+            storage.load_owned_servers, service.account_id
+        )
+        added = [n for n in current if n not in snapshot]
+        removed = [n for n in snapshot if n not in current]
+        seen = [n for n in current if n in snapshot]
+        now = datetime.now(timezone.utc)
+
+        # "No snapshot rows" is ambiguous — it means both "never scanned" and
+        # "owns no servers" — so priming is tracked by an explicit marker.
+        # Without it, an account that starts empty (the common case: you buy
+        # your first server through this app) would treat that first delivery
+        # as a baseline and never announce it.
+        marker = f"server_watch_primed_{service.account_id}"
+        primed = await asyncio.to_thread(storage.get_setting, marker)
+        if not primed:
+            await asyncio.to_thread(
+                storage.apply_server_diff, service.account_id,
+                current, [], [], now,
+            )
+            await asyncio.to_thread(storage.set_setting, marker, "true")
+            logger.info(
+                "server watch primed: %d server(s) for account %s",
+                len(current), service.account_id,
+            )
+            return
+
+        if not added and not removed:
+            # Nothing to record. `last_seen` is deliberately not refreshed on a
+            # no-op cycle (same as the catalog watch): nothing reads it, and a
+            # write every interval per account would be pure churn.
+            return
+
+        await asyncio.to_thread(
+            storage.apply_server_diff, service.account_id, added, removed, seen, now,
+        )
+        if added:
+            logger.info(
+                "server watch: %d server(s) added for account %s: %s",
+                len(added), service.account_id, ", ".join(added[:10]),
+            )
+        if removed:
+            logger.info(
+                "server watch: %d server(s) removed for account %s: %s",
+                len(removed), service.account_id, ", ".join(removed[:10]),
+            )
+        label = self._account_label(service.account_id)
+        self._publish({
+            "type": "server_change",
+            "account_id": service.account_id,
+            "account_label": label,
+            "added": added[:50],
+            "removed": removed[:50],
+            "added_count": len(added),
+            "removed_count": len(removed),
+        })
+        try:
+            await notify_server_change(added, removed, account_label=label)
+        except Exception:
+            logger.warning("server change notify failed", exc_info=True)
 
     async def _maybe_prune_events(self) -> None:
         """Prune old stock events at most once an hour (best-effort)."""
