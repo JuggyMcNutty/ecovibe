@@ -345,6 +345,70 @@ def test_resize_only_reads_back_the_surviving_overlap():
     assert re.findall(r"getContext\((.*?)\)", src) == ["'2d'", "'2d'"]
 
 
+def _aten_hermon_source():
+    src = open(_RFB_JS).read()
+    body = src[src.index("ATEN_HERMON: function"):]
+    return body[:body.index("ATEN_AST2100: function")]
+
+
+def test_the_screen_off_rect_is_accounted_for():
+    """ATEN reports "no video" as a 64896x65056 rect with an empty payload, and
+    this BMC sends one as the first update of a session while it is still
+    locking onto the host's signal.
+
+    Upstream returned from that branch without the bookkeeping its normal path
+    does at the tail, leaving `rects` at 1. `_framebufferUpdate` then waited on a
+    12-byte rect header that had already been fully consumed, so the handler
+    never returned true, no further FramebufferUpdateRequest was ever sent, and
+    the canvas kept its placeholder size: a black screen, no error, no recovery.
+    """
+    hermon = _aten_hermon_source()
+    branch = hermon[hermon.index("screen is probably off"):]
+    branch = branch[:branch.index("return true;")]
+
+    assert "this._FBU.rects--;" in branch, "the consumed rect is never counted"
+    assert "this._FBU.aten_len = -1;" in branch, (
+        "aten_len must return to -1 or the next update skips its ATEN header"
+    )
+    assert "this._FBU.aten_type = -1;" in branch
+    assert "this._FBU.aten_len = 0;" not in branch
+
+
+def test_the_aten_display_does_not_start_at_the_request_size():
+    """10000x10000 is the size of the first FramebufferUpdateRequest, not of the
+    screen. As a canvas it is a 400MB backing store rendering as a black page
+    ~13 screens tall -- and it is exactly what the user sees for as long as no
+    update arrives."""
+    src = open(_RFB_JS).read()
+    init = src[src.index("_negotiate_server_init:"):]
+    init = init[:init.index("_init_msg:")]
+
+    assert "this._fb_width                = 10000;" in init  # the request size stays
+    assert "this._display.resize(initial_width, initial_height);" in init
+    assert "this._display.resize(this._fb_width, this._fb_height);" not in init
+
+
+@pytest.mark.parametrize("handler", ["ATEN_HERMON", "ATEN_AST2100"])
+def test_a_mode_change_in_one_dimension_still_resizes(handler):
+    """`fb_width !== width && fb_height !== height` holds only while BOTH differ,
+    so a host switching e.g. 1024x768 -> 1024x600 would keep rendering into the
+    old framebuffer."""
+    src = open(_RFB_JS).read()
+    body = src[src.index(handler + ": function"):]
+    body = body[:body.index("resize desktop") + 40]
+    assert "this._fb_width !== this._FBU.width || this._fb_height !== this._FBU.height" in body
+
+
+def test_the_hermon_resize_reallocates_the_conversion_buffer():
+    """_destBuff is sized once from the ServerInit dimensions, which on ATEN are
+    meaningless (this BMC reports 480x640). A RAW frame bigger than that lost its
+    bottom rows silently -- writes past the end of a typed array are dropped."""
+    hermon = _aten_hermon_source()
+    resize = hermon[hermon.index(">> ATEN_HERMON resize desktop"):]
+    resize = resize[:resize.index("<< ATEN_HERMON resize desktop")]
+    assert "this._destBuff = new Uint8Array(this._fb_width * this._fb_height * 4);" in resize
+
+
 def test_console_page_renders_with_the_vendored_bundle(client):
     r = client.get("/console/ns1.example")
     assert r.status_code == 200

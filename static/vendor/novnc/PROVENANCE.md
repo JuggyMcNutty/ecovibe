@@ -29,10 +29,10 @@ module shim — this project loads the plain-script form), and everything outsid
 `core/` (`app/`, `tests/`, `po/`, `utils/`, the demo HTML pages) since ECOVibe
 provides its own page in `templates/kvm.html`.
 
-**One file is modified: `core/rfb.js`.** Everything else is untouched. Keep it
-that way — if another fix is needed, note it here and keep the change minimal.
-A re-vendor is therefore *not* a plain overwrite: reapply the patch below, or
-`tests/test_console.py` will fail (deliberately).
+**Two files are modified: `core/rfb.js` and `core/display.js`.** Everything
+else is untouched. Keep it that way — if another fix is needed, note it here and
+keep the change minimal. A re-vendor is therefore *not* a plain overwrite:
+reapply the patches below, or `tests/test_console.py` will fail (deliberately).
 
 ### Patch: consume the whole 24-byte ATEN preamble (2026-08-07)
 
@@ -93,6 +93,59 @@ context, which is what the browser message literally suggests. That flag opts
 the canvas into software rendering to make readbacks cheap — the wrong trade
 here, because `getImageData` is called only on resize while the canvas is drawn
 to every frame. It would silence the message by slowing down the console.
+
+### Patch: account for the ATEN "screen off" rect (2026-08-07)
+
+**Symptom:** the console showed a black screen and a page many screens tall (a
+tiny scroll bar), with no error and no recovery, on
+`ns3147088.ip-51-83-10.eu`. Intermittent — the same server rendered fine on
+other attempts.
+
+**Cause.** ATEN reports "no video" as a framebuffer update whose rect is
+`64896 x 65056` (−640 × −480 as int16) with a zero-length payload. This BMC
+sends one as the *first* update of a session whenever it has not yet locked
+onto the host's video signal; real 752×413 frames follow immediately after.
+
+`ATEN_HERMON`'s branch for that rect returned `true` without doing any of the
+bookkeeping its normal path does at the tail — it left `_FBU.rects` at 1 and set
+`aten_len` to `0` instead of `-1`. So `_framebufferUpdate` stayed in its
+`while (rects > 0)` loop, waiting on `rQwait("rect header", 12)` for a rect the
+server had already finished sending. That wait never completes, which means:
+
+- the handler never returns `true`, so `_normal_msg` never sends the next
+  `FramebufferUpdateRequest` — the session goes silent by construction;
+- `_display.resize()` is therefore never called with a real resolution, so the
+  canvas keeps the 10000×10000 placeholder from `_negotiate_server_init`;
+- nothing fails, so the UI reports a healthy connection.
+
+Verified by transcribing `_framebufferUpdate` + `ATEN_HERMON` into Python and
+running both variants against a synthetic BMC that sends the marker:
+
+```
+shipped: canvas 10000x10000, 0 subrects blitted, no failure  (stalls forever)
+patched: marker consumed -> next update 752x413 -> resize -> frames flowing
+```
+
+**Fix.** Consume the rect properly: `aten_len = -1`, `aten_type = -1`,
+`rects--`.
+
+**Two related fixes in the same path:**
+
+- `_negotiate_server_init` sized the *display* to the ATEN placeholder. That
+  10000×10000 is a `FramebufferUpdateRequest` size — the fork picks it because
+  the resolution is unknown until the first update — but as a canvas it is a
+  400MB backing store rendering as a black page ~13 screens tall, and it is what
+  the user actually stares at whenever no first update arrives. The display now
+  starts at 640×480 and the first update resizes it; `_fb_width`/`_fb_height`
+  still carry 10000 for the request itself.
+- The resize guards in `ATEN_HERMON` and `ATEN_AST2100` used
+  `fb_width !== width && fb_height !== height`, which ignores a mode change
+  that alters only one dimension. Now `||`. `ATEN_HERMON` also reallocates
+  `_destBuff` there: it was sized once from the ServerInit dimensions, which on
+  ATEN are meaningless (this BMC reports 480×640), and a RAW frame larger than
+  that silently lost its bottom rows because writes past the end of a typed
+  array are dropped. At 752×413 that is a thin band; at 1024×768 it would be
+  most of the screen.
 
 ## Licence
 

@@ -1302,8 +1302,19 @@
 
             if (this._convert_color)
                 this._display.set_true_color(this._pixelFormat.true_color);
-            this._display.resize(this._fb_width, this._fb_height);
-            this._onFBResize(this, this._fb_width, this._fb_height);
+
+            // ECOVibe divergence from upstream -- see ../PROVENANCE.md.
+            //
+            // The 10000x10000 above is a FramebufferUpdateRequest size, not a
+            // canvas size. Sizing the display to it allocates a 400MB backing
+            // store that renders as a black page several screens tall until the
+            // first update arrives with the real resolution -- and when the BMC
+            // has no video to send, that is all the user ever sees. Start at a
+            // modest placeholder instead; the first update resizes it.
+            var initial_width  = this._rfb_atenikvm ? 640 : this._fb_width;
+            var initial_height = this._rfb_atenikvm ? 480 : this._fb_height;
+            this._display.resize(initial_width, initial_height);
+            this._onFBResize(this, initial_width, initial_height);
 
             if (!this._view_only) { this._keyboard.grab(); }
             if (!this._view_only) { this._mouse.grab(); }
@@ -2911,13 +2922,30 @@
                         Util.Debug(">> ATEN iKVM screen off (aten_len="+this._FBU.aten_len+")");
                         this._fail('expected aten_len to be 10 when screen is off');
                     }
-                    this._FBU.aten_len = 0;
+                    // ECOVibe divergence from upstream -- see ../PROVENANCE.md.
+                    //
+                    // This rect is fully consumed here, so account for it
+                    // exactly as the tail of this function does. Upstream left
+                    // rects at 1 and aten_len at 0, so _framebufferUpdate kept
+                    // looping and waited for a 12-byte rect header that was
+                    // never sent: the canvas kept its placeholder size and no
+                    // further update was ever requested. Black screen, no
+                    // error, no recovery.
+                    this._FBU.aten_len = -1;
+                    this._FBU.aten_type = -1;
+                    this._FBU.rects--;
                     return true;
                 }
-                if (this._fb_width !== this._FBU.width && this._fb_height !== this._FBU.height) {
+                // ECOVibe divergence: `&&` (upstream) misses a mode change that
+                // alters only one dimension, and _destBuff must follow the real
+                // framebuffer -- it was sized from the ServerInit dimensions,
+                // which on ATEN are meaningless, so a larger framebuffer lost
+                // its bottom rows (writes past a typed array's end are dropped).
+                if (this._fb_width !== this._FBU.width || this._fb_height !== this._FBU.height) {
                     Util.Debug(">> ATEN_HERMON resize desktop");
                     this._fb_width = this._FBU.width;
                     this._fb_height = this._FBU.height;
+                    this._destBuff = new Uint8Array(this._fb_width * this._fb_height * 4);
                     this._onFBResize(this, this._fb_width, this._fb_height);
                     this._display.resize(this._fb_width, this._fb_height);
                     Util.Debug("<< ATEN_HERMON resize desktop");
@@ -3057,7 +3085,8 @@
             }
             
             // N.B.(kelleyk): Copied this block from ATEN_HERMON above.
-            if (this._fb_width !== this._FBU.width && this._fb_height !== this._FBU.height) {
+            // ECOVibe divergence: `||`, not `&&` -- see ../PROVENANCE.md.
+            if (this._fb_width !== this._FBU.width || this._fb_height !== this._FBU.height) {
                 Util.Debug(">> ATEN_AST2100 resize desktop");
                 this._fb_width = this._FBU.width;
                 this._fb_height = this._FBU.height;

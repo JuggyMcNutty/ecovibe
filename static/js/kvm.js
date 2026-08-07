@@ -22,6 +22,17 @@ const cadBtn = document.getElementById('kvm-ctrlaltdel');
 const reconnectBtn = document.getElementById('kvm-reconnect');
 
 let rfb = null;
+// Set by the first onFBResize *after* the connection is up. The one during
+// ServerInit carries a placeholder, because ATEN only reveals the real
+// resolution in its first framebuffer update — so a resize after that point is
+// the signal that video is actually flowing.
+let videoSeen = false;
+let connected = false;
+let noVideoTimer = null;
+
+// How long to wait before telling the user a blank console is the BMC's
+// answer, not a stuck client. The BMC's first update lands well inside this.
+const NO_VIDEO_HINT_MS = 8000;
 
 function setStatus(text) {
     statusEl.textContent = text;
@@ -74,14 +85,38 @@ function connect(session) {
         ast2100_quality: -1,
         ast2100_subsamplingMode: -1,
         onUpdateState: (_rfb, state) => {
-            setStatus(state);
-            const connected = state === 'connected';
+            connected = state === 'connected';
             cadBtn.disabled = !connected;
-            if (connected) clearError();
+            if (!connected) {
+                setStatus(state);
+                return;
+            }
+            clearError();
+            setStatus('connected — waiting for video…');
+            clearTimeout(noVideoTimer);
+            noVideoTimer = setTimeout(() => {
+                if (videoSeen) return;
+                setStatus('connected — no video signal');
+                showError(
+                    'The console is connected but the BMC is reporting no video. '
+                    + 'That is what it sends when the host is powered off or its '
+                    + 'screen is blanked — click the console and press a key to '
+                    + 'wake it, or check power and boot state on the Servers tab.'
+                );
+            }, NO_VIDEO_HINT_MS);
+        },
+        onFBResize: (_rfb, width, height) => {
+            // The ServerInit resize fires before the state reaches 'connected'.
+            if (!connected) return;
+            videoSeen = true;
+            clearTimeout(noVideoTimer);
+            clearError();
+            setStatus(`connected — ${width}×${height}`);
         },
         onDisconnected: (_rfb, reason) => {
             setStatus('disconnected');
             cadBtn.disabled = true;
+            clearTimeout(noVideoTimer);
             if (reason) showError(`Disconnected: ${reason}`);
         },
         onPasswordRequired: () => {
@@ -106,6 +141,9 @@ async function start() {
     clearError();
     setStatus('Requesting console session…');
     cadBtn.disabled = true;
+    videoSeen = false;
+    connected = false;
+    clearTimeout(noVideoTimer);
     try {
         const session = await openSession();
         setStatus(`Session ready (${session.vendor}) — connecting…`);
@@ -126,9 +164,15 @@ cadBtn.addEventListener('click', () => {
 });
 reconnectBtn.addEventListener('click', start);
 
-// Keep the canvas from being scaled by the flex parent; noVNC sizes it itself
-// from the framebuffer dimensions.
+// noVNC sizes the canvas itself from the framebuffer dimensions, so the page
+// has to cope with whatever resolution the host is in. Both maxima are needed:
+// with max-width alone the element keeps its intrinsic height, so an
+// over-tall framebuffer scrolls the page instead of fitting it — which is what
+// a 10000px ATEN placeholder looked like. `contain` keeps the aspect ratio,
+// and because these are maxima a console smaller than the viewport still
+// renders 1:1 rather than being blown up.
 canvas.style.maxWidth = '100%';
+canvas.style.maxHeight = '100%';
 canvas.style.objectFit = 'contain';
 
 start();
