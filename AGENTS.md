@@ -735,13 +735,34 @@ were created under (`account_id` column on each table).
   catalog OOS badge but show DC names in the detail panel so users can
   see upcoming availability.
 - **Stock matching**: catalog addon codes and stock API codes use
-  inconsistent naming. `addonShortCode()` strips the region suffix,
-  `normalizeAddonCode()` maps known capacity mismatches via an explicit
-  equivalence table (512→500, 1920→1900, 3840→3800), and
+  inconsistent naming, in three known ways. `addonShortCode()` strips the
+  trailing product+region tokens, `normalizeAddonCode()` maps known
+  mismatches via two explicit equivalence tables — `STORAGE_CAPACITY_MAP`
+  for marketed vs. physical capacity (512→500, 1920→1900, 3840→3800) and
+  `STORAGE_CODE_ALIASES` for differently-spelled products — and
   `addonCodesMatch()` also checks prefix match (catalog `ram-16g`
   matches stock `ram-16g-ecc-2133`). `refreshStockForAllPlans` logs a
   `console.warn` when a plan's default combo fails to match any stock
-  entry, so silent match failures are detectable.
+  entry, so silent match failures are detectable — that warning is what
+  surfaced the `softraid-0disk` bug below.
+  - **`softraid-0disk` = `noraid-0`** (2026-08-07): the catalog offers
+    `softraid-0disk-24rise-{ca,eu,us}` as the included storage on
+    `24rise082-*`/`24rise092-*` (6 plans), while the availabilities feed
+    reports those same configs as `noraid-0`. Both carry OVH's own
+    invoiceName **"No storage drive"**, and the `24rise07-v1-*` plans use
+    `noraid-0` on BOTH sides — one product, spelled twice, not two products.
+    Unmapped, all six lost their OOS badge, showed "No stock data for this
+    configuration" in the detail panel, and fell back to a plan-wide
+    `{planCode}.*` FQN — so a "Watch This Plan" alert (and any sniper armed
+    on it) fired on *any* combo of the plan, not the one picked. The alias
+    rewrites only the descriptor prefix so the trailing product token
+    survives for the prefix rule. Verified against the full live feed: 141
+    of 141 plans with stock rows now resolve their default combo (was 135).
+  - `tests/test_stock_matching.py` pins all of this. There is no JS runtime
+    here, so it reads the two tables out of `app.js` and mirrors the matcher
+    in Python (same pattern as `test_charts.py`), plus one test that pins the
+    source line applying the alias table — the table alone is inert.
+    When OVH invents a fourth spelling, add the pair and a fixture there.
 - **FQNs are looked up, never constructed** (2026-07-31). An availability
   FQN is `{planCode}.{memory}.{storage}[.{system-storage}][.{gpu}]`. Verified
   against all 25,511 live entries: the plan segment **always keeps the plan

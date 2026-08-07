@@ -1412,17 +1412,38 @@ function addonShortCode(code) {
 // map for the known mismatches instead of blind rounding so unexpected
 // capacity values aren't silently altered.
 const STORAGE_CAPACITY_MAP = { 512: 500, 1920: 1900, 3840: 3800 };
+
+// OVH spells "no data disks" two different ways, and the two vocabularies do
+// not meet: the catalog offers `softraid-0disk-24rise-{ca,eu,us}` as the
+// included storage on the 24rise082/24rise092 plans, while the availabilities
+// feed reports the very same configs as `noraid-0`. Both carry OVH's own
+// invoiceName "No storage drive" (verified live 2026-08), and the 24rise07-v1
+// plans use `noraid-0-...` on BOTH sides — so this is an inconsistency in
+// OVH's naming, not two different products. Left unmapped it broke all six
+// affected plans: no OOS badge, "No stock data for this configuration" in the
+// detail panel, and buildFqn() falling back to a plan-wide `{planCode}.*` glob
+// that made every alert (and any sniper armed on one) fire on any combo of the
+// plan rather than the one the user picked.
+// Keyed on the descriptor prefix, not the whole code, so the trailing product
+// token survives for addonCodesMatch()'s prefix rule.
+const STORAGE_CODE_ALIASES = { 'softraid-0disk': 'noraid-0' };
+
 function normalizeAddonCode(code) {
     if (!code) return '';
     // Match the disk-type suffix after the capacity. `ssd` was missing, so
     // marketed SSD capacities (e.g. 1920→1900, 3840→3800) were never
     // normalized and silently failed to match the stock API. Longer units
     // (sata, sas) come before their prefixes so they win the alternation.
-    return code.replace(/(\d+)(ssd|nvme|sata|sas|sa|hdd)/gi, (m, num, unit) => {
+    const sized = code.replace(/(\d+)(ssd|nvme|sata|sas|sa|hdd)/gi, (m, num, unit) => {
         const n = parseInt(num, 10);
         if (n in STORAGE_CAPACITY_MAP) return STORAGE_CAPACITY_MAP[n] + unit;
         return m;
     });
+    for (const [from, to] of Object.entries(STORAGE_CODE_ALIASES)) {
+        if (sized === from) return to;
+        if (sized.startsWith(from + '-')) return to + sized.slice(from.length);
+    }
+    return sized;
 }
 
 function addonCodesMatch(a, b) {
