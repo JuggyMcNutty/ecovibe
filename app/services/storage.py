@@ -234,6 +234,22 @@ class Storage:
                 "CREATE INDEX IF NOT EXISTS idx_catalog_changes_ts "
                 "ON catalog_changes(timestamp)"
             )
+            # Server watch: the last observed set of dedicated servers on an
+            # account, one row per live service. Diffing it is how a delivered
+            # order becomes a "new server" notification. Snapshot only — the
+            # Servers tab renders the live OVH list, so unlike the catalog
+            # watch there is no history table to feed.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS owned_servers (
+                    service_name TEXT NOT NULL,
+                    account_id TEXT,
+                    first_seen TEXT NOT NULL,
+                    last_seen TEXT NOT NULL,
+                    UNIQUE(service_name, account_id)
+                )
+                """
+            )
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS accounts (
@@ -1124,6 +1140,61 @@ class Storage:
                         for change_type, rows in (("added", added), ("removed", removed))
                         for row in rows
                     ],
+                )
+            self._conn.commit()
+
+    # ----- server watch -----
+
+    def load_owned_servers(self, account_id: str | None = None) -> dict[str, dict[str, Any]]:
+        """Return the last recorded dedicated-server snapshot for an account,
+        keyed by service name.
+
+        An empty result is ambiguous on its own — it means both "never scanned"
+        and "this account owns no servers" — so the caller decides whether to
+        prime using the ``server_watch_primed_<account>`` marker rather than
+        the emptiness of this dict.
+        """
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                "SELECT service_name, first_seen, last_seen "
+                "FROM owned_servers WHERE account_id IS ?",
+                (account_id,),
+            )
+            rows = cur.fetchall()
+        return {r["service_name"]: dict(r) for r in rows}
+
+    def apply_server_diff(
+        self,
+        account_id: str | None,
+        added: list[str],
+        removed: list[str],
+        seen: list[str],
+        timestamp: datetime,
+    ) -> None:
+        """Move the stored server snapshot to the list just observed, in one
+        transaction. ``seen`` refreshes ``last_seen`` so the snapshot shows
+        liveness, mirroring :meth:`apply_catalog_diff`."""
+        ts = _iso(timestamp)
+        with self._lock:
+            cur = self._conn.cursor()
+            for name in added:
+                cur.execute(
+                    "INSERT OR REPLACE INTO owned_servers "
+                    "(service_name, account_id, first_seen, last_seen) "
+                    "VALUES (?, ?, ?, ?)",
+                    (name, account_id, ts, ts),
+                )
+            for name in removed:
+                cur.execute(
+                    "DELETE FROM owned_servers WHERE service_name = ? AND account_id IS ?",
+                    (name, account_id),
+                )
+            if seen:
+                cur.executemany(
+                    "UPDATE owned_servers SET last_seen = ? "
+                    "WHERE service_name = ? AND account_id IS ?",
+                    [(ts, name, account_id) for name in seen],
                 )
             self._conn.commit()
 
