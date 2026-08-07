@@ -156,6 +156,7 @@ def create_app():
         alert,
         catalog,
         checkout,
+        console,
         currency,
         insights,
         logs,
@@ -210,6 +211,9 @@ def create_app():
     app.include_router(price_watch.router)
     app.include_router(profiles.router)
     app.include_router(servers.router)
+    # Must follow servers.router: both are under /api/servers, and the console
+    # routes are more specific.
+    app.include_router(console.router)
     app.include_router(sniper.router)
     app.include_router(settings_api.router)
     app.include_router(account.router)
@@ -225,6 +229,24 @@ def create_app():
             {
                 "css_hash": get_file_hash("static/css/app.css"),
                 "js_hash": get_file_hash("static/js/app.js"),
+            },
+        )
+
+    @app.get("/console/{service_name}", response_class=HTMLResponse)
+    async def console_page(request: Request, service_name: str) -> Response:
+        """Full-page KVM console for one server, opened in its own tab.
+
+        Deliberately not part of the SPA: a console wants the whole viewport and
+        its own keyboard focus, and the vendored noVNC bundle should not load on
+        every page view.
+        """
+        return templates.TemplateResponse(
+            request,
+            "kvm.html",
+            {
+                "css_hash": get_file_hash("static/css/app.css"),
+                "js_hash": get_file_hash("static/js/kvm.js"),
+                "service_name": service_name,
             },
         )
 

@@ -4394,7 +4394,21 @@ function buildIpmiPanel(serviceName, features) {
             },
         }));
 
+    // The in-browser console. OVH's servers here are ATEN iKVM, which is plain
+    // RFB behind a WebSocket relay — so this works even when OVH reports no
+    // HTML5 URL (kvmipHtml5URL is false on Kimsufi hardware, where the only
+    // console OVH offers is a Java .jnlp that Chrome cannot run).
+    const consoleBtn = features.kvmipJnlp || features.kvmipHtml5URL
+        ? el('button', {
+            class: 'bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-sm',
+            text: 'Open console in browser',
+            onclick: () => window.open(
+                `/console/${encodeURIComponent(serviceName)}`, '_blank', 'noopener'),
+        })
+        : null;
+
     return serverPanel('IPMI / KVM', [
+        consoleBtn ? el('div', { class: 'mb-2' }, [consoleBtn]) : null,
         supported.length
             ? el('div', { class: 'flex gap-2 flex-wrap mb-2' }, buttons)
             : el('p', { class: 'text-gray-500 text-sm mb-2', text: 'This server reports no supported console types.' }),

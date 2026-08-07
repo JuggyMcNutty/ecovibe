@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#111827">
+    <title>Console — {{ service_name }}</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23111827'/%3E%3Ctext x='8' y='12' font-size='12' text-anchor='middle' fill='%2360a5fa'%3EK%3C/text%3E%3C/svg%3E">
+    <link rel="stylesheet" href="/static/css/app.css?v={{ css_hash }}">
+</head>
+<body class="bg-gray-900 text-gray-100 h-screen overflow-hidden">
+    <div class="flex flex-col h-screen">
+        <header class="flex items-center justify-between gap-3 px-3 py-2 bg-gray-800 border-b border-gray-700 shrink-0">
+            <div class="min-w-0">
+                <h1 class="text-sm font-bold text-blue-400 truncate">{{ service_name }}</h1>
+                <p id="kvm-status" class="text-gray-400 text-xs">Requesting console session…</p>
+            </div>
+            <div class="flex items-center gap-2">
+                <button id="kvm-ctrlaltdel" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm" disabled>Ctrl+Alt+Del</button>
+                <button id="kvm-reconnect" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm">Reconnect</button>
+                <a href="/" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm">Back</a>
+            </div>
+        </header>
+
+        <div id="kvm-screen" class="flex-1 min-h-0 bg-black flex items-center justify-center overflow-auto">
+            <canvas id="kvm-canvas" width="640" height="20">Canvas not supported.</canvas>
+        </div>
+
+        <p id="kvm-error" class="hidden px-3 py-2 text-red-400 text-sm bg-gray-800 border-t border-red-800 shrink-0"></p>
+    </div>
+
+    <!--
+      Vendored noVNC (ATEN iKVM fork, MPL-2.0) — see static/vendor/novnc/PROVENANCE.md.
+      The 2017 tree is plain globals, so it loads with ordinary script tags; the
+      order below is taken from the fork's own vnc_auto.html and matters.
+    -->
+    <script src="/static/vendor/novnc/core/util.js"></script>
+    <script src="/static/vendor/novnc/core/base64.js"></script>
+    <script src="/static/vendor/novnc/core/websock.js"></script>
+    <script src="/static/vendor/novnc/core/des.js"></script>
+    <script src="/static/vendor/novnc/core/input/keysymdef.js"></script>
+    <script src="/static/vendor/novnc/core/input/xtscancodes.js"></script>
+    <script src="/static/vendor/novnc/core/input/util.js"></script>
+    <script src="/static/vendor/novnc/core/input/devices.js"></script>
+    <script src="/static/vendor/novnc/core/ast2100/ast2100.js"></script>
+    <script src="/static/vendor/novnc/core/ast2100/ast2100idct.js"></script>
+    <script src="/static/vendor/novnc/core/ast2100/ast2100util.js"></script>
+    <script src="/static/vendor/novnc/core/ast2100/ast2100const.js"></script>
+    <script src="/static/vendor/novnc/core/display.js"></script>
+    <script src="/static/vendor/novnc/core/inflator.js"></script>
+    <script src="/static/vendor/novnc/core/rfb.js"></script>
+    <script src="/static/vendor/novnc/core/input/keysym.js"></script>
+
+    <script>window.KVM_SERVICE_NAME = {{ service_name | tojson }};</script>
+    <script src="/static/js/kvm.js?v={{ js_hash }}"></script>
+</body>
+</html>

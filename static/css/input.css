@@ -1,7 +1,11 @@
 @import "tailwindcss";
 
 @source "../../templates/index.html";
+@source "../../templates/kvm.html";
 @source "../../static/js/app.js";
+@source "../../static/js/kvm.js";
+/* static/vendor/** is deliberately not scanned — third-party code would only
+   add classes this project never uses. */
 
 /* Disable animations for users who prefer reduced motion */
 @media (prefers-reduced-motion: reduce) {
