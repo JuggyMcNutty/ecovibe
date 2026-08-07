@@ -683,6 +683,51 @@ def test_memory_replacement_passes_slots_through(client):
     )
 
 
+# ----- service info and termination -----
+
+
+def test_terminate_is_a_two_step_token_flow(client):
+    """Step one cancels nothing — OVH emails a token, and only that token
+    passed to confirm-termination actually cancels the service."""
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_post = MagicMock(return_value=None)
+
+    body = client.post("/api/servers/ns1.example/terminate", headers=XHR).json()
+    assert body["requested"] is True
+    svc.server_post.assert_called_once_with("ns1.example", "/terminate")
+
+    # Confirming without the token is rejected before any OVH call.
+    svc.server_post.reset_mock()
+    r = client.post(
+        "/api/servers/ns1.example/confirm-termination", json={}, headers=XHR,
+    )
+    assert r.status_code == 422
+    svc.server_post.assert_not_called()
+
+    client.post(
+        "/api/servers/ns1.example/confirm-termination",
+        json={"token": "abc123", "reason": "unused"}, headers=XHR,
+    )
+    svc.server_post.assert_called_once_with(
+        "ns1.example", "/confirmTermination", token="abc123", reason="unused",
+    )
+
+
+def test_service_infos_update_sets_renewal(client):
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_put = MagicMock(return_value=None)
+
+    client.put(
+        "/api/servers/ns1.example/service-infos",
+        json={"renew": {"automatic": True, "period": 1}}, headers=XHR,
+    )
+    svc.server_put.assert_called_once_with(
+        "ns1.example", "/serviceInfos", renew={"automatic": True, "period": 1},
+    )
+
+
 def test_bills_list_caps_and_reads_defensively(client):
     _create_account(client)
     svc = get_active_ovh_service()

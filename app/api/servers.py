@@ -1083,3 +1083,83 @@ async def request_hardware_replacement(
         raise_ovh_http_error(e)
     logger.info("server %s: %s replacement requested", service_name, part)
     return {"part": part, "result": result}
+
+
+# ---------------------------------------------------------------------------
+# Service info and termination
+# ---------------------------------------------------------------------------
+
+
+class ServiceInfoUpdate(BaseModel):
+    """Renewal settings on services.Service."""
+    renew: dict[str, Any]
+
+
+class TerminationConfirm(BaseModel):
+    """Body for POST /api/servers/{name}/confirm-termination.
+
+    ``token`` is the one OVH emails after ``/terminate`` — it is the reason
+    termination cannot be completed from this UI alone.
+    """
+    token: str
+    reason: str | None = None
+    future_use: str | None = None
+    commentary: str | None = None
+
+
+@router.put("/{service_name}/service-infos")
+async def update_service_infos(
+    service_name: str, request: ServiceInfoUpdate,
+) -> dict[str, Any]:
+    """Update renewal settings (automatic/manual, period)."""
+    service = _configured_service()
+    try:
+        await asyncio.to_thread(
+            service.server_put, service_name, "/serviceInfos", renew=request.renew
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    logger.info("server %s renewal updated: %s", service_name, request.renew)
+    return {"renew": request.renew}
+
+
+@router.post("/{service_name}/terminate")
+async def terminate_server(service_name: str) -> dict[str, Any]:
+    """Request termination. OVH emails a confirmation token.
+
+    This is step one of two and does **not** cancel anything on its own — the
+    service is only cancelled once the emailed token is passed to
+    ``/confirm-termination``.
+    """
+    service = _configured_service()
+    try:
+        result = await asyncio.to_thread(service.server_post, service_name, "/terminate")
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    logger.warning(
+        "server %s TERMINATION REQUESTED — awaiting emailed token", service_name
+    )
+    return {"requested": True, "result": result}
+
+
+@router.post("/{service_name}/confirm-termination")
+async def confirm_termination(
+    service_name: str, request: TerminationConfirm,
+) -> dict[str, Any]:
+    """Confirm termination with the token OVH emailed. **Cancels the service.**"""
+    service = _configured_service()
+    payload: dict[str, Any] = {"token": request.token}
+    if request.reason:
+        payload["reason"] = request.reason
+    if request.future_use:
+        payload["futureUse"] = request.future_use
+    if request.commentary:
+        payload["commentary"] = request.commentary
+    try:
+        result = await asyncio.to_thread(
+            service.server_post, service_name, "/confirmTermination", **payload
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    logger.warning("server %s TERMINATION CONFIRMED", service_name)
+    return {"confirmed": True, "result": result}
