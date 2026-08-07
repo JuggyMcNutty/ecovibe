@@ -4294,9 +4294,18 @@ async function buildTrafficSection(serviceName) {
          'errors:download', 'errors:upload'].map(t => el('option', { value: t, text: t })));
     const chart = el('div', { class: 'mt-2' });
 
+    // Changing period/type refetches. Hold the previous chart at reduced opacity
+    // rather than swapping in a skeleton — clearing to "Loading…" collapsed the
+    // section to one line and bounced the layout on every change.
+    let drawn = false;
+    const settle = () => { chart.style.opacity = ''; chart.innerHTML = ''; };
     const draw = async () => {
-        chart.innerHTML = '';
-        chart.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'Loading…' }));
+        if (drawn) {
+            chart.style.opacity = '0.5';
+        } else {
+            chart.innerHTML = '';
+            chart.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'Loading…' }));
+        }
         try {
             const r = await apiRequest('GET', srv(serviceName,
                 `/resource/mrtg?period=${encodeURIComponent(period.value)}&type=${encodeURIComponent(type.value)}`));
@@ -4305,8 +4314,9 @@ async function buildTrafficSection(serviceName) {
             const pts = (r.data || [])
                 .filter(p => typeof p.value === 'number')
                 .map(p => ({ v: p.value, label: fmtTimelineDate(new Date(p.timestamp * 1000).toISOString()) }));
-            chart.innerHTML = '';
+            settle();
             if (pts.length < 2) {
+                drawn = false;
                 chart.appendChild(el('p', { class: 'text-gray-500 text-sm', text: 'No traffic data for this period yet.' }));
                 return;
             }
@@ -4315,8 +4325,10 @@ async function buildTrafficSection(serviceName) {
                 format: v => `${v.toLocaleString()} ${type.value.startsWith('traffic') ? 'bps' : '/s'}`,
                 label: `${type.value} over ${period.value}`,
             }));
+            drawn = true;
         } catch (e) {
-            chart.innerHTML = '';
+            settle();
+            drawn = false;
             chart.appendChild(el('p', { class: 'text-red-400 text-sm', text: `Error: ${e.message}` }));
         }
     };
@@ -5704,23 +5716,41 @@ function renderPriceTrend(planCode, history) {
     const vals = pts.map(p => p.v);
     const min = Math.min(...vals), max = Math.max(...vals);
     if (pts.length >= 2) {
+        // The sparkline carries its own now/min/max labels and table view.
         container.appendChild(buildSparkline(pts, min, max));
+    } else {
+        // One reading is not a trend, and a one-point line chart is not a chart.
+        // The number is the chart.
+        container.appendChild(el('div', {}, [
+            el('div', { class: 'text-2xl text-blue-300', text: formatCurrency(pts[0].v) }),
+            el('div', { class: 'text-xs text-gray-500', text: `single reading — ${pts[0].label}` }),
+        ]));
     }
-    const latest = pts[pts.length - 1].v;
-    const stat = el('div', { class: 'flex gap-4 mt-3 text-sm' }, [
-        el('div', {}, [el('span', { class: 'text-gray-500', text: 'now ' }), el('span', { class: 'text-blue-300 font-bold', text: formatCurrency(latest) })]),
-        el('div', {}, [el('span', { class: 'text-gray-500', text: 'min ' }), el('span', { class: 'text-gray-200', text: formatCurrency(min) })]),
-        el('div', {}, [el('span', { class: 'text-gray-500', text: 'max ' }), el('span', { class: 'text-gray-200', text: formatCurrency(max) })]),
-    ]);
-    container.appendChild(stat);
 }
 
-// Inline SVG line chart (no chart library). 2px line, min/max gridlines,
-// per-point hover via <title>.
+// Inline SVG line chart (no chart library).
+//
+// One series, so one color: SERIES (blue-500). It is the only hue on the plot —
+// an earlier version drew the dots in blue-400, and two blues a shade apart is a
+// two-slot categorical palette that fails the normal-vision separation floor
+// (ΔE 10.0, floor 15) while encoding nothing. Validated against the panel
+// surface it actually renders on (#1e2939, gray-800): L 0.623 in the dark band,
+// chroma 0.214, contrast >= 3:1.
+//
+// Everything except the line/area/grid lives in an HTML overlay rather than in
+// the SVG, because `preserveAspectRatio="none"` stretches the viewBox to the
+// container: it is what lets the plot fill any width, but it also turned the old
+// `<circle r="3.5">` dots into ellipses at every width but 400px. HTML overlay
+// elements are positioned in percentages and keep their true size, and
+// `vector-effect="non-scaling-stroke"` keeps the 2px line 2px.
+const SPARK_SERIES = '#2b7fff';       // blue-500
+const SPARK_GRID = '#364153';         // gray-700, one shade off the gray-800 surface
+const SPARK_SURFACE = '#1e2939';      // gray-800, for the marker's 2px ring
+
 function buildSparkline(pts, min, max, opts = {}) {
-    // `format` renders the hover value and `label` names the chart for screen
-    // readers. Both default to the price-history case this was written for; the
-    // server traffic graph passes its own so values aren't shown as currency.
+    // `format` renders values and `label` names the chart. Both default to the
+    // price-history case this was written for; the server traffic graph passes
+    // its own so values aren't shown as currency.
     const format = opts.format || formatCurrency;
     const ariaLabel = opts.label || 'Price over time';
     const W = 400, H = 96, padX = 6, padY = 10;
@@ -5728,21 +5758,126 @@ function buildSparkline(pts, min, max, opts = {}) {
     const n = pts.length;
     const x = i => padX + (i / (n - 1)) * (W - 2 * padX);
     const y = v => padY + (1 - (v - min) / span) * (H - 2 * padY);
+    // The same coordinates as percentages, so overlay elements land exactly on
+    // the stretched SVG without measuring the container.
+    const xPct = i => (x(i) / W) * 100;
+    const yPct = v => (y(v) / H) * 100;
+
     const line = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.v).toFixed(1)}`).join(' ');
     const area = `${line} L${x(n - 1).toFixed(1)},${(H - padY).toFixed(1)} L${x(0).toFixed(1)},${(H - padY).toFixed(1)} Z`;
-    const dots = pts.map((p, i) =>
-        `<circle cx="${x(i).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="3.5" fill="#60a5fa"><title>${p.label} — ${format(p.v)}</title></circle>`
-    ).join('');
-    const wrap = el('div', { class: 'w-full' });
-    wrap.innerHTML =
-        `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="none" role="img" aria-label="${ariaLabel}">
-            <line x1="${padX}" y1="${padY}" x2="${W - padX}" y2="${padY}" stroke="#374151" stroke-width="1" stroke-dasharray="3 3"/>
-            <line x1="${padX}" y1="${H - padY}" x2="${W - padX}" y2="${H - padY}" stroke="#374151" stroke-width="1" stroke-dasharray="3 3"/>
-            <path d="${area}" fill="rgba(59,130,246,0.12)"/>
-            <path d="${line}" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-            ${dots}
+
+    const plot = el('div', { class: 'relative w-full', style: 'height:96px' });
+    // Solid hairlines: a dashed grid reads as a threshold or a projection when
+    // it is only a grid.
+    plot.innerHTML =
+        `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100%" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+            <line x1="${padX}" y1="${padY}" x2="${W - padX}" y2="${padY}" stroke="${SPARK_GRID}" stroke-width="1" vector-effect="non-scaling-stroke"/>
+            <line x1="${padX}" y1="${H - padY}" x2="${W - padX}" y2="${H - padY}" stroke="${SPARK_GRID}" stroke-width="1" vector-effect="non-scaling-stroke"/>
+            <path d="${area}" fill="${SPARK_SERIES}" fill-opacity="0.12"/>
+            <path d="${line}" fill="none" stroke="${SPARK_SERIES}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
         </svg>`;
-    return wrap;
+
+    // Hover layer. The whole plot is the hit target and resolves to the nearest
+    // point, so there is no dot to land on dead-centre.
+    const crosshair = el('div', {
+        class: 'absolute top-0 bottom-0 w-px pointer-events-none opacity-0',
+        style: `background:${SPARK_GRID}`,
+    });
+    const marker = el('div', {
+        class: 'absolute w-2.5 h-2.5 rounded-full pointer-events-none opacity-0',
+        style: `background:${SPARK_SERIES};box-shadow:0 0 0 2px ${SPARK_SURFACE};transform:translate(-50%,-50%)`,
+    });
+    const tip = el('div', {
+        class: 'absolute -top-1 px-2 py-1 rounded bg-gray-900 text-xs whitespace-nowrap '
+             + 'pointer-events-none opacity-0 z-10 border border-gray-700',
+        style: 'transform:translate(-50%,-100%)',
+    });
+    const tipLabel = el('div', { class: 'text-gray-400' });
+    const tipValue = el('div', { class: 'text-gray-100 font-bold' });
+    tip.append(tipLabel, tipValue);
+    plot.append(crosshair, marker, tip);
+
+    let active = -1;
+    const show = (i) => {
+        if (i === active || i < 0 || i >= n) return;
+        active = i;
+        const p = pts[i];
+        const lx = xPct(i);
+        crosshair.style.left = `${lx}%`;
+        marker.style.left = `${lx}%`;
+        marker.style.top = `${yPct(p.v)}%`;
+        // Keep the tooltip inside the plot at both ends.
+        tip.style.left = `${Math.min(92, Math.max(8, lx))}%`;
+        tipLabel.textContent = p.label;
+        tipValue.textContent = format(p.v);
+        for (const nd of [crosshair, marker, tip]) nd.classList.remove('opacity-0');
+    };
+    const hide = () => {
+        active = -1;
+        for (const nd of [crosshair, marker, tip]) nd.classList.add('opacity-0');
+    };
+    const nearest = (clientX) => {
+        const r = plot.getBoundingClientRect();
+        if (!r.width) return 0;
+        const frac = ((clientX - r.left) / r.width) * W;   // back into viewBox units
+        const t = (frac - padX) / (W - 2 * padX);
+        return Math.max(0, Math.min(n - 1, Math.round(t * (n - 1))));
+    };
+
+    plot.addEventListener('pointermove', e => show(nearest(e.clientX)));
+    plot.addEventListener('pointerleave', hide);
+    // Keyboard reaches the same values as hover, so the tooltip is never the
+    // only route to a number.
+    plot.setAttribute('tabindex', '0');
+    plot.setAttribute('role', 'img');
+    plot.setAttribute('aria-label', `${ariaLabel}. ${n} points, from ${format(min)} to ${format(max)}. Use arrow keys to read values, or open the table below.`);
+    plot.classList.add('focus:outline-none', 'focus:ring-1', 'focus:ring-blue-500', 'rounded');
+    plot.addEventListener('focus', () => show(n - 1));
+    plot.addEventListener('blur', hide);
+    plot.addEventListener('keydown', e => {
+        const at = active < 0 ? n - 1 : active;
+        if (e.key === 'ArrowRight') { show(Math.min(n - 1, at + 1)); e.preventDefault(); }
+        else if (e.key === 'ArrowLeft') { show(Math.max(0, at - 1)); e.preventDefault(); }
+        else if (e.key === 'Home') { show(0); e.preventDefault(); }
+        else if (e.key === 'End') { show(n - 1); e.preventDefault(); }
+        else if (e.key === 'Escape') { hide(); }
+    });
+
+    const fig = el('figure', { class: 'w-full m-0' }, [plot]);
+
+    // x-axis band, in normal flow so it can never be clipped by the plot height.
+    fig.appendChild(el('div', { class: 'flex justify-between text-xs text-gray-500 mt-1' }, [
+        el('span', { text: pts[0].label }),
+        el('span', { text: pts[n - 1].label }),
+    ]));
+
+    // Selective direct labels: the extremes and the latest, not a number per
+    // point. These are also the relief for reading values without hovering.
+    const last = pts[n - 1].v;
+    fig.appendChild(el('div', { class: 'flex gap-4 mt-2 text-sm' }, [
+        el('div', {}, [el('span', { class: 'text-gray-500', text: 'now ' }),
+                       el('span', { class: 'text-blue-300 font-bold', text: format(last) })]),
+        el('div', {}, [el('span', { class: 'text-gray-500', text: 'min ' }),
+                       el('span', { class: 'text-gray-200', text: format(min) })]),
+        el('div', {}, [el('span', { class: 'text-gray-500', text: 'max ' }),
+                       el('span', { class: 'text-gray-200', text: format(max) })]),
+    ]));
+
+    // Table view: the WCAG-clean twin, so nothing is reachable only by pointer.
+    const rows = pts.map(p => el('tr', {}, [
+        el('td', { class: 'py-0.5 pr-4 text-gray-400', text: p.label }),
+        el('td', { class: 'py-0.5 text-gray-100 tabular-nums text-right', text: format(p.v) }),
+    ]));
+    fig.appendChild(el('details', { class: 'mt-2' }, [
+        el('summary', { class: 'text-xs text-gray-500 cursor-pointer hover:text-gray-300', text: 'Show data table' }),
+        el('div', { class: 'mt-1 max-h-48 overflow-y-auto' }, [
+            el('table', { class: 'text-xs w-full' }, [
+                el('caption', { class: 'sr-only', text: ariaLabel }),
+                el('tbody', {}, rows),
+            ]),
+        ]),
+    ]));
+    return fig;
 }
 
 // Init
