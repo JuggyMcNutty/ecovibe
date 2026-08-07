@@ -634,3 +634,234 @@ async def reinstall_server(
     except OVHServiceError as e:
         raise_ovh_http_error(e)
     return {"task": task, "operating_system": request.operating_system}
+
+
+# ---------------------------------------------------------------------------
+# IPMI / console
+# ---------------------------------------------------------------------------
+
+# dedicated.server.IpmiAccessTypeEnum. Which of these actually work varies by
+# machine — /features/ipmi reports supportedFeatures, and the frontend offers
+# only the supported ones (on a KS-C that is kvmipJnlp alone).
+IPMI_ACCESS_TYPES = ("kvmipHtml5URL", "kvmipJnlp", "serialOverLanURL", "serialOverLanSshKey")
+# dedicated.server.CacheTTLEnum — session lifetime in minutes.
+IPMI_TTLS = (1, 3, 5, 10, 15)
+
+
+class IpmiAccessRequest(BaseModel):
+    """Body for POST /api/servers/{name}/ipmi/access."""
+    type: str
+    ttl: int = 15
+    ip_to_allow: str | None = None
+    ssh_key: str | None = None
+
+
+@router.get("/{service_name}/ipmi")
+async def get_ipmi(service_name: str) -> dict[str, Any]:
+    """IPMI state plus which console types this machine actually supports."""
+    service = _configured_service()
+    try:
+        data = await asyncio.to_thread(service.server_get, service_name, "/features/ipmi")
+    except OVHServiceError as e:
+        if e.status_code in (403, 404):
+            return {"available": False, "ipmi": None, "supported_features": {}}
+        raise_ovh_http_error(e)
+    return {
+        "available": True,
+        "ipmi": data,
+        "supported_features": data.get("supportedFeatures") or {},
+    }
+
+
+@router.post("/{service_name}/ipmi/access")
+async def create_ipmi_access(
+    service_name: str, request: IpmiAccessRequest,
+) -> dict[str, Any]:
+    """Open an IPMI console session. Returns the task that prepares it."""
+    if request.type not in IPMI_ACCESS_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"type must be one of: {', '.join(IPMI_ACCESS_TYPES)}",
+        )
+    if request.ttl not in IPMI_TTLS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"ttl must be one of: {', '.join(str(t) for t in IPMI_TTLS)}",
+        )
+    service = _configured_service()
+    payload: dict[str, Any] = {"type": request.type, "ttl": request.ttl}
+    if request.ip_to_allow:
+        payload["ipToAllow"] = request.ip_to_allow
+    if request.ssh_key:
+        payload["sshKey"] = request.ssh_key
+    try:
+        task = await asyncio.to_thread(
+            service.server_post, service_name, "/features/ipmi/access", **payload
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    logger.info("server %s IPMI access requested (%s)", service_name, request.type)
+    return {"task": task}
+
+
+@router.get("/{service_name}/ipmi/access")
+async def get_ipmi_access(
+    service_name: str, type: str = Query(...),
+) -> dict[str, Any]:
+    """Fetch the prepared console URL/JNLP once the access task has run."""
+    if type not in IPMI_ACCESS_TYPES:
+        raise HTTPException(status_code=422, detail="Unknown IPMI access type")
+    service = _configured_service()
+    try:
+        value = await asyncio.to_thread(
+            service.server_get, service_name, "/features/ipmi/access", type=type,
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    return {"type": type, "access": value}
+
+
+@router.post("/{service_name}/ipmi/{action}")
+async def ipmi_action(service_name: str, action: str) -> dict[str, Any]:
+    """Reset the IPMI interface or its sessions, or run OVH's IPMI self-test."""
+    paths = {
+        "reset-interface": "/features/ipmi/resetInterface",
+        "reset-sessions": "/features/ipmi/resetSessions",
+        "test": "/features/ipmi/test",
+    }
+    subpath = paths.get(action)
+    if subpath is None:
+        raise HTTPException(status_code=404, detail=f"Unknown IPMI action: {action}")
+    service = _configured_service()
+    try:
+        result = await asyncio.to_thread(service.server_post, service_name, subpath)
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    logger.info("server %s IPMI %s", service_name, action)
+    return {"action": action, "result": result}
+
+
+# ---------------------------------------------------------------------------
+# Network: OLA aggregation, virtual network interfaces, IP moves
+# ---------------------------------------------------------------------------
+
+
+class OlaGroupRequest(BaseModel):
+    name: str
+    virtual_network_interfaces: list[str]
+
+
+class OlaInterfaceRequest(BaseModel):
+    virtual_network_interface: str
+
+
+class IpMoveRequest(BaseModel):
+    ip: str
+
+
+class IpBlockMergeRequest(BaseModel):
+    block: str
+
+
+@router.post("/{service_name}/ola/{action}")
+async def ola_action(
+    service_name: str, action: str, request: dict[str, Any],
+) -> dict[str, Any]:
+    """OLA (OVH Link Aggregation) interface grouping.
+
+    Reconfigures the physical uplinks, so a wrong call can leave the server
+    unreachable — the UI gates ``reset`` and ``ungroup`` behind a typed
+    confirmation for that reason.
+    """
+    service = _configured_service()
+    if action in ("group", "aggregation"):
+        body = OlaGroupRequest(**request)
+        payload = {
+            "name": body.name,
+            "virtualNetworkInterfaces": body.virtual_network_interfaces,
+        }
+        subpath = f"/ola/{action}"
+    elif action in ("reset", "ungroup"):
+        body = OlaInterfaceRequest(**request)
+        payload = {"virtualNetworkInterface": body.virtual_network_interface}
+        subpath = f"/ola/{action}"
+    else:
+        raise HTTPException(status_code=404, detail=f"Unknown OLA action: {action}")
+
+    try:
+        task = await asyncio.to_thread(
+            service.server_post, service_name, subpath, **payload
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    logger.info("server %s OLA %s: %s", service_name, action, payload)
+    return {"action": action, "task": task}
+
+
+@router.post("/{service_name}/vni/{uuid}/{action}")
+async def vni_action(service_name: str, uuid: str, action: str) -> dict[str, Any]:
+    """Enable or disable one virtual network interface."""
+    if action not in ("enable", "disable"):
+        raise HTTPException(status_code=404, detail=f"Unknown VNI action: {action}")
+    service = _configured_service()
+    try:
+        task = await asyncio.to_thread(
+            service.server_post, service_name,
+            f"/virtualNetworkInterface/{uuid}/{action}",
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    logger.info("server %s VNI %s %sd", service_name, uuid, action)
+    return {"uuid": uuid, "action": action, "task": task}
+
+
+@router.put("/{service_name}/vni/{uuid}")
+async def update_vni(
+    service_name: str, uuid: str, request: dict[str, Any],
+) -> dict[str, Any]:
+    """Alter a virtual network interface (name, mode)."""
+    service = _configured_service()
+    try:
+        await asyncio.to_thread(
+            service.server_put, service_name,
+            f"/virtualNetworkInterface/{uuid}", **request,
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    return {"uuid": uuid, "updated": request}
+
+
+@router.post("/{service_name}/ip-move")
+async def move_ip(service_name: str, request: IpMoveRequest) -> dict[str, Any]:
+    """Move a failover IP onto this server."""
+    service = _configured_service()
+    try:
+        task = await asyncio.to_thread(
+            service.server_post, service_name, "/ipMove", ip=request.ip
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    logger.info("server %s: moving IP %s here", service_name, request.ip)
+    return {"ip": request.ip, "task": task}
+
+
+@router.post("/{service_name}/ip-block-merge")
+async def merge_ip_block(
+    service_name: str, request: IpBlockMergeRequest,
+) -> dict[str, Any]:
+    """Merge a split IP block back and route it here.
+
+    OVH's own wording: "You cannot undo this operation." The UI gates it behind
+    a typed confirmation.
+    """
+    service = _configured_service()
+    try:
+        task = await asyncio.to_thread(
+            service.server_post, service_name, "/ipBlockMerge", block=request.block
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    logger.info(
+        "server %s: merging IP block %s (irreversible)", service_name, request.block
+    )
+    return {"block": request.block, "task": task}

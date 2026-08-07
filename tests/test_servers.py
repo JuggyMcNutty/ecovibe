@@ -492,6 +492,121 @@ def test_install_templates_flattens_and_groups(client):
     assert body["groups"]["personal"] == ["mine_64"]
 
 
+# ----- IPMI and network -----
+
+
+def test_ipmi_reports_supported_features(client):
+    """Only the console types OVH says work may be offered — on a KS-C that is
+    the Java .jnlp alone, so three of the four buttons must not appear."""
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_get = MagicMock(return_value=_KSC_IPMI)
+
+    body = client.get("/api/servers/ns1.example/ipmi").json()
+    assert body["available"] is True
+    assert body["supported_features"]["kvmipJnlp"] is True
+    assert body["supported_features"]["kvmipHtml5URL"] is False
+
+
+def test_ipmi_absent_is_not_an_error(client):
+    from app.services.ovh_service import OVHServiceError
+
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_get = MagicMock(side_effect=OVHServiceError("nope", status_code=404))
+
+    r = client.get("/api/servers/ns1.example/ipmi")
+    assert r.status_code == 200
+    assert r.json()["available"] is False
+
+
+def test_ipmi_access_validates_type_and_ttl(client):
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_post = MagicMock(return_value={"taskId": 5})
+
+    bad_type = client.post(
+        "/api/servers/ns1.example/ipmi/access",
+        json={"type": "telnet", "ttl": 15}, headers=XHR,
+    )
+    assert bad_type.status_code == 422
+
+    bad_ttl = client.post(
+        "/api/servers/ns1.example/ipmi/access",
+        json={"type": "kvmipJnlp", "ttl": 7}, headers=XHR,
+    )
+    assert bad_ttl.status_code == 422
+    svc.server_post.assert_not_called()
+
+    ok = client.post(
+        "/api/servers/ns1.example/ipmi/access",
+        json={"type": "kvmipJnlp", "ttl": 15}, headers=XHR,
+    )
+    assert ok.status_code == 200
+    svc.server_post.assert_called_once_with(
+        "ns1.example", "/features/ipmi/access", type="kvmipJnlp", ttl=15
+    )
+
+
+def test_ipmi_action_rejects_unknown_actions(client):
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_post = MagicMock(return_value=None)
+
+    assert client.post(
+        "/api/servers/ns1.example/ipmi/nuke", headers=XHR
+    ).status_code == 404
+    svc.server_post.assert_not_called()
+
+    client.post("/api/servers/ns1.example/ipmi/reset-sessions", headers=XHR)
+    svc.server_post.assert_called_once_with(
+        "ns1.example", "/features/ipmi/resetSessions"
+    )
+
+
+def test_ola_group_and_reset_use_the_right_payloads(client):
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_post = MagicMock(return_value={"taskId": 3})
+
+    client.post(
+        "/api/servers/ns1.example/ola/group",
+        json={"name": "bond0", "virtual_network_interfaces": ["u1", "u2"]},
+        headers=XHR,
+    )
+    svc.server_post.assert_called_with(
+        "ns1.example", "/ola/group", name="bond0",
+        virtualNetworkInterfaces=["u1", "u2"],
+    )
+
+    client.post(
+        "/api/servers/ns1.example/ola/reset",
+        json={"virtual_network_interface": "u1"}, headers=XHR,
+    )
+    svc.server_post.assert_called_with(
+        "ns1.example", "/ola/reset", virtualNetworkInterface="u1"
+    )
+
+    assert client.post(
+        "/api/servers/ns1.example/ola/explode", json={}, headers=XHR,
+    ).status_code == 404
+
+
+def test_ip_block_merge_uses_ovhs_block_parameter(client):
+    """OVH names it `block`, not `ip`; getting this wrong 400s at OVH."""
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_post = MagicMock(return_value={"taskId": 8})
+
+    client.post(
+        "/api/servers/ns1.example/ip-block-merge",
+        json={"block": "1.2.3.0/28"}, headers=XHR,
+    )
+    svc.server_post.assert_called_once_with(
+        "ns1.example", "/ipBlockMerge", block="1.2.3.0/28"
+    )
+
+
 def test_bills_list_caps_and_reads_defensively(client):
     _create_account(client)
     svc = get_active_ovh_service()
