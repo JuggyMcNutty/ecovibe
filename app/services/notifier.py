@@ -431,6 +431,83 @@ async def notify_catalog_change(
     await broadcast(f"OVH catalog change{acct}: {counts}", plain, html, fields)
 
 
+async def notify_order_status(
+    order_id: int, name: str | None, status: str, previous: str | None,
+    account_label: str | None = None,
+) -> None:
+    """Notify that an order reached a terminal state (delivered / cancelled).
+
+    Called only for transitions the delivery watch considers newsworthy —
+    intermediate churn (``checking`` → ``delivering``) is persisted and
+    streamed to the browser but never fanned out, so a single order produces
+    at most one message per outcome.
+    """
+    acct = _account_suffix(account_label)
+    label = name or f"Order #{order_id}"
+    logger.info(
+        "notifying order %s%s: %s -> %s", order_id, acct, previous or "?", status,
+    )
+    headline = "Server delivered" if status == "delivered" else f"Order {status}"
+    plain = (
+        f"{headline}{acct}: {label}\n"
+        f"Order #{order_id} — {previous or '?'} → {status}"
+    )
+    html = (
+        f"<b>{escape(headline)}</b>{escape(acct)}: {escape(label)}<br>"
+        f"Order <code>#{order_id}</code> — "
+        f"{escape(previous or '?')} → <b>{escape(status)}</b>"
+    )
+    fields = [
+        {"name": "Order", "value": f"`#{order_id}`", "inline": True},
+        {"name": "Status", "value": status, "inline": True},
+    ]
+    if account_label:
+        fields.append({"name": "Account", "value": account_label, "inline": True})
+    await broadcast(f"{headline}{acct}: {label}", plain, html, fields)
+
+
+def _server_list(names: list[str], limit: int = 5) -> str:
+    """`"a, b, c (+2 more)"` from service names — same truncation rule as
+    :func:`_plan_list`, so a bulk change can't overflow a chat client."""
+    shown = ", ".join(names[:limit])
+    return shown + (f" (+{len(names) - limit} more)" if len(names) > limit else "")
+
+
+async def notify_server_change(
+    added: list[str], removed: list[str], account_label: str | None = None,
+) -> None:
+    """Notify that dedicated servers appeared on, or vanished from, an account.
+
+    Called once per account per scan cycle with the whole diff, never once per
+    server — the same rule as :func:`notify_catalog_change`.
+    """
+    acct = _account_suffix(account_label)
+    counts = f"+{len(added)} / -{len(removed)}"
+    logger.info(
+        "notifying server change%s: %d added, %d removed",
+        acct, len(added), len(removed),
+    )
+    headline = "New OVH server" if added and not removed else "OVH servers changed"
+    lines = []
+    if added:
+        lines.append(f"Added: {_server_list(added)}")
+    if removed:
+        lines.append(f"Removed: {_server_list(removed)}")
+    plain = f"{headline}{acct}: {counts}\n" + "\n".join(lines)
+    html_lines = "<br>".join(
+        f"<b>{label}</b>: <code>{escape(_server_list(names))}</code>"
+        for label, names in (("Added", added), ("Removed", removed)) if names
+    )
+    html = f"<b>{escape(headline)}</b>{escape(acct)}: {escape(counts)}<br>{html_lines}"
+    fields = [
+        {"name": label, "value": f"`{_server_list(names)}`", "inline": False}
+        for label, names in (("Added", added), ("Removed", removed)) if names
+    ]
+    if account_label:
+        fields.append({"name": "Account", "value": account_label, "inline": True})
+    await broadcast(f"{headline}{acct}: {counts}", plain, html, fields)
+
+
 def configured_channels() -> list[str]:
     """Return the names of channels that have all their required settings.
 
