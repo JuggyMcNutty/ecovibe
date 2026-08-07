@@ -70,18 +70,10 @@ not on PATH; use the absolute path above.
 
 ## Release process
 
-- **Repo**: public on GitHub at `git@github.com:JuggyMcNutty/ecovibe.git`
-  (remote `origin`, default branch `main`). Auth is SSH (key in
-  `~/.ssh/id_ed25519`, added to the GitHub account) — HTTPS password
-  auth does not work (GitHub requires a PAT for that path; SSH was
-  chosen instead).
-- **gh CLI**: installed to `~/.local/bin/gh` (NOT via `dnf` — this is
-  Bazzite, an immutable/atomic Fedora image, and `dnf install` is
-  blocked by design; `rpm-ostree` would work but requires a reboot to
-  layer, so the plain binary tarball from the GitHub releases page was
-  extracted straight into `~/.local/bin` instead, which is already on
-  PATH). Already authenticated (`gh auth status`) — no need to redo
-  `gh auth login` unless the token is revoked.
+The remote URL, transport (SSH vs HTTPS), credential setup, and how `gh`
+was installed are all per-deployment — check `git remote -v` and
+`gh auth status` rather than assuming any of them.
+
 - **Cutting a release**: bump `version` in `pyproject.toml`, commit it,
   then:
   ```bash
