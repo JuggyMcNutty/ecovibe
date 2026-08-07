@@ -470,6 +470,23 @@ were created under (`account_id` column on each table).
   title cached wrong won't self-heal on a plain list load, so the "Refresh all"
   button hits `GET /api/orders?refresh=true`, which re-derives names instead of
   trusting the cache (still `name_budget`-limited so it can't hang).
+- **Order follow-up dates are naive and in the ORDER's timezone**: `/me/order/
+  {id}/followUp` history dates come back as `"2026-08-04 20:05:02"` — space
+  separator, **no offset, not ISO 8601** — while the order object's own `date`
+  carries a real one (`"2026-08-04T20:01:19.979215-04:00"`). Verified identical
+  on ovh-us and ovh-ca. `_normalize_followup` in `orders.py` attaches the
+  order's offset to each naive history date and returns `dt.isoformat()`.
+  Rendering them raw was a live bug twice over: the browser parsed them as ITS
+  own local time (an hour late on this `America/Chicago` host for a -04:00
+  order), and the space-separated form is `Invalid Date` on Safari. It also
+  sorts each step's history **ascending** — OVH sends it newest-first while the
+  steps themselves run forwards, so raw output read backwards halfway down.
+  `label` (the enum, `ORDER_ACCEPTED`) and `description` (the human string) are
+  both preserved deliberately; the frontend shows `description`, keeping the
+  enum as a hover title. Note `followUp` legitimately **lags** `/status`: an
+  order can read `delivered` while the timeline still shows `DELIVERING/DOING`
+  because invoicing is running. The UI annotates that rather than faking the
+  step states (`followupDisagreementNote` in `app.js`).
 - **Catalog config-option order**: OVH returns `plan.addonFamilies` (and the
   addons within each) in arbitrary order. `renderCatalogDetail` standardizes them
   once — families in `CATALOG_FAMILY_ORDER` (memory→storage→bandwidth→vrack),
