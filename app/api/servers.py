@@ -460,3 +460,177 @@ async def task_timeslots(service_name: str, task_id: int) -> dict[str, Any]:
     except OVHServiceError as e:
         raise_ovh_http_error(e)
     return {"timeslots": slots}
+
+
+# ---------------------------------------------------------------------------
+# Reinstall
+# ---------------------------------------------------------------------------
+
+
+class ReinstallStorage(BaseModel):
+    """One entry of dedicated.server.reinstall.Storage."""
+    disk_group_id: int | None = None
+    hardware_raid: list[dict[str, Any]] | None = None
+    partitioning: dict[str, Any] | None = None
+
+    def to_ovh(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        if self.disk_group_id is not None:
+            out["diskGroupId"] = self.disk_group_id
+        if self.hardware_raid is not None:
+            out["hardwareRaid"] = self.hardware_raid
+        if self.partitioning is not None:
+            out["partitioning"] = self.partitioning
+        return out
+
+
+class ReinstallCustomizations(BaseModel):
+    """dedicated.server.reinstall.Customizations, snake_cased."""
+    hostname: str | None = None
+    ssh_key: str | None = None
+    language: str | None = None
+    post_installation_script: str | None = None
+    post_installation_script_extension: str | None = None
+    config_drive_user_data: str | None = None
+    config_drive_metadata: dict[str, str] | None = None
+    efi_bootloader_path: str | None = None
+    enable_lacp_bonding: bool | None = None
+    # Bring-your-own-image
+    image_url: str | None = None
+    image_type: str | None = None
+    image_check_sum: str | None = None
+    image_check_sum_type: str | None = None
+    http_headers: dict[str, str] | None = None
+
+    def to_ovh(self) -> dict[str, Any]:
+        mapping = {
+            "hostname": self.hostname,
+            "sshKey": self.ssh_key,
+            "language": self.language,
+            "postInstallationScript": self.post_installation_script,
+            "postInstallationScriptExtension": self.post_installation_script_extension,
+            "configDriveUserData": self.config_drive_user_data,
+            "configDriveMetadata": self.config_drive_metadata,
+            "efiBootloaderPath": self.efi_bootloader_path,
+            "enableLacpBonding": self.enable_lacp_bonding,
+            "imageURL": self.image_url,
+            "imageType": self.image_type,
+            "imageCheckSum": self.image_check_sum,
+            "imageCheckSumType": self.image_check_sum_type,
+            "httpHeaders": self.http_headers,
+        }
+        return {k: v for k, v in mapping.items() if v is not None}
+
+
+class ReinstallRequest(BaseModel):
+    """Body for POST /api/servers/{name}/reinstall."""
+    operating_system: str
+    customizations: ReinstallCustomizations | None = None
+    storage: list[ReinstallStorage] | None = None
+
+
+@router.get("/{service_name}/install/templates")
+async def install_templates(service_name: str) -> dict[str, Any]:
+    """OS templates compatible with this hardware (OVH's + any personal ones)."""
+    service = _configured_service()
+    try:
+        data = await asyncio.to_thread(
+            service.server_get, service_name, "/install/compatibleTemplates"
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    # OVH returns {"ovh": [...], "personal": [...]}; flatten for the picker
+    # while keeping the split so the UI can group them.
+    groups = data if isinstance(data, dict) else {"ovh": data or []}
+    return {"groups": groups, "all": sorted({t for v in groups.values() for t in (v or [])})}
+
+
+@router.get("/{service_name}/install/partition-schemes")
+async def install_partition_schemes(
+    service_name: str, template: str = Query(...),
+) -> dict[str, Any]:
+    """Partition schemes for a template. OVH 400s without templateName."""
+    service = _configured_service()
+    try:
+        schemes = await asyncio.to_thread(
+            service.server_get, service_name,
+            "/install/compatibleTemplatePartitionSchemes", templateName=template,
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    return {"template": template, "schemes": schemes}
+
+
+@router.get("/{service_name}/install/raid-profile")
+async def install_raid_profile(service_name: str) -> dict[str, Any]:
+    """Hardware RAID profile, or ``supported: false`` where there is none.
+
+    OVH answers 403 "Hardware RAID is not supported by this server" on
+    entry-level hardware — that is an answer, not an error.
+    """
+    service = _configured_service()
+    try:
+        profile = await asyncio.to_thread(
+            service.server_get, service_name, "/install/hardwareRaidProfile"
+        )
+    except OVHServiceError as e:
+        if e.status_code in (403, 404):
+            return {"supported": False, "profile": None}
+        raise_ovh_http_error(e)
+    return {"supported": True, "profile": profile}
+
+
+@router.get("/{service_name}/install/status")
+async def install_status(service_name: str) -> dict[str, Any]:
+    """Installation progress.
+
+    OVH 404s with "Server is not being installed or reinstalled at the moment"
+    when idle. That is the normal state, so it maps to ``installing: false``
+    rather than bubbling up as an error the UI would have to special-case.
+    """
+    service = _configured_service()
+    try:
+        status = await asyncio.to_thread(
+            service.server_get, service_name, "/install/status"
+        )
+    except OVHServiceError as e:
+        if e.status_code == 404:
+            return {"installing": False, "status": None}
+        raise_ovh_http_error(e)
+    return {"installing": True, "status": status}
+
+
+@router.post("/{service_name}/reinstall")
+async def reinstall_server(
+    service_name: str, request: ReinstallRequest,
+) -> dict[str, Any]:
+    """Install or reinstall an OS. **Wipes the server.**
+
+    POST is never retried by ``OVHService._call`` on a 5xx, which matters here
+    more than anywhere else in the app: a retried reinstall would restart a
+    wipe that may already be running.
+    """
+    service = _configured_service()
+    payload: dict[str, Any] = {"operatingSystem": request.operating_system}
+    if request.customizations:
+        custom = request.customizations.to_ovh()
+        if custom:
+            payload["customizations"] = custom
+    if request.storage:
+        storage = [s.to_ovh() for s in request.storage]
+        storage = [s for s in storage if s]
+        if storage:
+            payload["storage"] = storage
+
+    logger.info(
+        "server %s reinstall requested: os=%s customizations=%s storage=%d",
+        service_name, request.operating_system,
+        sorted(payload.get("customizations", {})), len(payload.get("storage", [])),
+    )
+    try:
+        task = await asyncio.to_thread(
+            service.server_post, service_name, "/reinstall", **payload
+        )
+    except OVHServiceError as e:
+        raise_ovh_http_error(e)
+    return {"task": task, "operating_system": request.operating_system}

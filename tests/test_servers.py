@@ -400,6 +400,98 @@ def test_task_detail_flags_terminal_status(client):
     assert client.get("/api/servers/ns1.example/tasks/7").json()["terminal"] is True
 
 
+# ----- reinstall -----
+
+
+def test_reinstall_passes_customizations_and_storage_through(client):
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_post = MagicMock(return_value={"taskId": 99})
+
+    body = client.post(
+        "/api/servers/ns1.example/reinstall",
+        json={
+            "operating_system": "debian12_64",
+            "customizations": {
+                "hostname": "web1", "ssh_key": "ssh-ed25519 AAAA",
+                "post_installation_script": "#!/bin/sh\necho hi",
+            },
+            "storage": [{"disk_group_id": 0, "partitioning": {"schemeName": "default"}}],
+        },
+        headers=XHR,
+    ).json()
+
+    assert body["task"]["taskId"] == 99
+    svc.server_post.assert_called_once_with(
+        "ns1.example", "/reinstall",
+        operatingSystem="debian12_64",
+        customizations={
+            "hostname": "web1", "sshKey": "ssh-ed25519 AAAA",
+            "postInstallationScript": "#!/bin/sh\necho hi",
+        },
+        storage=[{"diskGroupId": 0, "partitioning": {"schemeName": "default"}}],
+    )
+
+
+def test_reinstall_omits_empty_optional_blocks(client):
+    """An all-null customizations block must not be sent as `{}` — OVH would
+    take it as an explicit empty customization."""
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_post = MagicMock(return_value={})
+
+    client.post(
+        "/api/servers/ns1.example/reinstall",
+        json={"operating_system": "debian12_64", "customizations": {}, "storage": []},
+        headers=XHR,
+    )
+    svc.server_post.assert_called_once_with(
+        "ns1.example", "/reinstall", operatingSystem="debian12_64"
+    )
+
+
+def test_install_status_maps_idle_404_to_not_installing(client):
+    """OVH 404s when nothing is installing; that's the normal state."""
+    from app.services.ovh_service import OVHServiceError
+
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_get = MagicMock(
+        side_effect=OVHServiceError("not being installed", status_code=404)
+    )
+
+    r = client.get("/api/servers/ns1.example/install/status")
+    assert r.status_code == 200
+    assert r.json() == {"installing": False, "status": None}
+
+
+def test_raid_profile_reports_unsupported_instead_of_erroring(client):
+    """Entry-level hardware answers 403 — an answer, not a failure."""
+    from app.services.ovh_service import OVHServiceError
+
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_get = MagicMock(
+        side_effect=OVHServiceError("Hardware RAID is not supported", status_code=403)
+    )
+
+    r = client.get("/api/servers/ns1.example/install/raid-profile")
+    assert r.status_code == 200
+    assert r.json() == {"supported": False, "profile": None}
+
+
+def test_install_templates_flattens_and_groups(client):
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_get = MagicMock(return_value={
+        "ovh": ["debian12_64", "alma9_64"], "personal": ["mine_64"],
+    })
+
+    body = client.get("/api/servers/ns1.example/install/templates").json()
+    assert body["all"] == ["alma9_64", "debian12_64", "mine_64"]
+    assert body["groups"]["personal"] == ["mine_64"]
+
+
 def test_bills_list_caps_and_reads_defensively(client):
     _create_account(client)
     svc = get_active_ovh_service()
