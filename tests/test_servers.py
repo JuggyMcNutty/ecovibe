@@ -270,6 +270,136 @@ def test_resource_endpoint_requires_declared_params(client):
     assert r.json()["data"]["params"] == {"period": "daily", "type": "traffic:download"}
 
 
+# ----- power, boot, flags -----
+
+
+def test_boot_options_resolve_ids_to_details(client):
+    """OVH's /boot returns bare ids; the UI needs bootType to label them."""
+    _create_account(client)
+    svc = get_active_ovh_service()
+    boots = {
+        1: {"bootType": "harddisk", "kernel": "hd", "description": "Boot to disk"},
+        95083: {"bootType": "power", "kernel": "poweroff", "description": "Power-off server"},
+        230242: {"bootType": "rescue", "kernel": "rescue12-customer", "description": "Rescue"},
+    }
+
+    def _get(name, subpath="", **kw):
+        if subpath == "/boot":
+            return list(boots)
+        return boots[int(subpath.rsplit("/", 1)[1])]
+
+    svc.server_get = MagicMock(side_effect=_get)
+
+    options = client.get("/api/servers/ns1.example/boot").json()["options"]
+    assert [o["boot_type"] for o in options] == ["harddisk", "power", "rescue"]
+    assert options[2]["description"] == "Rescue"
+
+
+def test_set_boot_without_reboot_does_not_reboot(client):
+    """A boot change alone is not downtime; rebooting must be opt-in."""
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_put = MagicMock(return_value=None)
+    svc.server_post = MagicMock(return_value={"taskId": 1})
+
+    body = client.put(
+        "/api/servers/ns1.example/boot", json={"boot_id": 230242}, headers=XHR,
+    ).json()
+
+    assert body["boot_id"] == 230242
+    assert body["rebooted"] is False
+    svc.server_put.assert_called_with("ns1.example", "", bootId=230242)
+    svc.server_post.assert_not_called()
+
+
+def test_set_boot_with_reboot_reports_a_partial_failure(client):
+    """If the boot change lands but the reboot fails, say so — a caller that
+    retries blindly would re-apply the boot change."""
+    from app.services.ovh_service import OVHServiceError
+
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_put = MagicMock(return_value=None)
+    svc.server_post = MagicMock(side_effect=OVHServiceError("boom", status_code=500))
+
+    r = client.put(
+        "/api/servers/ns1.example/boot",
+        json={"boot_id": 230242, "reboot": True}, headers=XHR,
+    )
+    assert r.status_code == 502
+    assert "Boot set to 230242" in r.json()["detail"]
+
+
+def test_properties_accepts_only_writable_fields(client):
+    """dedicated.server.Dedicated is mostly read-only; state/powerState/rack
+    must never reach OVH."""
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_put = MagicMock(return_value=None)
+
+    body = client.put(
+        "/api/servers/ns1.example/properties",
+        json={"monitoring": False, "state": "hacked", "power_state": "poweroff",
+              "rack": "elsewhere"},
+        headers=XHR,
+    ).json()
+
+    assert body["updated"] == {"monitoring": False}
+    svc.server_put.assert_called_once_with("ns1.example", "", monitoring=False)
+
+
+def test_properties_rejects_an_empty_update(client):
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_put = MagicMock(return_value=None)
+
+    r = client.put(
+        "/api/servers/ns1.example/properties", json={"rack": "nope"}, headers=XHR,
+    )
+    assert r.status_code == 422
+    svc.server_put.assert_not_called()
+
+
+def test_reboot_returns_the_task(client):
+    _create_account(client)
+    svc = get_active_ovh_service()
+    svc.server_post = MagicMock(return_value={"taskId": 42, "status": "todo"})
+
+    body = client.post("/api/servers/ns1.example/reboot", headers=XHR).json()
+    assert body["task"]["taskId"] == 42
+    svc.server_post.assert_called_once_with("ns1.example", "/reboot")
+
+
+# ----- tasks -----
+
+
+def test_tasks_listed_newest_first_and_capped(client):
+    _create_account(client)
+    svc = get_active_ovh_service()
+
+    def _get(name, subpath="", **kw):
+        if subpath == "/task":
+            return [1, 2, 3, 4, 5]
+        return {"taskId": int(subpath.rsplit("/", 1)[1]), "status": "done"}
+
+    svc.server_get = MagicMock(side_effect=_get)
+
+    tasks = client.get("/api/servers/ns1.example/tasks?limit=3").json()["tasks"]
+    assert [t["taskId"] for t in tasks] == [5, 4, 3]
+
+
+def test_task_detail_flags_terminal_status(client):
+    """The frontend polls until a task stops moving, so it needs to be told."""
+    _create_account(client)
+    svc = get_active_ovh_service()
+
+    svc.server_get = MagicMock(return_value={"taskId": 7, "status": "doing"})
+    assert client.get("/api/servers/ns1.example/tasks/7").json()["terminal"] is False
+
+    svc.server_get = MagicMock(return_value={"taskId": 7, "status": "ovhError"})
+    assert client.get("/api/servers/ns1.example/tasks/7").json()["terminal"] is True
+
+
 def test_bills_list_caps_and_reads_defensively(client):
     _create_account(client)
     svc = get_active_ovh_service()
