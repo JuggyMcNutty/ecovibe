@@ -541,7 +541,27 @@ were created under (`account_id` column on each table).
     see its `PROVENANCE.md`). Upstream noVNC cannot talk to these BMCs: the fork
     adds ATEN security type 16 (`_negotiate_aten_auth` — skip 4+16 bytes, then
     username and password each NUL-padded to 24) and the ATEN video encodings
-    (`0x57` AST2100 and friends). Vendored **unmodified**; keep it that way.
+    (`0x57` AST2100 and friends). **Not unmodified** — `core/rfb.js` and
+    `core/display.js` carry local patches, each written up in `PROVENANCE.md`
+    and pinned by a test in `tests/test_console.py`, so a re-vendor is never a
+    plain overwrite. Keep every further change minimal and documented there.
+  - **This BMC speaks HERMON (0x59), not AST2100** — ATEN labels its frames
+    `0x00` and `rfb.js` rewrites that to `0x59`. Verified live on
+    `ns3147088.ip-51-83-10.eu`: 752×413, RGB555, 16×16 subrects (type 0) with
+    full-frame RAW (type 1) mixed in. The `ast2100/` decoder is never reached on
+    this hardware, so don't debug rendering there.
+  - **"Screen off" is a framebuffer update, not an error**, and it must be
+    consumed like any other rect. ATEN sends `64896 × 65056` (−640 × −480 as
+    int16) with an empty payload whenever it has not locked onto the host's
+    video — this BMC does it as the *first* update of a session, then sends real
+    frames. The fork returned from that branch leaving `_FBU.rects` at 1, so the
+    update loop waited forever on a rect header that had already been consumed:
+    no further `FramebufferUpdateRequest` was ever sent, the canvas kept its
+    placeholder size, and nothing failed. Symptom to recognise: **a black
+    console with a page-tall scroll bar and no error message**. Related: the
+    fork's 10000×10000 is a *request* size — `_fb_width`/`_fb_height` keep it,
+    but the display starts at 640×480, and `kvm.js` clamps the canvas with
+    `max-width`/`max-height: 100%` so no framebuffer can scroll the page.
   - **The relay is deliberately a dumb byte pipe and the browser gets the
     credentials.** Terminating the handshake server-side would keep them here,
     but noVNC only switches into ATEN mode *inside* `_negotiate_aten_auth`
