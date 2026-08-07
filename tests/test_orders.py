@@ -9,6 +9,7 @@ from app.api.orders import (
     _extract_server_name,
     _group_line_items,
     _name_from_details,
+    _normalize_followup,
     _pick_label,
 )
 from app.main import app
@@ -216,3 +217,119 @@ def test_pick_label_prefers_clean_non_rental_description():
     # Rental-only descriptions get the boilerplate stripped.
     assert _pick_label(["32GB DDR3 ECC 1333MHz rental - 1 month"]) == "32GB DDR3 ECC 1333MHz"
     assert _pick_label([]) == "(line item)"
+
+
+# ----- delivery follow-up normalisation -----
+#
+# OVH sends follow-up history dates NAIVE and space-separated
+# ("2026-08-04 20:05:02") while the order's own `date` carries a real offset.
+# Rendered as-is the browser read them as its own local time (an hour off on a
+# -05:00 host for a -04:00 order) and Safari rejected them outright. OVH also
+# returns each step's history newest-first, which read backwards next to the
+# steps, which run forwards.
+
+# The live shape of order 8510474's VALIDATING step, newest-first as OVH sends it.
+_FOLLOWUP_8510474 = [
+    {
+        "step": "VALIDATING",
+        "status": "DONE",
+        "history": [
+            {"date": "2026-08-04 20:05:02", "label": "ORDER_ACCEPTED",
+             "description": "Order accepted"},
+            {"date": "2026-08-04 20:05:00", "label": "FRAUD_CHECK",
+             "description": "Check fraud started"},
+            {"date": "2026-08-04 20:04:55", "label": "ORDER_STARTED",
+             "description": "Order workflow started"},
+        ],
+    },
+    {"step": "DELIVERING", "status": "DOING", "history": [
+        {"date": "2026-08-06 20:55:30", "label": "INVOICE_IN_PROGRESS",
+         "description": "Invoice creation started"},
+        {"date": "2026-08-04 20:05:15", "label": "DELIVERY",
+         "description": "Service delivery started"},
+    ]},
+    {"step": "AVAILABLE", "status": "TODO", "history": []},
+]
+
+_ORDER_8510474 = {"date": "2026-08-04T20:01:19.979215-04:00"}
+
+
+def test_followup_dates_get_the_orders_offset():
+    """The one-hour bug: a naive -04:00 timestamp rendered as browser-local."""
+    steps = _normalize_followup(_FOLLOWUP_8510474, _ORDER_8510474)
+    assert [h["date"] for h in steps[0]["history"]] == [
+        "2026-08-04T20:04:55-04:00",
+        "2026-08-04T20:05:00-04:00",
+        "2026-08-04T20:05:02-04:00",
+    ]
+
+
+def test_followup_history_is_returned_oldest_first():
+    """OVH sends newest-first; the steps run forwards, so the events must too."""
+    steps = _normalize_followup(_FOLLOWUP_8510474, _ORDER_8510474)
+    assert [h["label"] for h in steps[0]["history"]] == [
+        "ORDER_STARTED", "FRAUD_CHECK", "ORDER_ACCEPTED",
+    ]
+    assert [h["label"] for h in steps[1]["history"]] == ["DELIVERY", "INVOICE_IN_PROGRESS"]
+
+
+def test_followup_preserves_step_order_and_states():
+    steps = _normalize_followup(_FOLLOWUP_8510474, _ORDER_8510474)
+    assert [(s["step"], s["status"]) for s in steps] == [
+        ("VALIDATING", "DONE"), ("DELIVERING", "DOING"), ("AVAILABLE", "TODO"),
+    ]
+
+
+def test_followup_keeps_both_label_and_description():
+    """`label` stays OVH's enum and `description` its human string — the
+    frontend picks. Repurposing either would mislead against OVH's API docs."""
+    h = _normalize_followup(_FOLLOWUP_8510474, _ORDER_8510474)[0]["history"][0]
+    assert h["label"] == "ORDER_STARTED"
+    assert h["description"] == "Order workflow started"
+
+
+def test_followup_leaves_an_already_aware_date_alone():
+    """Defensive: if OVH starts sending offsets, don't overwrite them."""
+    fu = [{"step": "VALIDATING", "status": "DONE", "history": [
+        {"date": "2026-08-04T20:05:02+02:00", "label": "ORDER_ACCEPTED"},
+    ]}]
+    steps = _normalize_followup(fu, _ORDER_8510474)
+    assert steps[0]["history"][0]["date"] == "2026-08-04T20:05:02+02:00"
+
+
+def test_followup_without_an_order_date_invents_no_offset():
+    """No offset to attach → still normalise the separator to ISO (so Safari
+    can parse it) but never fabricate a timezone."""
+    steps = _normalize_followup(_FOLLOWUP_8510474, {})
+    assert steps[0]["history"][0]["date"] == "2026-08-04T20:04:55"
+    steps = _normalize_followup(_FOLLOWUP_8510474, {"date": "not-a-date"})
+    assert steps[0]["history"][0]["date"] == "2026-08-04T20:04:55"
+
+
+def test_followup_passes_through_an_unparseable_date():
+    """A weird date is still a better row than a dropped one; it sorts last."""
+    fu = [{"step": "VALIDATING", "status": "DONE", "history": [
+        {"date": "garbage", "label": "WEIRD"},
+        {"date": "2026-08-04 20:05:02", "label": "ORDER_ACCEPTED"},
+    ]}]
+    steps = _normalize_followup(fu, _ORDER_8510474)
+    assert [h["label"] for h in steps[0]["history"]] == ["ORDER_ACCEPTED", "WEIRD"]
+    assert steps[0]["history"][1]["date"] == "garbage"
+
+
+def test_followup_handles_the_unpaid_order_shape():
+    """An unpaid order is four TODO steps with no history at all."""
+    fu = [{"step": s, "status": "TODO", "history": []}
+          for s in ("VALIDATING", "VALIDATED", "DELIVERING", "AVAILABLE")]
+    assert _normalize_followup(fu, {"date": "2026-07-09T23:42:54-04:00"}) == fu
+    assert _normalize_followup([], _ORDER_8510474) == []
+
+
+def test_followup_mixed_naive_and_aware_without_offset_does_not_raise():
+    """Sorting must not compare naive against aware datetimes (TypeError)."""
+    fu = [{"step": "VALIDATING", "status": "DONE", "history": [
+        {"date": "2026-08-04T20:05:02+02:00", "label": "AWARE"},
+        {"date": "2026-08-04 20:04:55", "label": "NAIVE"},
+    ]}]
+    steps = _normalize_followup(fu, {})
+    assert {h["label"] for h in steps[0]["history"]} == {"AWARE", "NAIVE"}

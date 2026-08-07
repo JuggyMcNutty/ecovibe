@@ -7,6 +7,7 @@ actions like waiving the retraction period.
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -179,6 +180,82 @@ def _group_line_items(details: list[dict]) -> list[dict]:
             "cancelled": all(r.get("cancelled") for r in rows),
         })
     return items
+
+
+def _order_tzinfo(order: dict) -> timezone | None:
+    """The UTC offset OVH reports on the order itself, or ``None``.
+
+    The order object's ``date`` carries a real offset
+    (``2026-08-04T20:01:19.979215-04:00``); its follow-up history does not.
+    See :func:`_followup_date`.
+    """
+    raw = order.get("date")
+    if not isinstance(raw, str):
+        return None
+    try:
+        return datetime.fromisoformat(raw).tzinfo
+    except ValueError:
+        return None
+
+
+def _followup_date(raw: Any, tz: timezone | None) -> tuple[Any, float | None]:
+    """Return ``(display_value, sort_key)`` for one follow-up history date.
+
+    OVH's follow-up history dates are **naive local strings with a space
+    separator** (``"2026-08-04 20:05:02"``) — no offset, and not ISO 8601. They
+    are in the same zone as the order's ``date`` field, which *does* carry the
+    offset, so that offset is attached here. Two bugs this fixes:
+
+    - Left naive, the browser parses them as ITS OWN local time. On a host in
+      ``America/Chicago`` (-05:00) a -04:00 timestamp rendered a full hour late.
+    - The space-separated form is not ISO 8601, so ``new Date()`` returns
+      ``Invalid Date`` on Safari.
+
+    An already-aware value is left alone, so this stays correct if OVH ever
+    starts sending offsets. An unparseable value passes through untouched
+    rather than being dropped — a weird date is still better than no row.
+    """
+    if not isinstance(raw, str) or not raw:
+        return raw, None
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return raw, None
+    if dt.tzinfo is None and tz is not None:
+        dt = dt.replace(tzinfo=tz)
+    # Sort on a POSIX timestamp, not the datetime: with no order offset to
+    # attach, a step could mix naive and aware values and comparing those
+    # raises TypeError. Naive values are read as UTC for ordering only — they
+    # all share one zone, so their relative order is still right.
+    anchored = dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat(), anchored.timestamp()
+
+
+def _normalize_followup(followup: list[dict], order: dict) -> list[dict]:
+    """Make OVH's delivery follow-up renderable: real timestamps, read forwards.
+
+    OVH returns each step's ``history`` **newest-first** while the steps
+    themselves run forwards (VALIDATING → VALIDATED → DELIVERING → AVAILABLE),
+    so rendering it as-is flips the reading direction halfway down the widget.
+    Sort each history ascending and normalise its dates.
+
+    ``label`` (the machine enum, ``ORDER_ACCEPTED``) and ``description`` (the
+    human string, ``"Order accepted"``) are both left in place — deliberately.
+    Repurposing ``label`` would mislead anyone comparing this against OVH's API
+    docs; the frontend decides which one to show.
+    """
+    tz = _order_tzinfo(order)
+    steps: list[dict] = []
+    for step in followup or []:
+        rows: list[tuple[float | None, int, dict]] = []
+        for i, h in enumerate(step.get("history") or []):
+            value, sort_key = _followup_date(h.get("date"), tz)
+            rows.append((sort_key, i, {**h, "date": value}))
+        # Oldest first. Entries whose date wouldn't parse have no place in the
+        # ordering, so they keep their original relative position at the end.
+        rows.sort(key=lambda r: (r[0] is None, r[0] or 0.0, r[1]))
+        steps.append({**step, "history": [r[2] for r in rows]})
+    return steps
 
 
 async def _order_name_from_details(service, order_id: int) -> str | None:
@@ -409,7 +486,10 @@ async def get_order_detail(order_id: int) -> dict:
         "status": status,
         "details": details,
         "line_items": _group_line_items(details),
-        "followup": followup,
+        # Normalised in place (unlike details/line_items, which are returned
+        # side by side because the frontend falls back to the raw rows) —
+        # nothing consumes the raw follow-up shape.
+        "followup": _normalize_followup(followup, order),
     }
 
 
