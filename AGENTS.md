@@ -165,7 +165,7 @@ static/js/app.js         # Frontend SPA (vanilla JS, ~4600 lines)
 static/css/input.css     # Tailwind source
 static/css/app.css       # Built/minified (do not edit — rebuild from input.css)
 templates/index.html     # SPA shell with cache-busted asset refs
-tests/                   # pytest suite (193 tests, uses TestClient)
+tests/                   # pytest suite (306 tests, uses TestClient)
 ```
 
 ## Multi-account model
@@ -296,6 +296,41 @@ were created under (`account_id` column on each table).
   to channels), read live per cycle via `app_setting_bool`. `catalog_changes`
   is not pruned — additions/removals are rare enough to be unbounded in
   practice, unlike `stock_events`.
+- **Delivery watch (orders + owned servers)**: every
+  `OVH_ORDER_CHECK_INTERVAL` seconds (300; 0 disables, Settings → App)
+  `_maybe_check_orders_and_servers` runs `_check_orders` and `_check_servers`
+  per account, behind the same `monitoring_enabled` gate as everything else.
+  It exists because **the Orders and Servers tabs only talk to OVH when they
+  are opened** — before it, an order sat at whatever status it had when the tab
+  was last viewed (a real order was stored `delivering` while OVH said
+  `delivered`), and OVH's own delivery email was the only notice a server was
+  ready. Four rules, all load-bearing:
+  (1) **Notify only on a transition from a status we already knew.** An order id
+  seen for the first time is recorded silently — otherwise a fresh install would
+  fan out one message per historical `delivered` order. This is the catalog
+  watch's priming lesson expressed as a rule about transitions rather than a
+  first-scan branch, so it also covers an account that gains orders later.
+  (2) **Only terminal statuses notify** (`delivered`/`cancelled`,
+  `NOTIFY_ORDER_STATUSES`). Intermediate churn (`checking`→`delivering`) is
+  persisted and streamed over SSE but never fanned out.
+  (3) **Terminal orders are never re-queried** (`TERMINAL_ORDER_STATUSES`), and
+  status calls are capped at `ORDER_STATUS_BUDGET` (10) per account per cycle,
+  newest first — every OVH call serialises on the account's client lock (same
+  reasoning as `name_budget` in `api/orders.py`). A settled account costs one
+  `/me/order` call per cycle.
+  (4) **The server snapshot primes behind an explicit marker**
+  (`settings.server_watch_primed_<account_id>`), not the emptiness of
+  `owned_servers`: an empty snapshot means both "never scanned" AND "owns no
+  servers", and buying your first server through this app is exactly the case
+  that must not be swallowed as a baseline. Note there is deliberately **no
+  "more than half missing" guard** here (unlike the catalog watch) — a truncated
+  ~700-plan catalog is indistinguishable from a retired region, whereas
+  `/dedicated/server` returns a short, complete list where `[]` is a legitimate
+  answer; a failed fetch raises and leaves the snapshot untouched, which is the
+  guard that matters. `owned_servers` is snapshot-only (no history table): the
+  Servers tab renders the live OVH list, so nothing would consume one.
+  SSE events `order_update` / `server_change` let an open browser refresh the
+  relevant tab in place instead of showing pre-delivery state indefinitely.
 - **Sniper**: fires under the alert's own `account_id`
   (`get_ovh_service(alert.account_id)`), not the active one — so an
   armed sniper keeps targeting the right region after a switch. Sniper
@@ -637,6 +672,7 @@ were created under (`account_id` column on each table).
   through those helpers, never `get_settings()` directly** — the
   lru-cached Settings object only sees env vars; `cache_clear()` cannot
   pick up DB overrides. Covered keys: price_check_interval,
+  order_check_interval,
   stock_event_retention_days/max_rows (read per monitor cycle — live),
   use_cache/cache_ttl (frozen per OVHService — the PUT hook calls
   `reset_ovh_service(None)` + clears the cache; `get_cache(ttl)` now

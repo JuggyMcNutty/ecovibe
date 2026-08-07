@@ -151,6 +151,7 @@ Generate the `.htpasswd` file with `htpasswd -c /etc/nginx/.htpasswd admin`.
 - **Cancel order** - exercise the right of retraction (withdrawal) during the retraction period
 - **Refresh all** - re-fetch all order statuses from OVH
 - **Filter** by status (all / pending / delivered / cancelled)
+- **Delivery watch** - the background monitor re-checks your pending orders every 5 minutes (for every monitored account) and **notifies you the moment one is delivered or cancelled**, so you hear it from ECOVibe rather than from OVH's email. Intermediate churn (checking → delivering) updates quietly without pinging your channels, settled orders are never re-queried, and an open browser refreshes the Orders tab in place. Cadence lives in **Settings → App** → *Delivery check (s)* (0 disables)
 
 ### Price Watches, Promotions & Catalog Changes
 - **Price-drop alerts** - set a per-plan price cap; the monitor re-checks the catalog every 15 minutes (for every account, not just the active one) and notifies (all channels) when the price falls to/below it. Re-fires only when the price moves again
@@ -159,6 +160,7 @@ Generate the `.htpasswd` file with `htpasswd -c /etc/nginx/.htpasswd admin`.
 
 ### Owned Servers & Invoices
 - **Servers tab** - read-only list of your dedicated servers (state, range, datacenter, OS, expiry) with a detail panel
+- **Server watch** - on the same cadence as the delivery watch, your dedicated-server list is diffed against a stored snapshot, so a **newly delivered server announces itself** on your notification channels and appears in the Servers tab without a manual refresh (servers that vanish are reported too). The first scan for an account only records a baseline
 - **Recent invoices** - last 6 months of invoices with totals and PDF links on the Billing tab
 
 ### Historical Insights
@@ -217,6 +219,7 @@ env-only and require a restart to change.
 | `OVH_DB_PATH` | `<project>/ovh-flash-monitor.db` | SQLite database path (defaults to project root) |
 | `OVH_CORS_ORIGINS` | `[]` | Comma-separated allowed CORS origins |
 | `OVH_PRICE_CHECK_INTERVAL` ⚙ | `900` | Price-watch/promo/catalog scan cadence in seconds (0 disables) |
+| `OVH_ORDER_CHECK_INTERVAL` ⚙ | `300` | Delivery watch cadence in seconds — pending order statuses + owned-server diff (0 disables) |
 | `OVH_CATALOG_WATCH_ENABLED` ⚙ | `true` | Track plans added to/removed from the catalog |
 | `OVH_CATALOG_WATCH_NOTIFY` ⚙ | `true` | Send catalog changes to the notification channels |
 | `OVH_STOCK_EVENT_RETENTION_DAYS` ⚙ | `90` | Stock events older than this are pruned hourly |
@@ -479,7 +482,7 @@ ovh-gui/
 ├── static/css/input.css     # Tailwind v4 source
 ├── static/css/app.css       # Built/minified (do not edit)
 ├── templates/index.html    # SPA shell with cache-busted asset refs
-├── tests/                   # pytest suite (193 tests, uses TestClient)
+├── tests/                   # pytest suite (306 tests, uses TestClient)
 ├── requirements.txt         # Runtime dependencies
 ├── requirements-dev.txt     # Dev dependencies (ruff, pytest, httpx)
 ├── pyproject.toml           # Project metadata + tool config
